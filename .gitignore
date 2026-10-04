@@ -44,3 +44,4 @@ public/icons/*.png
 # second dev server build dir (TRENCH_DIST_DIR)
 .next-test/
 .next-qa/
+.next-qa-build/
