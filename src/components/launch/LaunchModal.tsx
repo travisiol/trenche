@@ -4,8 +4,8 @@
  *  pump.fun option chips Holder rewards / Off-chain / UsePaid / Fee sharing, and every launchpad but Pump.fun. */
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ClipboardPaste, Copy, Crop, Hash, KeyRound, Plus, Save, Trash2, Upload, Wallet, X } from "lucide-react";
-import type { TokenInfo, WalletInfo, WalletsGenerateResponse } from "@/lib/types";
-import { failureMessage, get, post } from "@/lib/api";
+import type { JobCreated, TokenInfo, WalletInfo, WalletsGenerateResponse } from "@/lib/types";
+import { failureMessage, get, isApiFailure, post, waitJob } from "@/lib/api";
 import { refreshVaultDependents } from "@/lib/store";
 import { isMint, short, sol } from "@/lib/format";
 import { mintAddressOfSecret } from "@/lib/base58";
@@ -52,6 +52,7 @@ function LaunchModalBody({ onClose, form, onChange, wallets, balances }: Props) 
   const [importOpen, setImportOpen] = useState(false);
   const [secret, setSecret] = useState("");
   const [secretErr, setSecretErr] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const set = <K extends keyof LaunchForm>(k: K, v: LaunchForm[K]) => onChange({ ...form, [k]: v });
   const dev = wallets.find((w) => w.address === form.devWallet) ?? null;
@@ -128,6 +129,33 @@ function LaunchModalBody({ onClose, form, onChange, wallets, balances }: Props) 
       toast(failureMessage(e), "err");
     } finally {
       setCreating(false);
+    }
+  };
+  /** "Fetch mint address": POST /api/launch/mint grinds and reserves a …pump address (job); while that route is not
+   *  served the suffix is searched at launch time by /api/launch/prepare instead. Clicking again releases it. */
+  const fetchMint = async () => {
+    if (form.reservedMint) {
+      post(`/api/launch/mint/${form.reservedMint}/release`, {}).catch(() => {});
+      onChange({ ...form, reservedMint: "", mintAddress: "", vanity: "" });
+      return;
+    }
+    if (form.vanity) return set("vanity", "");
+    setFetching(true);
+    try {
+      const r = await post<JobCreated>("/api/launch/mint", { suffix: "pump" });
+      toast("Reserving a …pump address — grinding keypairs", "info");
+      const job = await waitJob(r.jobId, 120_000);
+      const mint = typeof job.extra?.mint === "string" ? job.extra.mint : null;
+      if (job.error || !mint) throw new Error(job.error ?? "No mint address came back");
+      onChange({ ...form, reservedMint: mint, mintAddress: mint, vanity: "" });
+      toast(`Reserved ${short(mint, 6, 6)}`, "ok");
+    } catch (e) {
+      if (isApiFailure(e) && (e.kind === "missing" || e.status === 404 || e.status === 405)) {
+        set("vanity", "pump");
+        toast("Mint pool not served yet — a …pump address will be searched when you launch", "info");
+      } else toast(failureMessage(e), "err");
+    } finally {
+      setFetching(false);
     }
   };
   const applyMintSecret = () => {
@@ -362,11 +390,11 @@ function LaunchModalBody({ onClose, form, onChange, wallets, balances }: Props) 
 
                 <div className="pb-2">
                   <div className="flex min-w-0 items-center gap-2">
-                    <button type="button" disabled={!!form.mintSecret} onClick={() => set("vanity", form.vanity ? "" : "pump")} className={cx("inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-3 text-xs transition-colors hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-40", form.vanity ? "border-accent/40 bg-accent/15 text-accent" : "border-line-100 bg-bg-50 text-text-200")}>
+                    <button type="button" disabled={!!form.mintSecret || fetching} onClick={fetchMint} className={cx("inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-3 text-xs transition-colors hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-40", form.vanity || form.reservedMint ? "border-accent/40 bg-accent/15 text-accent" : "border-line-100 bg-bg-50 text-text-200")}>
                       <Hash className="h-3.5 w-3.5 shrink-0" />
-                      Fetch mint address
+                      {fetching ? "Reserving…" : form.reservedMint ? "Release mint address" : "Fetch mint address"}
                     </button>
-                    <span className="min-w-0 flex-1 truncate text-[11px] text-text-300">{form.mintSecret ? `Launches on ${short(form.mintAddress, 6, 6)} (imported keypair)` : form.vanity ? "A …pump address is searched when you launch (up to 200k keypairs)" : "Reserves a …pump address at launch"}</span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-300" title={form.reservedMint || form.mintAddress || undefined}>{form.mintSecret ? `Launches on ${form.mintAddress} (imported keypair)` : form.reservedMint ? form.reservedMint : form.vanity ? "A …pump address is searched when you launch" : "Reserves a …pump address from the pool"}</span>
                     {form.mintSecret ? (
                       <button type="button" title="Forget the imported mint keypair" onClick={() => onChange({ ...form, mintSecret: "", mintAddress: "" })} className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line-100 bg-bg-50 px-2.5 text-xs text-text-200 transition-colors hover:bg-white/[0.04]">
                         <X className="h-3.5 w-3.5 shrink-0" />

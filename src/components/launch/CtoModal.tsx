@@ -1,32 +1,31 @@
 "use client";
-/** Block X "New CTO" dialog (design/blockx/launch-cto.html): run tasks on a token someone else deployed.
- *  POST /api/cto { mint, name? } then the caller opens the workspace on that mint. The "Dev wallet" address kind and
- *  "add the address later" (1-hour watch) are not supported by this server, so the mint is required. */
+/** Block X "New CTO" dialog (design/blockx/launch-cto.html): run tasks on a token someone else deploys.
+ *  POST /api/cto { address, addressIs, name, presetId } → { cto } (contract CtoCreateRequest / CtoResponse); the
+ *  caller then opens the workspace on the CTO. A token that isn't created yet (dev wallet) is watched for 1 hour. */
 import { useState } from "react";
 import { Flag, X } from "lucide-react";
-import type { LaunchPreset } from "@/lib/types";
+import type { CtoCreateRequest, CtoResponse, LaunchPreset } from "@/lib/types";
 import { failureMessage, post } from "@/lib/api";
 import { isMint } from "@/lib/format";
 import { cx } from "@/components/bx/ui";
 
-/** POST /api/cto response (server contract) — the mint is echoed back, `id` is the launch id to stream */
-export type CtoResponse = { id?: string; mint: string };
-
-export function CtoModal({ open, onClose, presets, onCreated }: { open: boolean; onClose: () => void; presets: LaunchPreset[]; onCreated: (r: CtoResponse, name: string, preset: LaunchPreset | null) => void }) {
-  const [mint, setMint] = useState("");
+export function CtoModal({ open, onClose, presets, onCreated }: { open: boolean; onClose: () => void; presets: LaunchPreset[]; onCreated: (r: CtoResponse) => void }) {
+  const [address, setAddress] = useState("");
+  const [kind, setKind] = useState<"token" | "dev">("token");
   const [name, setName] = useState("");
   const [preset, setPreset] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   if (!open) return null;
-  const valid = isMint(mint);
+  const valid = !address.trim() || isMint(address);
   const create = async () => {
     setBusy(true);
     setErr(null);
     try {
-      const r = await post<CtoResponse>("/api/cto", { mint: mint.trim(), name: name.trim() || undefined });
-      onCreated({ ...r, mint: r?.mint ?? mint.trim() }, name.trim(), presets.find((p) => p.id === preset) ?? null);
-      setMint("");
+      const body: CtoCreateRequest = { address: address.trim() || undefined, addressIs: address.trim() ? kind : undefined, name: name.trim() || undefined, presetId: preset || undefined };
+      const r = await post<CtoResponse>("/api/cto", body);
+      onCreated(r);
+      setAddress("");
       setName("");
       setPreset("");
       onClose();
@@ -47,7 +46,7 @@ export function CtoModal({ open, onClose, presets, onCreated }: { open: boolean;
                 New CTO
               </h2>
             </div>
-            <p className="mt-1 text-[12px] leading-relaxed text-text-300">Run tasks on a token someone else deploys. Nothing is deployed. Paste the mint address — the workspace opens on it and tasks with Auto start fire when you start them.</p>
+            <p className="mt-1 text-[12px] leading-relaxed text-text-300">Run tasks on a token someone else deploys. Nothing is deployed. Add the address now or later — a token that isn&apos;t created yet is watched for 1 hour, and tasks with Auto start fire the moment it&apos;s created.</p>
           </div>
           <button type="button" aria-label="Close" onClick={onClose} className="rounded-md p-1 text-text-300 transition-colors hover:bg-white/[0.06] hover:text-text-100">
             <X className="h-4 w-4" />
@@ -57,15 +56,17 @@ export function CtoModal({ open, onClose, presets, onCreated }: { open: boolean;
           <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-2">
               <label htmlFor="cto-address" className="text-[11px] font-medium text-text-300">
-                Token address
+                Token address (optional)
               </label>
               <div role="radiogroup" aria-label="Address is a" className="flex overflow-hidden rounded-md border border-line-100 bg-bg-100 text-[11px] font-medium">
-                <button type="button" role="radio" aria-checked="true" className="bg-accent/15 px-2 py-0.5 text-accent transition-colors">
-                  Token
-                </button>
+                {(["token", "dev"] as const).map((k) => (
+                  <button key={k} type="button" role="radio" aria-checked={kind === k} onClick={() => setKind(k)} className={cx("px-2 py-0.5 transition-colors", kind === k ? "bg-accent/15 text-accent" : "text-text-300 hover:text-text-100")}>
+                    {k === "token" ? "Token" : "Dev wallet"}
+                  </button>
+                ))}
               </div>
             </div>
-            <input id="cto-address" value={mint} onChange={(e) => setMint(e.target.value)} placeholder="Paste a token / mint address" autoComplete="off" spellCheck={false} autoFocus className={cx("h-9 w-full rounded-md border bg-bg-100 px-3 font-mono text-xs text-text-100 outline-none placeholder:font-sans placeholder:text-text-300 focus-visible:ring-2 focus-visible:ring-accent/40", mint && !valid ? "border-decrease/50" : "border-line-100")} />
+            <input id="cto-address" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Paste a token / mint address, or add it later" autoComplete="off" spellCheck={false} autoFocus className={cx("h-9 w-full rounded-md border bg-bg-100 px-3 font-mono text-xs text-text-100 outline-none placeholder:font-sans placeholder:text-text-300 focus-visible:ring-2 focus-visible:ring-accent/40", !valid ? "border-decrease/50" : "border-line-100")} />
           </div>
           <div className="space-y-1.5">
             <label htmlFor="cto-name" className="text-[11px] font-medium text-text-300">

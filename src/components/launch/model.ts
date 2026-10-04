@@ -59,6 +59,8 @@ export type LaunchForm = {
   mintSecret: string;
   /** public key derived from mintSecret (display only) */
   mintAddress: string;
+  /** "Fetch mint address": a …pump address reserved by POST /api/launch/mint, passed as LaunchPrepareRequest.mint */
+  reservedMint: string;
   devWallet: string;
   devBuySol: string;
   slippageBps: number;
@@ -127,6 +129,7 @@ export const EMPTY_FORM: LaunchForm = {
   vanity: "",
   mintSecret: "",
   mintAddress: "",
+  reservedMint: "",
   devWallet: "",
   devBuySol: "1",
   slippageBps: 3000,
@@ -222,26 +225,48 @@ export function validateForm(f: LaunchForm): string[] {
   return out;
 }
 
-/** Form task → API task (only the fields the type uses). */
+/** Form task → API task (only the fields the type uses; contract in src/lib/types.ts). */
 export function toApiTask(t: FormTask): LaunchTask {
   const base = {
     id: t.id,
     walletIds: t.walletIds,
     walletGroupIds: t.walletGroupIds.length ? t.walletGroupIds : undefined,
   };
-  if (t.type === "bundle" || t.type === "sniper") {
+  if (t.type === "bundle") {
     return {
       ...base,
-      type: t.type,
+      type: "bundle",
       buyAmount: t.buyAmount,
       walletBuyAmounts: Object.keys(t.walletBuyAmounts).length ? t.walletBuyAmounts : undefined,
       slippagePercent: t.slippagePercent,
       tip: t.tip,
-      autoRetryCount: t.retry ? t.autoRetryCount : 0,
+      sellOnExternalEnabled: t.stopOnActivity || undefined,
+      sellOnExternalThreshold: t.stopOnActivity ? t.stopOnActivitySol : undefined,
       autoStart: true,
     };
   }
-  if (t.type === "wash") return { ...base, type: "wash", walletIds: Object.keys(t.washPairs), autoStart: t.autoStart };
+  if (t.type === "sniper") {
+    return {
+      ...base,
+      type: "sniper",
+      buyAmount: t.buyAmount,
+      walletBuyAmounts: Object.keys(t.walletBuyAmounts).length ? t.walletBuyAmounts : undefined,
+      minDelaySec: t.minDelaySec,
+      maxDelaySec: t.maxDelaySec,
+      slippagePercent: t.slippagePercent,
+      tip: t.tip,
+      retry: t.retry,
+      maxRetries: t.retry ? t.autoRetryCount : 0,
+      autoRetryCount: t.retry ? t.autoRetryCount : 0,
+      stopOnActivityEnabled: t.stopOnActivity || undefined,
+      stopOnActivityThreshold: t.stopOnActivity ? t.stopOnActivitySol : undefined,
+      autoStart: true,
+    };
+  }
+  if (t.type === "wash") {
+    const pairs = Object.entries(t.washPairs).map(([source, wash]) => ({ source, wash }));
+    return { ...base, type: "wash", walletIds: pairs.map((p) => p.source), pairs, perSource: t.washPerSource, minDelaySec: t.washMinDelaySec, maxDelaySec: t.washMaxDelaySec, autoStart: t.autoStart };
+  }
   return {
     ...base,
     type: t.type,
@@ -251,11 +276,13 @@ export function toApiTask(t: FormTask): LaunchTask {
     maxTradeAmount: t.maxTradeAmount,
     slippagePercent: t.slippagePercent,
     tip: t.tip,
-    tradeMode: t.tradeMode,
+    tradeMode: t.type === "volume" ? t.tradeMode : "buy",
     buyRatioPercent: t.buyRatioPercent,
-    maxTradesPerWallet: t.maxTradesPerWallet !== "" ? Number(t.maxTradesPerWallet) : TASK_LIMITS.maxTradesPerWallet,
-    maxDurationMinutes: t.maxDurationMinutes !== "" ? Number(t.maxDurationMinutes) : TASK_LIMITS.maxDurationMinutes,
+    maxTradesPerWallet: t.maxTradesPerWallet !== "" ? Number(t.maxTradesPerWallet) : undefined,
+    maxDurationMinutes: t.maxDurationMinutes !== "" ? Number(t.maxDurationMinutes) : undefined,
     autoStart: t.autoStart,
+    stopOnActivityEnabled: t.stopOnActivity || undefined,
+    stopOnActivityThreshold: t.stopOnActivity ? t.stopOnActivitySol : undefined,
   };
 }
 
@@ -271,15 +298,17 @@ export function toExecuteRequest(f: LaunchForm, mint: string): LaunchExecuteRequ
     tasks: f.tasks.map(toApiTask),
     sellOnExternalEnabled: f.sellOnExternalEnabled || undefined,
     sellOnExternalThreshold: f.sellOnExternalEnabled ? f.sellOnExternalThreshold : undefined,
-    autoDump: f.autoDevSellEnabled && v > 0 ? { percent: 100, wallets: [f.devWallet], mcUsd: f.autoDevSellMode === "mc" ? v : undefined, afterSec: f.autoDevSellMode === "ms" ? v / 1000 : undefined } : undefined,
+    autoDevSell: f.autoDevSellEnabled && v > 0 ? { mode: f.autoDevSellMode, value: v } : undefined,
     slippageBps: f.slippageBps,
     cashback: f.cashback || undefined,
+    draftId: f.id || undefined,
   };
 }
 
 /** Global Task Presets keep the whole snapshot except the image (Quick Launch replays it); "Load preset" takes only the tasks. */
 export function presetData(f: LaunchForm): Record<string, unknown> {
-  const { imageDataUrl: _img, id: _id, mintSecret: _secret, mintAddress: _addr, ...rest } = f;
+  const { imageDataUrl: _img, id: _id, mintSecret: _secret, mintAddress: _addr, reservedMint: _res, ...rest } = f;
+  void _res;
   void _img;
   void _id;
   void _secret;

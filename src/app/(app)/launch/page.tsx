@@ -16,7 +16,7 @@ import { LaunchModal } from "@/components/launch/LaunchModal";
 import { CtoModal } from "@/components/launch/CtoModal";
 import { ActivityPanel, ChartPanel, RightRail, TasksPanel, TokenInfoPanel } from "@/components/launch/Workspace";
 import { useLaunchState } from "@/components/launch/LaunchLive";
-import { deleteDraft, saveDraft, useDrafts, type LaunchDraft } from "@/components/launch/drafts";
+import { deleteDraft, saveDraft, useDrafts, type DraftRow } from "@/components/launch/drafts";
 import { COST, TASK_META, fromPreset, fromPresetSnapshot, launchNeeds, newForm, presetData, taskSentence, taskWallets, toExecuteRequest, validateForm, type LaunchForm } from "@/components/launch/model";
 
 const noop = () => () => {};
@@ -90,8 +90,8 @@ function LaunchScreen() {
     if (bootDone.current) return;
     const quick = params.get("quick");
     if (quick && !presetsQ.data) return;
-    bootDone.current = true;
     const t = setTimeout(() => {
+      bootDone.current = true;
       if (params.get("new")) newLaunch(true);
       else if (quick) {
         const p = presetsQ.data?.presets.find((x) => x.id === quick);
@@ -157,7 +157,8 @@ function LaunchScreen() {
         telegram: form.telegram.trim() || undefined,
         website: form.website.trim() || undefined,
         imageDataUrl: form.imageDataUrl,
-        vanity: form.mintSecret ? undefined : form.vanity.trim() || undefined,
+        vanitySuffix: form.mintSecret || form.reservedMint ? undefined : form.vanity.trim() || undefined,
+        mint: form.reservedMint || undefined,
         mintSecret: form.mintSecret || undefined,
       });
       const r = await post<LaunchExecuteResponse>("/api/launch/execute", toExecuteRequest(form, prep.mint));
@@ -199,7 +200,7 @@ function LaunchScreen() {
       setBusy(null);
     }
   };
-  const removeDraft = async (d: LaunchDraft) => {
+  const removeDraft = async (d: DraftRow) => {
     if (!confirm_(`Delete draft “${d.name || "Untitled"}”?`)) return;
     try {
       await deleteDraft(d.id);
@@ -213,7 +214,7 @@ function LaunchScreen() {
   };
 
   const needle = q.trim().toLowerCase();
-  const draftRows = drafts.filter((d) => !needle || d.name.toLowerCase().includes(needle) || d.symbol.toLowerCase().includes(needle));
+  const draftRows = drafts.filter((d) => !needle || (d.name ?? "").toLowerCase().includes(needle) || (d.symbol ?? "").toLowerCase().includes(needle));
   const launchRows = (launches.data?.launches ?? []).filter((l) => !needle || l.name.toLowerCase().includes(needle) || l.symbol.toLowerCase().includes(needle) || l.mint.toLowerCase().includes(needle));
   const needs = form ? launchNeeds(form, live, balances.data ?? null) : [];
   const needed = needs.reduce((n, r) => n + r.needed, 0);
@@ -243,7 +244,7 @@ function LaunchScreen() {
               </button>
               <div className="my-1 h-px w-6 bg-line-50" />
               {drafts.map((d) => (
-                <button key={d.id} type="button" onClick={() => openDraft(d.form, false)} className={cx("flex h-9 w-9 items-center justify-center rounded-md", view.kind === "draft" && view.id === d.id ? "bg-accent-muted" : "hover:bg-white/[0.04]")} title={d.name || "Untitled"}>
+                <button key={d.id} type="button" onClick={() => openDraft(d.parsed, false)} className={cx("flex h-9 w-9 items-center justify-center rounded-md", view.kind === "draft" && view.id === d.id ? "bg-accent-muted" : "hover:bg-white/[0.04]")} title={d.name || "Untitled"}>
                   <DraftAvatar d={d} size={28} />
                 </button>
               ))}
@@ -287,7 +288,7 @@ function LaunchScreen() {
                       const on = view.kind === "draft" && view.id === d.id;
                       return (
                         <div key={d.id} className={cx("group flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors", on ? "bg-accent-muted" : "hover:bg-white/[0.04]")}>
-                          <button type="button" onClick={() => openDraft(d.form, false)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                          <button type="button" onClick={() => openDraft(d.parsed, false)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
                             <DraftAvatar d={d} size={32} />
                             <span className="min-w-0 flex-1">
                               <span className="block truncate text-[13px] font-medium text-text-100">{d.name || "Untitled"}</span>
@@ -295,7 +296,7 @@ function LaunchScreen() {
                             </span>
                           </button>
                           <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-                            <button type="button" onClick={() => openDraft(d.form, true)} className="flex h-6 w-6 items-center justify-center rounded text-text-300 hover:bg-white/[0.06] hover:text-text-100" aria-label="Edit draft" title="Edit draft">
+                            <button type="button" onClick={() => openDraft(d.parsed, true)} className="flex h-6 w-6 items-center justify-center rounded text-text-300 hover:bg-white/[0.06] hover:text-text-100" aria-label="Edit draft" title="Edit draft">
                               <Pencil className="h-3 w-3" />
                             </button>
                             <button type="button" onClick={() => removeDraft(d)} className="flex h-6 w-6 items-center justify-center rounded text-text-300 hover:bg-white/[0.06] hover:text-decrease" aria-label="Delete draft" title="Delete draft">
@@ -382,10 +383,13 @@ function LaunchScreen() {
         onClose={() => setCto(false)}
         presets={presets}
         onCreated={(r) => {
-          setView({ kind: "mint", mint: r.mint });
-          setTab("launched");
+          const c = r.cto;
+          if (c.mint) {
+            setView({ kind: "mint", mint: c.mint });
+            setTab("launched");
+            toast(`CTO ${c.name || short(c.mint, 6, 6)} created — workspace opened`, "ok");
+          } else toast(`CTO ${c.name || c.id} is watching ${short(c.devWallet, 6, 6)} for 1 hour`, "info");
           launches.refresh();
-          toast(`CTO workspace opened on ${short(r.mint, 6, 6)}`, "ok");
         }}
       />
 
@@ -455,7 +459,7 @@ function LaunchScreen() {
   );
 }
 
-function DraftAvatar({ d, size }: { d: LaunchDraft; size: number }) {
+function DraftAvatar({ d, size }: { d: DraftRow; size: number }) {
   return (
     <span className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-md border border-line-100 bg-bg-50 text-[11px] font-semibold text-text-300" style={{ width: size, height: size }}>
       {d.image ? (
