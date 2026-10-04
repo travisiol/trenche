@@ -6,7 +6,8 @@ import { join } from "node:path";
 import type { Keypair } from "@solana/web3.js";
 import { SolanaState } from "@/engine/solana/state.js";
 import { HELIUS_SENDER_URL, SOLANA_PUBLIC_RPC, normalizeSolanaRpc } from "@/engine/solana/config.js";
-import type { ActivityItem, LaunchPreset, LaunchRecord, Settings } from "@/lib/types";
+import type { ActivityItem, LaunchPreset, LaunchRecord, Settings, TradingPreset, TradingPresets } from "@/lib/types";
+import { DEFAULT_TIP_SOL, TRADING_PRESET_DEFAULTS } from "@/lib/types";
 
 export type KeystoreEntry = { label: string; secret: string };
 
@@ -32,6 +33,8 @@ export type StoredSettings = {
   cuPrice: number;
   tipSol: string;
   presets: [string, string, string];
+  /** Block X Trading Presets P1..P3 */
+  tradingPresets: TradingPresets;
   keybinds: { quickBuy: [string, string, string]; close: string };
 };
 
@@ -102,8 +105,9 @@ const DEFAULT_SETTINGS: StoredSettings = {
   jitoEnabled: false,
   slippageBps: 1000,
   cuPrice: 2_000_000,
-  tipSol: "0.0005",
-  presets: ["0.1", "0.5", "1"],
+  tipSol: DEFAULT_TIP_SOL,
+  presets: ["0.1", "0.2", "0.5"],
+  tradingPresets: TRADING_PRESET_DEFAULTS,
   keybinds: { quickBuy: ["1", "2", "3"], close: "Escape" },
 };
 
@@ -145,7 +149,8 @@ function build(): Store {
     jobs: join(dir, "jobs.json"),
     runtime: join(dir, "runtime.json"),
   };
-  const settings = { ...DEFAULT_SETTINGS, ...readJson<Partial<StoredSettings>>(paths.settings, {}) };
+  const saved = readJson<Partial<StoredSettings>>(paths.settings, {});
+  const settings: StoredSettings = { ...DEFAULT_SETTINGS, ...saved, tradingPresets: mergeTradingPresets(saved.tradingPresets) };
   const store: Store = {
     dir,
     paths,
@@ -165,6 +170,30 @@ function build(): Store {
   };
   applySettings(store);
   return store;
+}
+
+/** saved presets merged over the Block X defaults (a partial/old file never yields a broken preset) */
+export function mergeTradingPresets(saved: unknown, base: TradingPresets = TRADING_PRESET_DEFAULTS): TradingPresets {
+  const arr = Array.isArray(saved) ? (saved as Partial<TradingPreset>[]) : [];
+  const four = <T,>(v: unknown, d: [T, T, T, T], map: (x: unknown) => T | null): [T, T, T, T] => {
+    if (!Array.isArray(v) || v.length !== 4) return d;
+    const out = v.map(map);
+    return out.every((x) => x !== null) ? (out as [T, T, T, T]) : d;
+  };
+  const str = (x: unknown) => (typeof x === "string" || typeof x === "number") && /^\d*\.?\d+$/.test(String(x)) ? String(x) : null;
+  const pct = (x: unknown) => (Number.isFinite(Number(x)) && Number(x) >= 0 && Number(x) <= 100 ? Number(x) : null);
+  return base.map((b, i): TradingPreset => {
+    const p = arr[i] ?? {};
+    return {
+      buyAmounts: four(p.buyAmounts, b.buyAmounts, str),
+      buyPercents: four(p.buyPercents, b.buyPercents, pct),
+      sellPercents: four(p.sellPercents, b.sellPercents, pct),
+      slippagePercent: pct(p.slippagePercent) ?? b.slippagePercent,
+      tipSol: str(p.tipSol) ?? b.tipSol,
+      buysValueSpreadPct: pct(p.buysValueSpreadPct) ?? b.buysValueSpreadPct,
+      buysDelaySec: Number.isFinite(Number(p.buysDelaySec)) && Number(p.buysDelaySec) >= 0 && Number(p.buysDelaySec) <= 1 ? Number(p.buysDelaySec) : b.buysDelaySec,
+    };
+  }) as TradingPresets;
 }
 
 /** jobs.json → Map; a job that was still running when the server died becomes "stopped" (nothing more is sent) */
@@ -285,6 +314,7 @@ export function publicSettings(s: StoredSettings): Settings {
     cuPrice: s.cuPrice,
     tipSol: s.tipSol,
     presets: s.presets,
+    tradingPresets: s.tradingPresets,
     keybinds: s.keybinds,
     theme: "dark",
   };
