@@ -1,0 +1,212 @@
+"use client";
+/**
+ * Typed fetch client + SSE hook for the TRENCH API (contract in BRIEF.md / ui-types.ts).
+ * Every failure becomes an ApiFailure with a `kind` the UI can turn into a precise message:
+ *  - "network"  → the Next server is not reachable at all
+ *  - "missing"  → the route does not exist yet (404 without a JSON `error`)
+ *  - "locked"   → the keystore is locked (403/423)
+ *  - "error"    → the server answered `{ error }`
+ */
+import { useEffect, useRef, useSyncExternalStore } from "react";
+
+export type ApiFailureKind = "network" | "missing" | "locked" | "error";
+
+export class ApiFailure extends Error {
+  kind: ApiFailureKind;
+  status: number;
+  path: string;
+  constructor(kind: ApiFailureKind, message: string, status: number, path: string) {
+    super(message);
+    this.kind = kind;
+    this.status = status;
+    this.path = path;
+  }
+}
+
+export function isApiFailure(e: unknown): e is ApiFailure {
+  return e instanceof ApiFailure;
+}
+
+export function failureMessage(e: unknown): string {
+  if (isApiFailure(e)) {
+    if (e.kind === "network") return "Server not reachable";
+    if (e.kind === "missing") return `Route missing: ${e.path}`;
+    if (e.kind === "locked") return "Vault is locked";
+    return e.message;
+  }
+  return e instanceof Error ? e.message : String(e);
+}
+
+export async function api<T>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
+  let res: Response;
+  const { json, ...rest } = init ?? {};
+  try {
+    res = await fetch(path, {
+      ...rest,
+      method: rest.method ?? (json !== undefined ? "POST" : "GET"),
+      headers: { ...(json !== undefined ? { "content-type": "application/json" } : {}), ...(rest.headers ?? {}) },
+      body: json !== undefined ? JSON.stringify(json) : rest.body,
+      cache: "no-store",
+    });
+  } catch (e) {
+    throw new ApiFailure("network", e instanceof Error ? e.message : "fetch failed", 0, path);
+  }
+  const text = await res.text();
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  if (res.ok && data === null && /text\/html/.test(res.headers.get("content-type") ?? "")) {
+    throw new ApiFailure("missing", `Route missing: ${path}`, res.status, path);
+  }
+  if (!res.ok) {
+    const msg = (data as { error?: string } | null)?.error;
+    if (res.status === 404 && !msg) throw new ApiFailure("missing", `Route missing: ${path}`, 404, path);
+    if (res.status === 423 || (res.status === 403 && /lock/i.test(msg ?? ""))) throw new ApiFailure("locked", msg ?? "Vault is locked", res.status, path);
+    throw new ApiFailure("error", msg ?? `${res.status} ${res.statusText}`, res.status, path);
+  }
+  return data as T;
+}
+
+export const get = <T,>(path: string) => api<T>(path);
+export const post = <T,>(path: string, json: unknown) => api<T>(path, { json, method: "POST" });
+export const del = <T,>(path: string) => api<T>(path, { method: "DELETE" });
+
+/* ------------------------------------------------------------------ SSE */
+
+export type SseHandlers = Record<string, (data: unknown) => void> & {
+  onOpen?: () => void;
+  onError?: () => void;
+};
+
+/**
+ * Subscribes to a Server-Sent-Events route. Handlers are kept in a ref so the EventSource
+ * is only rebuilt when `url` changes. Pass `null` to stay disconnected.
+ */
+export function useSSE(url: string | null, handlers: SseHandlers) {
+  const ref = useRef(handlers);
+  useEffect(() => {
+    ref.current = handlers;
+  });
+  useEffect(() => {
+    if (!url) return;
+    const es = new EventSource(url);
+    const names = Object.keys(ref.current).filter((n) => n !== "onOpen" && n !== "onError");
+    const listeners = names.map((name) => {
+      const fn = (ev: MessageEvent) => {
+        let data: unknown = ev.data;
+        try {
+          data = JSON.parse(ev.data);
+        } catch {
+          /* raw string */
+        }
+        ref.current[name]?.(data);
+      };
+      es.addEventListener(name, fn);
+      return [name, fn] as const;
+    });
+    es.onopen = () => ref.current.onOpen?.();
+    es.onerror = () => ref.current.onError?.();
+    return () => {
+      for (const [name, fn] of listeners) es.removeEventListener(name, fn);
+      es.close();
+    };
+  }, [url]);
+}
+
+/* -------------------------------------------------------- resource store */
+
+export type ResourceState<T> = {
+  data: T | null;
+  error: unknown;
+  loading: boolean;
+  at: number;
+};
+
+type Listener = () => void;
+
+/**
+ * A polled external store (useSyncExternalStore-friendly, no setState in effects).
+ * `useResource` subscribes; polling runs only while someone is subscribed.
+ */
+export function createResource<T>(path: string, intervalMs = 0) {
+  let state: ResourceState<T> = { data: null, error: null, loading: true, at: 0 };
+  const listeners = new Set<Listener>();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let inflight: Promise<void> | null = null;
+  let currentPath = path;
+
+  const emit = () => listeners.forEach((l) => l());
+  const set = (patch: Partial<ResourceState<T>>) => {
+    state = { ...state, ...patch };
+    emit();
+  };
+  const refresh = () => {
+    if (inflight) return inflight;
+    inflight = api<T>(currentPath)
+      .then((data) => set({ data, error: null, loading: false, at: Date.now() }))
+      .catch((error) => set({ error, loading: false, at: Date.now() }))
+      .finally(() => {
+        inflight = null;
+        if (intervalMs > 0 && listeners.size) {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(refresh, intervalMs);
+        }
+      });
+    return inflight;
+  };
+  const subscribe = (l: Listener) => {
+    listeners.add(l);
+    if (listeners.size === 1) refresh();
+    return () => {
+      listeners.delete(l);
+      if (!listeners.size && timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+  };
+  const getSnapshot = () => state;
+  const mutate = (data: T) => set({ data, error: null, loading: false, at: Date.now() });
+  const setPath = (next: string) => {
+    if (next === currentPath) return;
+    currentPath = next;
+    state = { data: null, error: null, loading: true, at: 0 };
+    emit();
+    refresh();
+  };
+  return { subscribe, getSnapshot, refresh, mutate, setPath };
+}
+
+export type Resource<T> = ReturnType<typeof createResource<T>>;
+
+const SERVER_SNAPSHOT: ResourceState<never> = { data: null, error: null, loading: true, at: 0 };
+
+export function useResource<T>(res: Resource<T>): ResourceState<T> & { refresh: () => void } {
+  const state = useSyncExternalStore(res.subscribe, res.getSnapshot, () => SERVER_SNAPSHOT as ResourceState<T>);
+  return { ...state, refresh: res.refresh };
+}
+
+/** Per-component polled fetch keyed by path (cached across mounts of the same path). */
+const cache = new Map<string, Resource<unknown>>();
+/** Shared never-fetching resource for `useGet(null)` (keeps hook order stable, no ref in render). */
+const IDLE: Resource<unknown> = {
+  subscribe: () => () => {},
+  getSnapshot: () => SERVER_SNAPSHOT as ResourceState<unknown>,
+  refresh: () => Promise.resolve(),
+  mutate: () => {},
+  setPath: () => {},
+};
+export function useGet<T>(path: string | null, intervalMs = 0): ResourceState<T> & { refresh: () => void } {
+  const key = path ?? "";
+  let res = cache.get(`${key}|${intervalMs}`) as Resource<T> | undefined;
+  if (!res && path) {
+    res = createResource<T>(path, intervalMs);
+    cache.set(`${key}|${intervalMs}`, res as Resource<unknown>);
+  }
+  const active = (res ?? IDLE) as Resource<T>;
+  const state = useSyncExternalStore(active.subscribe, active.getSnapshot, () => SERVER_SNAPSHOT as ResourceState<T>);
+  return { ...state, refresh: active.refresh };
+}
