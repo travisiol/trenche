@@ -28,31 +28,43 @@ Les handlers d'origine sont lisibles dans `C:/Users/wowo2/Desktop/secret/donchai
 s'en servir pour les signatures et l'ordre des arguments, ne pas copier le serveur.
 Le code moteur est minifié-puis-reformaté : l'appeler, ne pas le retoucher sauf bug prouvé.
 
-## DA — PAS celle de Block X : claire, sobre, lisible (demande explicite du 2026-10-04)
+## DA — façon Proxima (proxima.tools), « au goût du jour », icônes 3D (demande du 2026-10-04)
 
-Il veut « une autre DA, plus simple à comprendre ». Donc : **thème clair**, aérée, un seul accent, libellés en
-toutes lettres, une phrase d'explication en tête de chaque page. Pas de capsules cryptiques « MC V F N ».
+Il veut : « un truc comme Proxima avec des jolies icônes 3D », et « exactement le même fonctionnement que Block X ».
+Donc structure/flux = Block X, peau = Proxima. Références : `design/refs/proxima-*.jpg` (style), `design/refs/blockx-*.jpg` (structure).
 
 ```
-Fond page #f5f6f8 · cartes #ffffff bordure 1px #e5e7eb rayon 12px ombre très légère · navbar #ffffff
-Texte #0f172a (principal) · #475569 (secondaire) · #94a3b8 (libellés 11px uppercase tracking-wide)
-Accent #16a34a (vert pump, boutons principaux, BUY, hausse) · hover #15803d · fond accent #16a34a14
-Danger #dc2626 (SELL, baisse, dump) · Avertissement #d97706 (keystore verrouillé, auto-dump armé) · Info #2563eb (liens)
-Inputs #ffffff bordure #d1d5db, focus ring accent · Chips #f1f5f9 · Barres de progression accent sur #e5e7eb
-Police : Inter (next/font/google) ; chiffres, mints et signatures en JetBrains Mono.
-Densité : padding 16px, lignes de 40px dans les listes, titres de page 20px semibold, sous-titre 14px secondaire.
+Fond page #080a0c (nuit bleutée) · panneaux #0e1116 · cartes #12161d · bordures 1px #1c2230 (hover #273040)
+Texte #fcfcfc (principal) · #aab2c0 (secondaire) · #6b7482 (libellés 11px uppercase tracking .08em)
+Accent #3b82f6 (bleu Proxima : boutons principaux, focus, barres de progression, halos) · hover #2f6fe0 · fond accent #3b82f61a
+Achat / hausse #22c55e · Vente / baisse #ef4444 · Alerte #f59e0b · Violet #8b5cf6 pour les tâches automatiques (volume, auto-sell)
+Halo signature Proxima : sur les cadres principaux (chart, écran launch) un liseré dégradé #3b82f6 → transparent + glow 0 0 40px #3b82f633,
+fond ponctué de points fins (radial-gradient #ffffff0a 1px, 22px) comme leur hero.
+Police : Inter (next/font/google, poids 400/500/600/700), chiffres/mints/signatures en JetBrains Mono.
+Rayons 10-12px, padding 14-16px, lignes de liste 44px, titres 20px semibold, libellés en toutes lettres (« Market cap », « Bonded 62 % »).
 ```
-Chaque chiffre a son libellé complet : « Market cap », « Volume 5 min », « Bonded 62 % », « Trades », « Age ».
-Captures de Block X dans `design/refs/` = référence de STRUCTURE (3 colonnes, panneau buy/sell) pas de style.
-Nom affiché : **TRENCH** (wordmark texte, poids 700, point vert après le nom).
+**Icônes 3D** : chaque entrée de navigation et chaque type de tâche a une icône 3D (style rendu doux, matière pastille/verre,
+lumière de studio, sur transparent, 256px) : Wallets (coffre), Launch (fusée), Trenches (radar), Trending (flamme), Portfolio
+(coffre-fort), Rewards (pièce), Settings (engrenage), pump.fun (pilule verte), Bundle (paquet de tx), Sniper (viseur), Buy (panier),
+Volume (vagues), Wash (goutte), Auto-dump (parachute), Jito (éclair). Générer avec
+`node C:/Users/wowo2/Documents/GitHub/factory/src/gpt.mjs image "<prompt>" --out public/icons/<name>.png --size 1024x1024 --transparent`
+(clé OpenAI dans `factory/.env`), un prompt commun pour la cohérence (« 3D icon, soft clay-glass material, blue-tinted studio light,
+isometric three-quarter view, centered, transparent background, no text »), puis convertir en webp 256px (sharp ou `npx @squoosh/cli`
+ou simplement next/image). Les icônes sont la seule « jolie » dépense : pas d'illustration gratuite ailleurs.
+Nom affiché : **TRENCH** (wordmark texte Inter 700 + une icône 3D de radar à gauche).
 
-Navbar (56px, blanc, bordure basse) : TRENCH · **Wallets** · **Launch** · **Dev room** · **Trenches** · Settings |
-à droite : wallet actif (label + solde SOL), état du flux (point vert « live » / gris « offline »), prix SOL.
-L'ordre de la navbar = le flux du dev : financer ses wallets → lancer → piloter son token → regarder les trenches.
+Navbar (56px, #0e1116, bordure basse) = celle de Block X : TRENCH · **Dashboard** · **Trenches** · **Trending** · **Launch** ·
+**Portfolio** · **Rewards** · Settings | à droite : wallet actif + solde SOL, état du flux, prix SOL, cadenas du keystore.
+
+**Priorité de build (sa réponse du 2026-10-04 : « je m'en fous des trenches, je veux surtout bundle, snipe etc »)** :
+1. Portfolio (wallets, groupes, fund/disperse/consolidate, holdings, PnL) 2. Launch + tâches (bundle Jito, sniper, buy, volume,
+wash, auto-dump) avec suivi live 3. Dashboard (mes launches, PnL, tâches actives, Dev room intégrée) 4. Trade page 5. Trenches +
+Trending 6. Rewards (creator fees pump.fun : lecture + claim) 7. Settings. X tracker / KOL tracker : coupés (pas d'API X).
+Chaîne : Solana seule. Pas de clé RPC pour l'instant : RPC public + Jito, champ Settings pour Helius/PumpPortal plus tard.
 
 ## Pages
 
-### /trenches (`/` redirige vers `/portfolio` si aucun wallet, sinon `/dev`)
+### /trenches (`/` redirige vers `/portfolio` si aucun wallet, sinon `/dashboard`)
 3 colonnes pleine hauteur : **New** · **Almost bonded** · **Migrated**. Chaque colonne : barre (recherche
 mot-clé, bouton filtres, presets P1/P2/P3 en SOL éditables, mute). Liste scrollable de cartes ; hover sur une
 colonne = gèle l'ordre (les chiffres continuent). Carte (voir capture) : image 56px, SYMBOL + nom, âge (vert),
@@ -82,7 +94,7 @@ min-max, N tours, depuis un groupe). Presets sauvegardés (localStorage + fichie
 **LAUNCH** → modal de résumé → progression en live (SSE) : mint, signature(s), état par wallet.
 Un « Quick Launch » = lancer depuis un preset en un clic.
 
-### /dev (Dev room) — la page centrale pour un dev pump.fun
+### /dashboard (= Block X Dashboard + Dev room) — la page centrale pour un dev pump.fun
 Liste de **mes launches** (tokens créés depuis cette app, journal local) + champ « ouvrir un mint ». Pour le token
 sélectionné : état de la courbe (Bonded %, market cap, réserves, migré ou non), **positions de tous mes wallets**
 (dev, bundle, snipers, volume : quantité, valeur SOL, PnL, % du supply détenu au total), boutons **Sell 25/50/100 %
@@ -91,7 +103,7 @@ sur la sélection** et **Dump all** (vend tous les wallets, Jito bundle si deman
 SOL, délai min-max, tours, journal live), **Auto-dump** armé/désarmé (seuil MC ou délai), journal des
 transactions avec liens solscan. Tout est en SSE / polling 2 s. C'est ici que le dev passe son temps après le launch.
 
-### /portfolio (menu « Wallets »)
+### /portfolio
 Gauche : **Developer wallets** (liste, drag pour réordonner, renommer au clic, actif = badge), **Groups**
 (créer, ajouter/retirer des wallets), archivés. Haut droite : total SOL, valeur positions USD, PnL
 (24h / 7j / 30j / all en USD ou SOL, calendrier simple) ; actions : **Create** (N wallets), **Import** (clés
@@ -169,3 +181,18 @@ Un probe de 10 s sur le websocket réel avant d'écrire le parseur : noter la fo
   sauf auto-dump/volume configurés explicitement au launch.
 - Après le build : `npm run lint` et `npx tsc --noEmit` verts, `npm run build` vert.
 - Rapport final dans `REPORT.md` : ce qui est joué (preuves), ce qui n'est pas prouvé, ce qui est coupé.
+
+### /trending
+Table classée (Block X « Trending ») : fenêtres 1m · 5m · 1h · 6h · 24h, colonnes Token, Market cap, Volume, Trades, Variation,
+Bonded, Age, bouton Buy rapide. Source : `GET /api/trending?window=`.
+
+### /rewards
+Block X « Rewards — Fees » : pour chaque token lancé depuis l'app (et tout mint collé), fees créateur pump.fun accumulées
+(`/api/dev/fees/[mint]`) + bouton Claim ; historique des claims. Pas de referral (privé).
+
+## Tâches de launch — modèle Block X (relevé dans leur bundle, à reproduire tel quel)
+Types : bundle · sniper · buy · volume · wash. Défauts : bundle/sniper slippage 30 %, tip 1, autoStart ; buy/volume intervalle 0-1 s,
+montant 0.1-0.2 SOL, slippage 20 %, mode buy | sell | both, buyRatio 50 %. Limites : 50 wallets par tâche, 4 wallets par bundle
+(Jito = create + 4 tx), slippage ≤ 100 %, durée ≤ 1440 min, 10 000 trades par wallet, 5 retries. buy et volume sont pausables.
+Option « Sell on external volume » (auto-dump quand le volume externe ≥ seuil). Chaque tâche : wallets ou groupes + montant par
+wallet. Suivi live via SSE `/api/launch/[id]/stream`.
