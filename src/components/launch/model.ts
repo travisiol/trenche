@@ -286,6 +286,54 @@ export function toApiTask(t: FormTask): LaunchTask {
   };
 }
 
+/** API task → form task (CTO records keep LaunchTask[]; the dialogs edit FormTask). */
+export function fromApiTask(t: LaunchTask): FormTask {
+  const base = newTask(t.type);
+  const o = t as unknown as Record<string, unknown>;
+  const num = (k: string, d: number) => (typeof o[k] === "number" ? (o[k] as number) : d);
+  const str = (k: string, d: string) => (typeof o[k] === "string" ? (o[k] as string) : d);
+  const f: FormTask = {
+    ...base,
+    id: t.id ?? base.id,
+    walletIds: t.walletIds ?? [],
+    walletGroupIds: t.walletGroupIds ?? [],
+    buyAmount: str("buyAmount", base.buyAmount),
+    walletBuyAmounts: (o.walletBuyAmounts as Record<string, string> | undefined) ?? {},
+    slippagePercent: num("slippagePercent", base.slippagePercent),
+    tip: str("tip", base.tip),
+    autoStart: typeof o.autoStart === "boolean" ? (o.autoStart as boolean) : base.autoStart,
+  };
+  if (t.type === "sniper") {
+    f.minDelaySec = num("minDelaySec", 0);
+    f.maxDelaySec = num("maxDelaySec", 0);
+    f.retry = typeof o.retry === "boolean" ? (o.retry as boolean) : num("maxRetries", num("autoRetryCount", 0)) > 0;
+    f.autoRetryCount = num("maxRetries", num("autoRetryCount", 1));
+    f.stopOnActivity = !!o.stopOnActivityEnabled;
+    f.stopOnActivitySol = str("stopOnActivityThreshold", "");
+  } else if (t.type === "bundle") {
+    f.stopOnActivity = !!o.sellOnExternalEnabled;
+    f.stopOnActivitySol = str("sellOnExternalThreshold", "");
+  } else if (t.type === "buy" || t.type === "volume") {
+    f.minIntervalSec = num("minIntervalSec", base.minIntervalSec);
+    f.maxIntervalSec = num("maxIntervalSec", base.maxIntervalSec);
+    f.minTradeAmount = str("minTradeAmount", base.minTradeAmount);
+    f.maxTradeAmount = str("maxTradeAmount", base.maxTradeAmount);
+    f.tradeMode = (o.tradeMode as TradeMode | undefined) ?? base.tradeMode;
+    f.buyRatioPercent = num("buyRatioPercent", 50);
+    f.maxTradesPerWallet = typeof o.maxTradesPerWallet === "number" ? String(o.maxTradesPerWallet) : "";
+    f.maxDurationMinutes = typeof o.maxDurationMinutes === "number" ? String(o.maxDurationMinutes) : "";
+    f.stopOnActivity = !!o.stopOnActivityEnabled;
+    f.stopOnActivitySol = str("stopOnActivityThreshold", "");
+  } else if (t.type === "wash") {
+    const pairs = (o.pairs as { source: string; wash: string[] }[] | undefined) ?? [];
+    f.washPairs = Object.fromEntries(pairs.map((p) => [p.source, p.wash]));
+    f.washPerSource = (num("perSource", 1) as 1 | 2 | 3) || 1;
+    f.washMinDelaySec = num("minDelaySec", 0);
+    f.washMaxDelaySec = num("maxDelaySec", 0);
+  }
+  return f;
+}
+
 /** The POST /api/launch/execute body for a form whose mint came back from /api/launch/prepare. */
 export function toExecuteRequest(f: LaunchForm, mint: string): LaunchExecuteRequest {
   const v = Number(f.autoDevSellValue) || 0;

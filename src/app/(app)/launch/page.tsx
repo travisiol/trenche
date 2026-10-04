@@ -5,8 +5,8 @@
 import { Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useSearchParams } from "next/navigation";
 import { ChevronsLeft, ChevronsRight, Flag, Pencil, Plus, Rocket, Search, Trash2 } from "lucide-react";
-import type { JobCreated, LaunchesResponse, LaunchExecuteResponse, LaunchPrepareResponse, LaunchPreset, PresetsResponse, TokenInfo } from "@/lib/types";
-import { claimFees, failureMessage, post, useGet } from "@/lib/api";
+import type { CtoListResponse, CtoRecord, CtoResponse, JobCreated, LaunchesResponse, LaunchExecuteResponse, LaunchPrepareResponse, LaunchPreset, LaunchState, PresetsResponse, TokenInfo } from "@/lib/types";
+import { claimFees, del, failureMessage, post, useGet } from "@/lib/api";
 import { useBalances, useSettings, useVault, useWallets } from "@/lib/store";
 import { short, sol } from "@/lib/format";
 import { toast } from "@/components/ui";
@@ -18,10 +18,10 @@ import { ActivityPanel, ChartPanel, RightRail, TasksPanel, TokenInfoPanel } from
 import { useLaunchState } from "@/components/launch/LaunchLive";
 import { deleteDraft, saveDraft, useDrafts, type DraftRow } from "@/components/launch/drafts";
 import { listenKeybinds, useKeybinds, type KeybindId } from "@/lib/keybinds";
-import { COST, TASK_META, fromPreset, fromPresetSnapshot, launchNeeds, newForm, presetData, taskSentence, taskWallets, toExecuteRequest, validateForm, type LaunchForm } from "@/components/launch/model";
+import { COST, TASK_META, fromApiTask, fromPreset, fromPresetSnapshot, launchNeeds, newForm, presetData, taskSentence, taskWallets, toApiTask, toExecuteRequest, validateForm, type LaunchForm } from "@/components/launch/model";
 
 const noop = () => () => {};
-type View = { kind: "empty" } | { kind: "draft"; id: string } | { kind: "mint"; mint: string };
+type View = { kind: "empty" } | { kind: "draft"; id: string } | { kind: "mint"; mint: string } | { kind: "cto"; id: string };
 
 export default function LaunchPage() {
   return (
@@ -48,10 +48,13 @@ function LaunchScreen() {
   const { drafts } = useDrafts();
   const launches = useGet<LaunchesResponse>("/api/dev/launches", 10000);
   const presetsQ = useGet<PresetsResponse>("/api/presets", 0);
+  const ctos = useGet<CtoListResponse>("/api/cto", 5000);
   const [view, setView] = useState<View>(() => (params.get("open") ? { kind: "mint", mint: params.get("open")! } : { kind: "empty" }));
   const [form, setForm] = useState<LaunchForm | null>(null);
+  const [ctoForm, setCtoForm] = useState<LaunchForm | null>(null);
+  const ctoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [modal, setModal] = useState(false);
-  const [cto, setCto] = useState(false);
+  const [ctoOpen, setCtoOpen] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [launchErr, setLaunchErr] = useState<string | null>(null);
@@ -67,10 +70,44 @@ function LaunchScreen() {
   const active = wallets.data?.active ?? "";
   const canSign = vault.data?.unlocked ?? false;
   const presets = presetsQ.data?.presets ?? [];
-  const viewingMint = view.kind === "mint" ? view.mint : null;
+  const cto: CtoRecord | null = view.kind === "cto" ? (ctos.data?.ctos.find((c) => c.id === view.id) ?? null) : null;
+  const viewingMint = view.kind === "mint" ? view.mint : (cto?.mint ?? null);
   const isDraft = view.kind === "draft";
+  const isCto = view.kind === "cto";
   const token = useGet<TokenInfo>(viewingMint ? `/api/token/${viewingMint}` : null, 4000);
-  const launchState = useLaunchState(viewingMint);
+  const launchState = useLaunchState(view.kind === "mint" ? view.mint : null);
+  /** CTO task states as a LaunchState for the Tasks panel once the CTO ran (Start / Stop live on the right rail) */
+  const ctoLive: LaunchState | null = cto && cto.mint && (cto.status === "running" || cto.status === "stopped" || cto.taskStates.some((t) => t.status !== "pending")) ? { id: cto.id, mint: cto.mint, name: cto.name, symbol: cto.symbol ?? "", dev: "", mode: "plain", status: cto.status === "running" ? "live" : "done", createSignature: null, createConfirmed: true, error: null, steps: [], tasks: cto.taskStates, startedAt: cto.createdAt, sellOnExternal: null, autoDump: cto.autoDump, autoDevSell: null } : null;
+  const openCto = (c: CtoRecord) => {
+    setCtoForm({ ...newForm(active), id: c.id, name: c.name, symbol: c.symbol ?? "", tasks: c.tasks.map(fromApiTask) });
+    setView({ kind: "cto", id: c.id });
+    setTab("launched");
+  };
+  const onCtoChange = (f: LaunchForm) => {
+    setCtoForm(f);
+    if (ctoTimer.current) clearTimeout(ctoTimer.current);
+    ctoTimer.current = setTimeout(() => post(`/api/cto/${f.id}`, { tasks: f.tasks.map(toApiTask) }, "PATCH").then(() => ctos.refresh()).catch((e) => toast(failureMessage(e), "err")), 500);
+  };
+  const ctoAction = async (action: "start" | "stop") => {
+    if (!cto) return;
+    try {
+      await post<CtoResponse>(`/api/cto/${cto.id}/${action}`, {});
+      ctos.refresh();
+      toast(action === "start" ? `CTO started on ${short(cto.mint, 6, 6)}` : "CTO stopped", action === "start" ? "ok" : "info");
+    } catch (e) {
+      toast(failureMessage(e), "err");
+    }
+  };
+  const removeCto = async (c: CtoRecord) => {
+    if (!confirm_(`Delete CTO “${c.name}”?`)) return;
+    try {
+      await del(`/api/cto/${c.id}`);
+      if (view.kind === "cto" && view.id === c.id) setView({ kind: "empty" });
+      ctos.refresh();
+    } catch (e) {
+      toast(failureMessage(e), "err");
+    }
+  };
   const problems = form ? validateForm(form) : ["No draft"];
 
   /** Opens (or creates) a draft in the workspace. */
@@ -249,6 +286,7 @@ function LaunchScreen() {
 
   const needle = q.trim().toLowerCase();
   const draftRows = drafts.filter((d) => !needle || (d.name ?? "").toLowerCase().includes(needle) || (d.symbol ?? "").toLowerCase().includes(needle));
+  const ctoRows = (ctos.data?.ctos ?? []).filter((c) => !needle || c.name.toLowerCase().includes(needle) || (c.symbol ?? "").toLowerCase().includes(needle) || (c.mint ?? "").toLowerCase().includes(needle));
   const launchRows = (launches.data?.launches ?? []).filter((l) => !needle || l.name.toLowerCase().includes(needle) || l.symbol.toLowerCase().includes(needle) || l.mint.toLowerCase().includes(needle));
   const needs = form ? launchNeeds(form, live, balances.data ?? null) : [];
   const needed = needs.reduce((n, r) => n + r.needed, 0);
@@ -273,7 +311,7 @@ function LaunchScreen() {
               <button type="button" onClick={() => newLaunch(true)} className="flex h-8 w-8 items-center justify-center rounded-md text-accent hover:bg-accent-muted/60" aria-label="New launch" title="New launch">
                 <Plus className="h-4 w-4" />
               </button>
-              <button type="button" onClick={() => setCto(true)} className="flex h-8 w-8 items-center justify-center rounded-md text-text-300 hover:bg-white/[0.04] hover:text-text-100" aria-label="CTO" title="CTO an existing token">
+              <button type="button" onClick={() => setCtoOpen(true)} className="flex h-8 w-8 items-center justify-center rounded-md text-text-300 hover:bg-white/[0.04] hover:text-text-100" aria-label="CTO" title="CTO an existing token">
                 <Flag className="h-4 w-4" />
               </button>
               <div className="my-1 h-px w-6 bg-line-50" />
@@ -301,7 +339,7 @@ function LaunchScreen() {
                   <Plus className="h-3.5 w-3.5" />
                   New launch
                 </button>
-                <button type="button" onClick={() => setCto(true)} className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-text-200 transition-colors hover:bg-white/[0.04] hover:text-text-100" title="CTO an existing token">
+                <button type="button" onClick={() => setCtoOpen(true)} className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-text-200 transition-colors hover:bg-white/[0.04] hover:text-text-100" title="CTO an existing token">
                   <Flag className="h-3.5 w-3.5 text-text-300" />
                   CTO
                 </button>
@@ -343,10 +381,28 @@ function LaunchScreen() {
                   )
                 ) : launches.error ? (
                   <p className="px-2 py-16 text-center text-xs text-decrease">{failureMessage(launches.error)}</p>
-                ) : !launchRows.length ? (
+                ) : !launchRows.length && !ctoRows.length ? (
                   <p className="px-2 py-16 text-center text-xs text-text-300">{needle ? "No launched token matches." : "No launched tokens yet."}</p>
                 ) : (
-                  launchRows.map((l) => (
+                  [...ctoRows.map((c) => (
+                    <div key={c.id} className={cx("group flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors", view.kind === "cto" && view.id === c.id ? "bg-accent-muted" : "hover:bg-white/[0.04]")}>
+                      <button type="button" onClick={() => openCto(c)} className="flex min-w-0 flex-1 items-center gap-2 text-left" title={c.mint ?? `watching ${c.devWallet}`}>
+                        <span className="relative shrink-0">
+                          <PadAvatar src={c.image} alt={c.symbol ?? c.name} size={32} />
+                          <Flag className="absolute -left-1 -top-1 h-3 w-3 text-accent" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[13px] font-medium text-text-100">{c.symbol ?? c.name}</span>
+                          <span className="block truncate text-[11px] text-text-300">{c.mint ? short(c.mint, 6, 6) : "No mint yet — watching dev"}</span>
+                        </span>
+                      </button>
+                      <span className={cx("shrink-0 text-[10px]", c.status === "running" ? "text-green-100" : c.status === "expired" ? "text-decrease" : "text-text-300")}>{c.status}</span>
+                      <button type="button" onClick={() => removeCto(c)} className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-300 opacity-0 transition-opacity hover:bg-white/[0.06] hover:text-decrease group-hover:opacity-100" aria-label="Delete CTO" title="Delete CTO">
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )),
+                  ...launchRows.map((l) => (
                     <button key={l.mint} type="button" onClick={() => setView({ kind: "mint", mint: l.mint })} className={cx("flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors", viewingMint === l.mint ? "bg-accent-muted" : "hover:bg-white/[0.04]")} title={l.mint}>
                       <PadAvatar src={l.image} alt={l.symbol} size={32} />
                       <span className="min-w-0 flex-1">
@@ -355,7 +411,7 @@ function LaunchScreen() {
                       </span>
                       <span className={cx("shrink-0 text-[10px]", l.createConfirmed ? "text-green-100" : l.createError ? "text-decrease" : "text-text-300")}>{l.createConfirmed ? "live" : l.createError ? "failed" : "pending"}</span>
                     </button>
-                  ))
+                  ))]
                 )}
               </div>
             </>
@@ -366,9 +422,13 @@ function LaunchScreen() {
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg-100">
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex min-h-0 flex-1 flex-row-reverse">
-            <RightRail canLaunch={isDraft && !problems.length && canSign} onLaunch={() => setConfirm(true)} onClaim={viewingMint ? claim : undefined} claimBusy={busy === "claim"} launched={!!viewingMint} launchTitle={!isDraft ? undefined : !form?.devWallet ? "Select a developer wallet first" : problems[0] ?? (!canSign ? "Unlock the vault first" : undefined)} />
+            {isCto ? (
+              <RightRail canLaunch={!!cto?.mint && cto.status !== "running" && canSign && !!cto.tasks.length} onLaunch={() => ctoAction("start")} launched={false} launchLabel="Start" launchTitle={!cto?.mint ? "The token is not created yet — the CTO is watching the dev wallet" : !cto.tasks.length ? "Add a task first" : !canSign ? "Unlock the vault first" : cto.status === "running" ? "Already running" : "Run the tasks now"} onStop={cto?.status === "running" ? () => ctoAction("stop") : undefined} />
+            ) : (
+              <RightRail canLaunch={isDraft && !problems.length && canSign} onLaunch={() => setConfirm(true)} onClaim={viewingMint ? claim : undefined} claimBusy={busy === "claim"} launched={!!viewingMint} launchTitle={!isDraft ? undefined : !form?.devWallet ? "Select a developer wallet first" : problems[0] ?? (!canSign ? "Unlock the vault first" : undefined)} />
+            )}
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-              {view.kind === "empty" || (isDraft && !form) ? (
+              {view.kind === "empty" || (isDraft && !form) || (isCto && !cto) ? (
                 <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
                   <span className="flex h-12 w-12 items-center justify-center rounded-full border border-line-100 bg-bg-50 text-text-100">
                     <Plus className="h-5 w-5" />
@@ -393,14 +453,18 @@ function LaunchScreen() {
                       ) : null}
                     </div>
                     <div className="flex min-w-0 flex-1 flex-col">
-                      <TasksPanel form={form ?? newForm(active)} onChange={onFormChange} wallets={live} groups={groups} balances={balances.data ?? null} presets={presets} onPreset={onPreset} live={viewingMint ? launchState.state : null} launchId={viewingMint} onDump={viewingMint ? dumpAll : undefined} />
+                      {isCto ? (
+                        <TasksPanel form={ctoForm ?? newForm(active)} onChange={onCtoChange} wallets={live} groups={groups} balances={balances.data ?? null} presets={presets} onPreset={onPreset} live={ctoLive} launchId={null} onDump={viewingMint ? dumpAll : undefined} taskControls={false} />
+                      ) : (
+                        <TasksPanel form={form ?? newForm(active)} onChange={onFormChange} wallets={live} groups={groups} balances={balances.data ?? null} presets={presets} onPreset={onPreset} live={viewingMint ? launchState.state : null} launchId={viewingMint} onDump={viewingMint ? dumpAll : undefined} />
+                      )}
                     </div>
                     <div className="flex w-[400px] shrink-0 flex-col gap-4">
                       <div className="h-[316px] shrink-0">
-                        <TokenInfoPanel form={form ?? newForm(active)} token={token.data} mint={viewingMint} onEdit={isDraft ? () => setModal(true) : undefined} />
+                        <TokenInfoPanel form={isCto ? (ctoForm ?? newForm(active)) : (form ?? newForm(active))} token={token.data} mint={viewingMint} onEdit={isDraft ? () => setModal(true) : undefined} />
                       </div>
                       <div className="min-h-0 flex-1">
-                        <ActivityPanel mint={viewingMint} live={viewingMint ? launchState.state : null} />
+                        <ActivityPanel mint={viewingMint} live={isCto ? ctoLive : viewingMint ? launchState.state : null} />
                       </div>
                     </div>
                   </div>
@@ -413,17 +477,14 @@ function LaunchScreen() {
 
       {form ? <LaunchModal open={modal} onClose={closeModal} form={form} onChange={onFormChange} wallets={live} balances={balances.data ?? null} /> : null}
       <CtoModal
-        open={cto}
-        onClose={() => setCto(false)}
+        open={ctoOpen}
+        onClose={() => setCtoOpen(false)}
         presets={presets}
         onCreated={(r) => {
           const c = r.cto;
-          if (c.mint) {
-            setView({ kind: "mint", mint: c.mint });
-            setTab("launched");
-            toast(`CTO ${c.name || short(c.mint, 6, 6)} created — workspace opened`, "ok");
-          } else toast(`CTO ${c.name || c.id} is watching ${short(c.devWallet, 6, 6)} for 1 hour`, "info");
-          launches.refresh();
+          openCto(c);
+          ctos.refresh();
+          toast(c.mint ? `CTO ${c.name || short(c.mint, 6, 6)} created — workspace opened` : `CTO ${c.name || c.id} is watching ${short(c.devWallet, 6, 6)} for 1 hour`, c.mint ? "ok" : "info");
         }}
       />
 

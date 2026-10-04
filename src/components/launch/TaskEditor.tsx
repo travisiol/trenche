@@ -95,7 +95,7 @@ export function TaskCard({ task, wallets, detailsOpen, onEdit, onChange, onRemov
 }
 
 /** Live task card: Start / Pause / Stop / Sell All against POST /api/launch/[id]/tasks/[taskId]/* and /api/dev/dump. */
-export function LiveTaskCard({ launchId, mint, t, wallets }: { launchId: string; mint: string; t: LaunchTaskState; wallets: WalletInfo[] }) {
+export function LiveTaskCard({ launchId, mint, t, wallets, controls = true }: { launchId: string; mint: string; t: LaunchTaskState; wallets: WalletInfo[]; /** false = CTO task states (controlled as a whole by Start / Stop on the rail) */ controls?: boolean }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const meta = TASK_META[t.type];
@@ -139,24 +139,26 @@ export function LiveTaskCard({ launchId, mint, t, wallets }: { launchId: string;
         <span className="ml-auto font-mono text-[11px] text-text-300">
           {t.done}/{t.total ?? "∞"} · {t.sent} sent{t.failed ? ` · ${t.failed} failed` : ""} · {t.wallets.length} wallet{t.wallets.length !== 1 ? "s" : ""}
         </span>
-        {canStart ? (
+        {controls && canStart ? (
           <button type="button" disabled={!!busy} onClick={() => act("resume")} className={cx(btn, "border-accent bg-accent text-white")}>
             <Play className="h-3 w-3" /> Start
           </button>
         ) : null}
-        {pausable && t.status === "running" ? (
+        {controls && pausable && t.status === "running" ? (
           <button type="button" disabled={!!busy} onClick={() => act("pause")} className={cx(btn, "border-line-100 text-text-200 hover:text-text-100")}>
             <Pause className="h-3 w-3" /> Pause
           </button>
         ) : null}
-        {activeNow ? (
+        {controls && activeNow ? (
           <button type="button" disabled={!!busy} onClick={() => act("stop")} className={cx(btn, "border-decrease/40 text-decrease hover:bg-decrease/10")}>
             <Square className="h-3 w-3" /> Stop
           </button>
         ) : null}
-        <button type="button" disabled className={cx(btn, "border-line-100 text-text-300")} title="Tasks cannot be edited once the launch runs">
-          <Pencil className="h-3 w-3" /> Edit
-        </button>
+        {controls ? (
+          <button type="button" disabled className={cx(btn, "border-line-100 text-text-300")} title="Tasks cannot be edited once the launch runs">
+            <Pencil className="h-3 w-3" /> Edit
+          </button>
+        ) : null}
         <button type="button" disabled={!!busy || !t.wallets.length} onClick={sellAll} className={cx(btn, "border-decrease/40 text-decrease hover:bg-decrease/10")} title="Sell 100 % of the token on this task's wallets">
           Sell All
         </button>

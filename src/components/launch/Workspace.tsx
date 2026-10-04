@@ -1,7 +1,7 @@
 "use client";
 /** Block X launch workspace: Chart · Tasks · Token info · Activity panels + the right rail (Launch · Claim Rewards). */
 import { useState } from "react";
-import { ChevronDown, Gift, GripVertical, Info, Pencil, Plus, Rocket, Settings2, Trash2 } from "lucide-react";
+import { ChevronDown, Gift, GripVertical, Info, Pencil, Plus, Rocket, Settings2, Square, Trash2 } from "lucide-react";
 import type { JobCreated, LaunchPreset, LaunchState, LaunchTaskType, PositionsResponse, TokenInfo, TokenTradesResponse, WalletGroup, WalletInfo } from "@/lib/types";
 import { failureMessage, post, useGet } from "@/lib/api";
 import { useSolPrice } from "@/lib/store";
@@ -63,6 +63,7 @@ export function TasksPanel({
   live,
   launchId,
   onDump,
+  taskControls = true,
 }: {
   form: LaunchForm;
   onChange: (f: LaunchForm) => void;
@@ -75,6 +76,8 @@ export function TasksPanel({
   live: LaunchState | null;
   launchId: string | null;
   onDump?: () => void;
+  /** false for a CTO: task states are shown, Start / Stop happen on the right rail */
+  taskControls?: boolean;
 }) {
   const [unit, setUnit] = useState<"SOL" | "%">("SOL");
   const [sortBy, setSortBy] = useState<"balance" | "pct">("balance");
@@ -244,7 +247,7 @@ export function TasksPanel({
               {live.restored ? <p className="border-b border-line-50 bg-yellow-100/10 px-3 py-2 text-[11px] text-yellow-100">{live.restored.note}</p> : null}
               {!live.tasks.length ? <p className="px-3 py-4 text-xs text-text-300">No tasks on this launch.</p> : null}
               {liveTasks.map((t) => (
-                <LiveTaskCard key={t.id} launchId={launchId ?? live.id} mint={live.mint} t={t} wallets={wallets} />
+                <LiveTaskCard key={t.id} launchId={launchId ?? live.id} mint={live.mint} t={t} wallets={wallets} controls={taskControls} />
               ))}
             </div>
           ) : (
@@ -470,7 +473,7 @@ export function ActivityPanel({ mint, live }: { mint: string | null; live: Launc
 }
 
 /* ---------------------------------------------------------------- Right rail */
-export function RightRail({ canLaunch, onLaunch, onClaim, claimBusy, launched, launchTitle }: { canLaunch: boolean; onLaunch: () => void; onClaim?: () => void; claimBusy?: boolean; launched: boolean; launchTitle?: string }) {
+export function RightRail({ canLaunch, onLaunch, onClaim, claimBusy, launched, launchTitle, launchLabel = "Launch", onStop }: { canLaunch: boolean; onLaunch: () => void; onClaim?: () => void; claimBusy?: boolean; launched: boolean; launchTitle?: string; /** "Start" for a CTO */ launchLabel?: string; /** CTO: stop every task */ onStop?: () => void }) {
   const btn = "group flex w-full flex-col items-center justify-center gap-1 rounded-md border border-line-100 bg-bg-50 px-1 py-2 text-center transition-colors hover:bg-white/[0.04] hover:text-text-100 disabled:cursor-not-allowed disabled:opacity-40";
   return (
     <aside className="flex min-h-0 shrink-0 flex-col border-l border-line-100 bg-bg-100" aria-label="Launch options" style={{ width: 72 }}>
@@ -480,8 +483,14 @@ export function RightRail({ canLaunch, onLaunch, onClaim, claimBusy, launched, l
       <div className="flex min-h-0 flex-1 flex-col px-2 py-3">
         <button type="button" onClick={() => (canLaunch ? onLaunch() : launchTitle ? toast(launchTitle, "err") : null)} disabled={launched} className={cx(btn, !canLaunch && !launched ? "opacity-70" : "")} title={launched ? "Already launched" : canLaunch ? "Review and launch" : (launchTitle ?? "Open a draft first")}>
           <Rocket className="h-3.5 w-3.5 shrink-0 text-text-300 transition-colors group-hover:text-text-100" />
-          <span className="max-w-full text-center text-[10px] font-medium leading-tight text-text-200">Launch</span>
+          <span className="max-w-full text-center text-[10px] font-medium leading-tight text-text-200">{launchLabel}</span>
         </button>
+        {onStop ? (
+          <button type="button" onClick={onStop} className={cx(btn, "mt-2")} title="Stop every task of this CTO">
+            <Square className="h-3.5 w-3.5 shrink-0 text-decrease" />
+            <span className="max-w-full text-center text-[10px] font-medium leading-tight text-text-200">Stop</span>
+          </button>
+        ) : null}
         <div className="no-scrollbar mt-auto flex flex-col gap-2 overflow-y-auto pt-2">
           <button type="button" onClick={onClaim} disabled={!onClaim || claimBusy} className={btn} title={onClaim ? "Claim the pump.fun creator fees of this token" : "Available once the token is launched"}>
             <Gift className="h-3.5 w-3.5 shrink-0 text-text-300 transition-colors group-hover:text-text-100" />
