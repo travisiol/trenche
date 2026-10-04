@@ -3,7 +3,7 @@
 import { use, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Check, ChevronDown, Copy, ExternalLink, Globe, UserRoundCog, UsersRound, Zap } from "lucide-react";
-import type { CandleTf, PositionsResponse, TokenCandlesResponse, TokenHoldersResponse, TokenInfo, TokenTradesResponse, JobCreated } from "@/lib/types";
+import { CANDLE_TFS, type CandleTf, type PositionsResponse, type TokenCandlesResponse, type TokenHoldersResponse, type TokenInfo, type TokenTradesResponse, type JobCreated } from "@/lib/types";
 import { failureMessage, post, useGet } from "@/lib/api";
 import { useSettings, useSolPrice, useVault, useWallets } from "@/lib/store";
 import { age, pct, short, sol, solscanAccount, usd } from "@/lib/format";
@@ -14,7 +14,7 @@ import { pushRecent } from "@/components/bx/recent";
 import { CandleChart } from "@/components/trade/Chart";
 import { InstantTrade, InstantTradeButton, TradePanel } from "@/components/trade/TradePanel";
 
-const TF: CandleTf[] = ["1s", "15s", "1m"];
+const TF: CandleTf[] = CANDLE_TFS;
 
 export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
   const { mint } = use(params);

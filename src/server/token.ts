@@ -47,7 +47,7 @@ export async function tokenTrades(mint: string, limit: number): Promise<TokenTra
   return { mint, trades, supplyTokens: "1000000000" };
 }
 
-const TF_SEC: Record<CandleTf, number> = { "1s": 1, "15s": 15, "1m": 60 };
+const TF_SEC: Record<CandleTf, number> = { "1s": 1, "5s": 5, "15s": 15, "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1D": 86400 };
 
 export async function tokenCandles(mint: string, tf: CandleTf): Promise<TokenCandlesResponse> {
   const rows = await curveTradeHistory(readConn(), mint, { max: 600 });

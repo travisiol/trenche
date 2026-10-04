@@ -466,7 +466,9 @@ export type TokenHoldersResponse = {
   devPct: number | null;
 };
 
-export type CandleTf = "1s" | "15s" | "1m";
+/** Block X chart timeframes; every bucket is built from the same last-600-trades curve history */
+export type CandleTf = "1s" | "5s" | "15s" | "1m" | "5m" | "15m" | "1h" | "4h" | "1D";
+export const CANDLE_TFS: CandleTf[] = ["1s", "5s", "15s", "1m", "5m", "15m", "1h", "4h", "1D"];
 export type Candle = {
   /** bucket start, SECONDS (lightweight-charts) */
   time: number;
