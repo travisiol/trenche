@@ -2,10 +2,39 @@ import { intIn, json, lamportsOf, readBody, route, solString } from "@/server/ap
 import { publicSettings, saveSettings, store } from "@/server/store";
 import { syncPumpCluster } from "@/server/pumpcluster";
 import { normalizeSolanaRpc, isHeliusSender } from "@/engine/solana/config.js";
-import type { SettingsUpdateRequest } from "@/lib/types";
+import type { SettingsUpdateRequest, TradingPreset, TradingPresets } from "@/lib/types";
+import { TRADING_PRESET_LIMITS } from "@/lib/types";
 import { HttpError } from "@/server/api";
 
 export const dynamic = "force-dynamic";
+
+/** Block X Trading Presets dialog: every field optional, validated with a readable 400 */
+function validTradingPreset(raw: unknown, base: TradingPreset, n: number): TradingPreset {
+  const p = (raw && typeof raw === "object" ? raw : {}) as Partial<TradingPreset>;
+  const what = `tradingPresets[P${n}]`;
+  const four = <T,>(v: unknown, d: [T, T, T, T], map: (x: unknown, i: number) => T, name: string): [T, T, T, T] => {
+    if (v === undefined) return d;
+    if (!Array.isArray(v) || v.length !== 4) throw new HttpError(400, `${what}.${name}: exactly 4 values.`);
+    return v.map(map) as [T, T, T, T];
+  };
+  const pct = (name: string) => (x: unknown, i: number) => {
+    const v = Number(x);
+    if (!Number.isFinite(v) || v < 0 || v > 100) throw new HttpError(400, `${what}.${name}[${i}]: 0..100 expected.`);
+    return v;
+  };
+  const out: TradingPreset = {
+    buyAmounts: four(p.buyAmounts, base.buyAmounts, (x, i) => solString(lamportsOf(x, `${what}.buyAmounts[${i}]`)), "buyAmounts"),
+    buyPercents: four(p.buyPercents, base.buyPercents, pct("buyPercents"), "buyPercents"),
+    sellPercents: four(p.sellPercents, base.sellPercents, pct("sellPercents"), "sellPercents"),
+    slippagePercent: p.slippagePercent === undefined ? base.slippagePercent : pct("slippagePercent")(p.slippagePercent, 0),
+    tipSol: p.tipSol === undefined ? base.tipSol : solString(lamportsOf(p.tipSol, `${what}.tipSol`, true)),
+    buysValueSpreadPct: p.buysValueSpreadPct === undefined ? base.buysValueSpreadPct : pct("buysValueSpreadPct")(p.buysValueSpreadPct, 0),
+    buysDelaySec: p.buysDelaySec === undefined ? base.buysDelaySec : Number(p.buysDelaySec),
+  };
+  if (out.slippagePercent > TRADING_PRESET_LIMITS.maxSlippagePercent) throw new HttpError(400, `${what}.slippagePercent: 0..${TRADING_PRESET_LIMITS.maxSlippagePercent}.`);
+  if (!Number.isFinite(out.buysDelaySec) || out.buysDelaySec < 0 || out.buysDelaySec > TRADING_PRESET_LIMITS.maxDelaySec) throw new HttpError(400, `${what}.buysDelaySec: 0..${TRADING_PRESET_LIMITS.maxDelaySec} s.`);
+  return out;
+}
 
 export const GET = route(async () => {
   await syncPumpCluster().catch(() => null);
@@ -40,6 +69,12 @@ export const POST = route(async (req: Request) => {
   if (body.presets !== undefined) {
     if (!Array.isArray(body.presets) || body.presets.length !== 3) throw new HttpError(400, "presets: exactly 3 SOL amounts.");
     s.presets = body.presets.map((p, i) => solString(lamportsOf(p, `presets[${i}]`))) as [string, string, string];
+  }
+  if (body.tradingPresets !== undefined) {
+    if (!Array.isArray(body.tradingPresets) || body.tradingPresets.length !== 3) throw new HttpError(400, "tradingPresets: exactly 3 presets (P1, P2, P3), each a partial TradingPreset.");
+    s.tradingPresets = body.tradingPresets.map((p, i) => validTradingPreset(p, s.tradingPresets[i], i + 1)) as TradingPresets;
+    // legacy quick-buy amounts follow the presets' first amount
+    s.presets = s.tradingPresets.map((p) => p.buyAmounts[0]) as [string, string, string];
   }
   if (body.keybinds !== undefined) {
     const k = body.keybinds;

@@ -533,8 +533,10 @@ export type TradeBuyRequest = {
   percentOfBalance?: number;
   slippageBps?: number;
   cuPrice?: number;
-  /** > 0 sends through a Jito bundle with this tip (SOL) */
+  /** tip in SOL (default: the preset's, else Settings.tipSol); added as a Jito tip transfer to every trade tx */
   tipSol?: string;
+  /** send through Jito bundles of 5 txs (default Settings.jitoEnabled; needs a tip > 0) */
+  bundle?: boolean;
   spreadPct?: number;
   delaySec?: number;
 };
@@ -549,6 +551,7 @@ export type TradeSellRequest = {
   slippageBps?: number;
   cuPrice?: number;
   tipSol?: string;
+  bundle?: boolean;
 };
 /** POST /api/trade/buy|sell → the job plus the resolved per-wallet plan (what the job will send) */
 export type TradeCreated = JobCreated & { plan: { address: string; sol?: string; percent?: number }[]; slippageBps: number; tipSol: string; spreadPct: number; delaySec: number };
