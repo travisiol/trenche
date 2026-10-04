@@ -32,6 +32,18 @@ function load(st = store(), entries: KeystoreEntry[]): void {
       changed = true;
     }
   }
+  // drop meta left by wallets that are no longer in this vault, and an active wallet that is not in it
+  const known = new Set(st.sol.wallets.map((w) => w.address));
+  for (const a of Object.keys(st.walletMeta.meta)) {
+    if (!known.has(a)) {
+      delete st.walletMeta.meta[a];
+      changed = true;
+    }
+  }
+  if (st.walletMeta.active && !known.has(st.walletMeta.active)) {
+    st.walletMeta.active = null;
+    changed = true;
+  }
   if (!st.walletMeta.active && st.sol.wallets[0]) {
     st.walletMeta.active = st.sol.wallets[0].address;
     changed = true;

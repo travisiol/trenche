@@ -193,9 +193,10 @@ export function useResource<T>(res: Resource<T>): ResourceState<T> & { refresh: 
 /** Per-component polled fetch keyed by path (cached across mounts of the same path). */
 const cache = new Map<string, Resource<unknown>>();
 /** Shared never-fetching resource for `useGet(null)` (keeps hook order stable, no ref in render). */
+const IDLE_SNAPSHOT: ResourceState<never> = { data: null, error: null, loading: false, at: 0 };
 const IDLE: Resource<unknown> = {
   subscribe: () => () => {},
-  getSnapshot: () => SERVER_SNAPSHOT as ResourceState<unknown>,
+  getSnapshot: () => IDLE_SNAPSHOT as ResourceState<unknown>,
   refresh: () => Promise.resolve(),
   mutate: () => {},
   setPath: () => {},

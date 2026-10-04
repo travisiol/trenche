@@ -455,7 +455,7 @@ export type BundleTask = LaunchTaskBase & {
   type: "bundle" | "sniper";
   /** default 30 */
   slippagePercent?: number;
-  /** priority/Jito tip in SOL, decimal string. Block X's default is "1" — set your own */
+  /** priority/Jito tip in SOL, decimal string. Block X ships "1"; TRENCH defaults to 0.001 SOL */
   tip?: string;
   /** ignored for now (0) */
   startBlock?: number;
@@ -485,15 +485,15 @@ export type WashTask = LaunchTaskBase & { type: "wash"; autoStart?: boolean };
 export type LaunchTask = BundleTask | TradeTask | WashTask;
 
 export const TASK_DEFAULTS = {
-  bundle: { slippagePercent: 30, tip: "1", startBlock: 0, autoRetryCount: 0, autoStart: true },
-  sniper: { slippagePercent: 30, tip: "1", startBlock: 0, autoRetryCount: 0, autoStart: true },
+  bundle: { slippagePercent: 30, tip: "0.001", startBlock: 0, autoRetryCount: 0, autoStart: true },
+  sniper: { slippagePercent: 30, tip: "0.001", startBlock: 0, autoRetryCount: 0, autoStart: true },
   buy: {
     minIntervalSec: 0,
     maxIntervalSec: 1,
     minTradeAmount: "0.1",
     maxTradeAmount: "0.2",
     slippagePercent: 20,
-    tip: "1",
+    tip: "0.001",
     tradeMode: "buy" as TradeMode,
     buyRatioPercent: 50,
     autoStart: true,
@@ -504,7 +504,7 @@ export const TASK_DEFAULTS = {
     minTradeAmount: "0.1",
     maxTradeAmount: "0.2",
     slippagePercent: 20,
-    tip: "1",
+    tip: "0.001",
     tradeMode: "both" as TradeMode,
     buyRatioPercent: 50,
     autoStart: true,
