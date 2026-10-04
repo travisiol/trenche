@@ -17,6 +17,7 @@ import { CtoModal } from "@/components/launch/CtoModal";
 import { ActivityPanel, ChartPanel, RightRail, TasksPanel, TokenInfoPanel } from "@/components/launch/Workspace";
 import { useLaunchState } from "@/components/launch/LaunchLive";
 import { deleteDraft, saveDraft, useDrafts, type DraftRow } from "@/components/launch/drafts";
+import { listenKeybinds, useKeybinds, type KeybindId } from "@/lib/keybinds";
 import { COST, TASK_META, fromPreset, fromPresetSnapshot, launchNeeds, newForm, presetData, taskSentence, taskWallets, toExecuteRequest, validateForm, type LaunchForm } from "@/components/launch/model";
 
 const noop = () => () => {};
@@ -200,6 +201,39 @@ function LaunchScreen() {
       setBusy(null);
     }
   };
+  // Settings → Keybinds: Dump All, Dev sell, Buy/Volume task n Start/Pause/Stop on the launch being viewed
+  const [kb] = useKeybinds();
+  const liveRef = useRef(launchState.state);
+  useEffect(() => {
+    liveRef.current = launchState.state;
+  }, [launchState.state]);
+  useEffect(() => {
+    if (!viewingMint) return;
+    return listenKeybinds(async (id: KeybindId) => {
+      const live = liveRef.current;
+      if (!live) return toast("No live launch in the workspace", "err");
+      try {
+        if (id === "dumpAll") return dumpAll();
+        if (id === "devSell100" || id === "devSellCustom") {
+          const percent = id === "devSell100" ? 100 : kb.customSellPct;
+          await post<JobCreated>("/api/trade/sell", { mint: live.mint, wallets: [live.dev], percent });
+          return toast(`Selling ${percent}% of the dev wallet`, "info");
+        }
+        const m = /^(buy|vol)(\d)(Toggle|Stop)$/.exec(id);
+        if (!m) return;
+        const type = m[1] === "buy" ? "buy" : "volume";
+        const task = live.tasks.filter((t) => t.type === type)[Number(m[2]) - 1];
+        if (!task) return toast(`No ${type} task ${m[2]} on this launch`, "err");
+        const action = m[3] === "Stop" ? "stop" : task.status === "running" ? "pause" : "resume";
+        await post(`/api/launch/${live.id}/tasks/${task.id}/${action}`, {});
+        toast(`${type} task ${m[2]}: ${action}`, "info");
+      } catch (e) {
+        toast(failureMessage(e), "err");
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dumpAll reads current state
+  }, [viewingMint, kb.customSellPct]);
+
   const removeDraft = async (d: DraftRow) => {
     if (!confirm_(`Delete draft “${d.name || "Untitled"}”?`)) return;
     try {

@@ -8,11 +8,11 @@ import { BxCard, BxSeg, PadAvatar, cx } from "@/components/bx/ui";
 import { DOCS_URL } from "@/components/bx/Shell";
 import { PnlCalendar, dailyPnl } from "@/components/bx/PnlCalendar";
 import { TaskRowCompact } from "@/components/dev/TaskRowCompact";
-import { useGet } from "@/lib/api";
+import { failureMessage, useGet } from "@/lib/api";
 import { useSolPrice, useWallets } from "@/lib/store";
 import { groupPositions } from "@/lib/positions";
 import { age, usd } from "@/lib/format";
-import type { ActivityResponse, CreatorFeesResponse, DashboardResponse, PositionsResponse } from "@/lib/types";
+import type { ActivityResponse, DashboardResponse, FeesSummaryResponse, PositionsResponse } from "@/lib/types";
 
 type Win = "1D" | "7D" | "30D" | "All";
 const WIN_KEY: Record<Win, "24h" | "7d" | "30d" | "all"> = { "1D": "24h", "7D": "7d", "30D": "30d", All: "all" };
@@ -173,7 +173,7 @@ export default function DashboardPage() {
 
             {/* Rewards */}
             <BxCard className="order-3 flex min-h-[320px] lg:order-none lg:col-start-2 lg:row-start-2 lg:min-h-0" title="Rewards" icon={<Gift className="h-4 w-4 text-accent" />}>
-              <RewardsSummary mints={launches.map((l) => l.mint)} walletCount={walletCount} />
+              <RewardsSummary walletCount={walletCount} />
               {d?.activeTasks.length ? (
                 <div className="flex flex-col gap-1.5 border-t border-line-50 px-4 py-3">
                   <div className="flex items-center gap-2 text-[13px] font-medium text-text-100">
@@ -201,8 +201,11 @@ function UnitToggle({ unit, onChange }: { unit: "USD" | "SOL"; onChange: (u: "US
   );
 }
 
-/** Sum of claimable pump.fun creator fees across the launches (one read per mint). */
-function RewardsSummary({ mints, walletCount }: { mints: string[]; walletCount: number }) {
+/** Block X Rewards card: pills "SOL fees" · "<pending> SOL pending" from GET /api/dev/fees/summary, text, Portfolio / Rewards. */
+function RewardsSummary({ walletCount }: { walletCount: number }) {
+  const fees = useGet<FeesSummaryResponse>("/api/dev/fees/summary", 15000);
+  const f = fees.data;
+  const pending = f?.pendingSol ?? f?.claimableSol ?? null;
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-5 pb-6">
       <div className="flex flex-wrap items-center justify-center gap-2.5">
@@ -211,14 +214,12 @@ function RewardsSummary({ mints, walletCount }: { mints: string[]; walletCount: 
           <img src="/solana.svg" alt="" className="h-6 w-6" />
           <span className="text-[13px] font-medium text-text-200">SOL fees</span>
         </div>
-        <div className="flex h-12 items-center gap-2.5 rounded-lg border border-line-100 bg-bg-100 px-4">
-          <span className="text-lg font-medium tabular-nums text-text-100">
-            <PendingFees mints={mints} />
-          </span>
+        <div className="flex h-12 items-center gap-2.5 rounded-lg border border-line-100 bg-bg-100 px-4" title={f?.unreadable.length ? `${f.unreadable.length} creator vault(s) unreadable` : f ? `${f.creators.length} creator wallet(s) · ${f.launches} launch(es) · claimed ${f.claimedSol} SOL` : undefined}>
+          <span className="text-lg font-medium tabular-nums text-text-100">{fees.error ? "—" : pending === null ? (f ? "—" : "…") : Number(pending).toFixed(3)}</span>
           <span className="text-[13px] font-medium text-text-200">SOL pending</span>
         </div>
       </div>
-      <p className="text-center text-[13px] leading-relaxed text-text-300">{!walletCount ? "Add a developer wallet to claim pad fees." : !mints.length ? "Launch a token to start earning pad fees." : "Creator fees of your launches, claimable on the Rewards page."}</p>
+      <p className="text-center text-[13px] leading-relaxed text-text-300">{fees.error ? failureMessage(fees.error) : !walletCount ? "Add a developer wallet to claim pad fees." : !f || !f.launches ? "Launch a token to start earning pad fees." : `Creator fees of ${f.launches} launch${f.launches !== 1 ? "es" : ""}, claimable on the Rewards page.`}</p>
       <div className="flex w-full max-w-[320px] items-center gap-2">
         <Link href="/portfolio" className="inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-1 rounded-md border border-line-100 bg-bg-100 text-[13px] font-medium text-text-200 transition-colors hover:border-accent/35 hover:text-text-100">
           Portfolio
@@ -229,23 +230,4 @@ function RewardsSummary({ mints, walletCount }: { mints: string[]; walletCount: 
       </div>
     </div>
   );
-}
-
-function PendingFees({ mints }: { mints: string[] }) {
-  // one hook per mint would break the rules of hooks on a changing list → read the first 10 through a stable key list
-  const keys = mints.slice(0, 10);
-  return (
-    <span className="tabular-nums transition-opacity duration-200">
-      <FeesSum keys={keys} />
-    </span>
-  );
-}
-function FeesSum({ keys }: { keys: string[] }) {
-  const a = useGet<CreatorFeesResponse>(keys[0] ? `/api/dev/fees/${keys[0]}` : null, 15000);
-  const b = useGet<CreatorFeesResponse>(keys[1] ? `/api/dev/fees/${keys[1]}` : null, 15000);
-  const c = useGet<CreatorFeesResponse>(keys[2] ? `/api/dev/fees/${keys[2]}` : null, 15000);
-  const dd = useGet<CreatorFeesResponse>(keys[3] ? `/api/dev/fees/${keys[3]}` : null, 15000);
-  const e = useGet<CreatorFeesResponse>(keys[4] ? `/api/dev/fees/${keys[4]}` : null, 15000);
-  const sum = [a, b, c, dd, e].reduce((n, r) => n + (r.data?.isMine ? Number(r.data.claimableSol ?? 0) : 0), 0);
-  return <>{sum.toFixed(3)}</>;
 }

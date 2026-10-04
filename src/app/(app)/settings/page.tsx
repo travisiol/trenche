@@ -1,21 +1,22 @@
 "use client";
 /** Block X /sol/settings: left rail APP (Appearance · Workspace · Notifications · Keybinds · Account), content on the right. */
-import { Suspense, useState, useSyncExternalStore } from "react";
+import { Suspense, useEffect, useState, useSyncExternalStore } from "react";
 import { useSearchParams } from "next/navigation";
-import { Bell, Keyboard, LayoutPanelLeft, Lock, LockOpen, Palette, Search, User } from "lucide-react";
+import { Bell, Keyboard, LayoutPanelLeft, Lock, LockOpen, Palette, RotateCcw, Search, User, X } from "lucide-react";
 import type { Cluster, Settings, SettingsUpdateRequest } from "@/lib/types";
 import { failureMessage, post } from "@/lib/api";
-import { refreshVaultDependents, settingsRes, useSettings, useVault, writeLocalPresets } from "@/lib/store";
+import { refreshVaultDependents, settingsRes, useSettings, useVault } from "@/lib/store";
 import { setToastsMuted, toast, toastsMuted } from "@/components/ui";
 import { BxButton, BxInput, BxSwitch, cx } from "@/components/bx/ui";
 import { UnlockVaultModal, lockVault } from "@/components/bx/vault";
+import { KEYBINDS, KEYBIND_DEFAULTS, comboLabel, comboOf, useKeybinds, type KeybindId } from "@/lib/keybinds";
 
 type Tab = "appearance" | "workspace" | "notifications" | "keybinds" | "account";
 const TABS: { id: Tab; label: string; icon: React.ReactNode; desc: string }[] = [
   { id: "appearance", label: "Appearance", icon: <Palette className="h-4 w-4" />, desc: "Theme, font, and visual preferences" },
   { id: "workspace", label: "Workspace", icon: <LayoutPanelLeft className="h-4 w-4" />, desc: "Cluster, RPC endpoints, API keys and trading defaults" },
   { id: "notifications", label: "Notifications", icon: <Bell className="h-4 w-4" />, desc: "In-app toasts" },
-  { id: "keybinds", label: "Keybinds", icon: <Keyboard className="h-4 w-4" />, desc: "Keyboard shortcuts" },
+  { id: "keybinds", label: "Keybinds", icon: <Keyboard className="h-4 w-4" />, desc: "Configure keyboard shortcuts" },
   { id: "account", label: "Account", icon: <User className="h-4 w-4" />, desc: "Your vault — keys encrypted on this machine" },
 ];
 const FONTS = [
@@ -177,7 +178,7 @@ function Workspace() {
 }
 
 function WorkspaceForm({ initial }: { initial: Settings }) {
-  const [f, setF] = useState<SettingsUpdateRequest>({ cluster: initial.cluster, rpcUrl: initial.rpcUrl, sendRpcUrl: initial.sendRpcUrl, jitoEnabled: initial.jitoEnabled, slippageBps: initial.slippageBps, cuPrice: initial.cuPrice, tipSol: initial.tipSol, presets: initial.presets, keybinds: initial.keybinds });
+  const [f, setF] = useState<SettingsUpdateRequest>({ cluster: initial.cluster, rpcUrl: initial.rpcUrl, sendRpcUrl: initial.sendRpcUrl, jitoEnabled: initial.jitoEnabled, slippageBps: initial.slippageBps, cuPrice: initial.cuPrice, tipSol: initial.tipSol });
   const [pumpKey, setPumpKey] = useState("");
   const [heliusKey, setHeliusKey] = useState("");
   const [clearPump, setClearPump] = useState(false);
@@ -193,7 +194,6 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
       if (heliusKey) body.heliusKey = heliusKey;
       else if (clearHelius) body.heliusKey = "";
       await post("/api/settings", body);
-      if (f.presets) writeLocalPresets(f.presets);
       setPumpKey("");
       setHeliusKey("");
       settingsRes.refresh();
@@ -266,26 +266,6 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
         <Row title="Send through Jito by default" desc="Bundles land together or not at all (mainnet only).">
           <BxSwitch checked={!!f.jitoEnabled} onChange={(v) => set("jitoEnabled", v)} />
         </Row>
-        <Row title="Quick-buy presets P1 · P2 · P3 (SOL)" desc="Used on the trading page and the Tasks panel.">
-          <div className="flex gap-1.5">
-            {[0, 1, 2].map((i) => (
-              <BxInput
-                key={i}
-                type="number"
-                step="0.01"
-                min={0}
-                value={f.presets?.[i] ?? ""}
-                onChange={(e) => {
-                  const next = [...(f.presets ?? ["0.1", "0.5", "1"])] as [string, string, string];
-                  next[i] = e.target.value;
-                  set("presets", next);
-                }}
-                className="h-9 w-20 font-mono text-sm"
-                aria-label={`P${i + 1}`}
-              />
-            ))}
-          </div>
-        </Row>
       </div>
       <div className="flex justify-end">
         <BxButton variant="primary" onClick={save} disabled={busy}>
@@ -314,23 +294,80 @@ function Notifications() {
   );
 }
 
+/** Settings → Keybinds, verbatim Block X list (design/blockx/settings-keybinds.html): all None by default, click a key
+ *  button to record a shortcut (Escape cancels), ✕ clears, ↺ resets, "Reset all to defaults". Stored on this machine. */
 function Keybinds() {
-  const settings = useSettings();
-  const kb = settings.data?.keybinds;
-  const rows: [string, string][] = [
-    ["/", "Open the search (name, ticker, CA)"],
-    [kb?.close ?? "Esc", "Close dialogs and menus"],
-    [`${kb?.quickBuy[0] ?? "1"} · ${kb?.quickBuy[1] ?? "2"} · ${kb?.quickBuy[2] ?? "3"}`, "Quick buy P1 / P2 / P3 with the active wallet on a trading page"],
-    ["Enter", "Confirm the focused dialog"],
-  ];
+  const [kb, setKb] = useKeybinds();
+  const [recording, setRecording] = useState<KeybindId | null>(null);
+  useEffect(() => {
+    if (!recording) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") return setRecording(null);
+      const c = comboOf(e);
+      if (!c) return;
+      setKb({ ...kb, keys: { ...kb.keys, [recording]: c } });
+      setRecording(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [recording, kb, setKb]);
+  const sections = Array.from(new Set(KEYBINDS.map((k) => k.section)));
+  const iconBtn = "inline-flex h-8 w-8 items-center justify-center rounded-md text-text-300 hover:bg-hover-200 disabled:cursor-not-allowed disabled:opacity-40";
   return (
-    <div className="space-y-3">
-      <H3>Shortcuts</H3>
-      {rows.map(([k, d]) => (
-        <Row key={k} title={d}>
-          <kbd className="rounded border border-line-100 bg-bg-100 px-2 py-1 font-mono text-xs text-text-100">{k}</kbd>
-        </Row>
-      ))}
+    <div className="space-y-6">
+      <div className="flex items-center justify-between rounded-lg border border-line-100 bg-bg-50 p-3">
+        <div>
+          <div className="text-sm font-medium text-text-100">Keyboard shortcuts</div>
+          <div className="mt-0.5 text-xs text-text-300">{kb.enabled ? "Enabled — shortcuts are ignored while typing" : "Disabled"}</div>
+        </div>
+        <BxSwitch checked={kb.enabled} onChange={(v) => setKb({ ...kb, enabled: v })} />
+      </div>
+      <div className="space-y-6">
+        {sections.map((section) => (
+          <div key={section} className="space-y-3">
+            <H3>{section}</H3>
+            <div className="space-y-2">
+              {KEYBINDS.filter((k) => k.section === section).map((k) => (
+                <div key={k.id} className="flex items-center justify-between gap-4 rounded-lg border border-line-100 bg-bg-50 p-3">
+                  <div className="min-w-0 flex-1 pr-4">
+                    <div className="text-sm font-medium text-text-100">{k.title}</div>
+                    <div className="mt-0.5 text-xs text-text-300">{k.desc}</div>
+                    {k.id === "devSellCustom" ? (
+                      <label className="mt-2 flex items-center gap-2 text-xs text-text-300">
+                        <span className="shrink-0">Sell %</span>
+                        <input min={0.01} max={100} step={1} type="number" value={kb.customSellPct} onChange={(e) => setKb({ ...kb, customSellPct: Math.max(0.01, Math.min(100, Number(e.target.value) || 0)) })} className="h-8 w-20 rounded-md border border-line-100 bg-bg-100 px-2 font-mono text-sm text-text-100 focus:outline-none focus:ring-1 focus:ring-accent [appearance:textfield]" />
+                        <span className="text-text-300">{kb.customSellPct}%</span>
+                      </label>
+                    ) : null}
+                  </div>
+                  <div className="shrink-0">
+                    <div className="flex items-center gap-2">
+                      <button type="button" onClick={() => setRecording(recording === k.id ? null : k.id)} className={cx("flex h-9 min-w-[120px] items-center justify-center rounded-lg border px-3 font-mono text-sm transition-all", recording === k.id ? "border-accent bg-accent/10 text-accent" : "border-line-100 bg-bg-50 text-text-100 hover:border-line-200")}>
+                        {recording === k.id ? "Press keys…" : comboLabel(kb.keys[k.id])}
+                      </button>
+                      <button type="button" title="Clear keybind" disabled={!kb.keys[k.id]} onClick={() => setKb({ ...kb, keys: { ...kb.keys, [k.id]: "" } })} className={cx(iconBtn, "hover:text-decrease")}>
+                        <X className="h-4 w-4" />
+                      </button>
+                      <button type="button" title="Reset to default" disabled={kb.keys[k.id] === KEYBIND_DEFAULTS.keys[k.id]} onClick={() => setKb({ ...kb, keys: { ...kb.keys, [k.id]: KEYBIND_DEFAULTS.keys[k.id] } })} className={cx(iconBtn, "hover:text-text-100")}>
+                        <RotateCcw className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="space-y-2 border-t border-line-100 pt-4">
+        <button type="button" onClick={() => setKb(KEYBIND_DEFAULTS)} className="inline-flex h-9 items-center gap-2 rounded-lg border border-line-100 bg-bg-50 px-3 text-sm text-text-100 hover:bg-hover-200">
+          <RotateCcw className="h-4 w-4" />
+          Reset all to defaults
+        </button>
+        <p className="text-xs text-text-300">Click a keybind to record a new shortcut. Press Escape to cancel.</p>
+      </div>
     </div>
   );
 }

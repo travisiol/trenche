@@ -7,14 +7,14 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { Bell, BookOpen, ChevronDown, History, Menu, Search, Settings, SlidersHorizontal } from "lucide-react";
+import { Bell, BookOpen, Check, ChevronDown, Copy, History, Menu, Search, Settings, SlidersHorizontal } from "lucide-react";
 import { useRecent, clearRecent } from "./recent";
 import { VaultPill } from "./vault";
-import { cx } from "./ui";
+import { PadAvatar, cx } from "./ui";
 import { useSolPrice, useSettings } from "@/lib/store";
-import { useGet } from "@/lib/api";
-import { usd } from "@/lib/format";
-import type { LaunchesResponse, PresetsResponse } from "@/lib/types";
+import { failureMessage, useGet } from "@/lib/api";
+import { age, short, usd } from "@/lib/format";
+import type { PresetsResponse, SearchResponse, SearchSort } from "@/lib/types";
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard" },
@@ -274,31 +274,64 @@ function BottomBar() {
   );
 }
 
-/** "/" search: paste a mint address (opens its trade page) or pick one of your launches / recently viewed tokens. */
+/** "Search tokens" dialog (BEHAVIOUR.md §0.1): pad chips, input, History (n) from /api/recent, Tokens (n) from
+ *  GET /api/search?q=&sort= (300 ms debounce), sort Market cap · Age · Volume, a full mint opens its own row. */
 function SearchModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   if (!open) return null;
   return <SearchBody onClose={onClose} />;
 }
+type Pad = "pump" | "bonk" | "stonkfun" | "bags" | "graduated";
+const PAD_CHIPS: { id: Pad; label: string; enabled: boolean }[] = [
+  { id: "pump", label: "Pump", enabled: true },
+  { id: "bonk", label: "Bonk", enabled: false },
+  { id: "stonkfun", label: "StonkFun", enabled: false },
+  { id: "bags", label: "Bags", enabled: false },
+  { id: "graduated", label: "Graduated", enabled: true },
+];
 function SearchBody({ onClose }: { onClose: () => void }) {
   const router = useRouter();
-  const launches = useGet<LaunchesResponse>("/api/dev/launches", 0);
   const recent = useRecent();
+  const price = useSolPrice();
   const [q, setQ] = useState("");
+  const [debounced, setDebounced] = useState("");
+  const [sort, setSort] = useState<SearchSort>("mc");
+  const [pads, setPads] = useState<Set<Pad>>(new Set(["pump"]));
   const [idx, setIdx] = useState(0);
-  const needle = q.trim().toLowerCase();
-  const isCa = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q.trim());
-  const pool = [
-    ...(launches.data?.launches ?? []).map((l) => ({ mint: l.mint, symbol: l.symbol, name: l.name, image: l.image, kind: "launch" as const })),
-    ...recent.filter((r) => !(launches.data?.launches ?? []).some((l) => l.mint === r.mint)).map((r) => ({ mint: r.mint, symbol: r.symbol, name: r.name, image: r.image, kind: "recent" as const })),
-  ];
-  const hits = needle ? pool.filter((c) => c.mint.toLowerCase().includes(needle) || (c.symbol ?? "").toLowerCase().includes(needle) || (c.name ?? "").toLowerCase().includes(needle)).slice(0, 8) : pool.slice(0, 8);
-  const go = (mint: string) => {
+  const [copied, setCopied] = useState<string | null>(null);
+  const [openedAt] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(q.trim()), 300);
+    return () => clearTimeout(t);
+  }, [q]);
+  const search = useGet<SearchResponse>(debounced ? `/api/search?q=${encodeURIComponent(debounced)}&sort=${sort}&limit=30` : null, 0);
+  const solUsd = price.data?.usd ?? null;
+  const graduatedOnly = pads.has("graduated") && !pads.has("pump");
+  const results = (search.data?.results ?? []).filter((r) => !graduatedOnly || (r.progress ?? 0) >= 100);
+  const go = (href: string) => {
     onClose();
-    router.push(`/trade/${mint}`);
+    router.push(href);
   };
+  const copy = (mint: string) => navigator.clipboard?.writeText(mint).then(() => (setCopied(mint), setTimeout(() => setCopied(null), 1000)));
+  const mc = (r: { marketCapUsd: number | null; marketCapSol: number | null }) => (r.marketCapUsd !== null ? usd(r.marketCapUsd) : r.marketCapSol !== null ? (solUsd ? usd(r.marketCapSol * solUsd) : `${r.marketCapSol.toFixed(1)} SOL`) : "—");
+  const rows = debounced ? results : recent.map((r) => ({ kind: "recent" as const, mint: r.mint, id: null, name: r.name, symbol: r.symbol, image: r.image, marketCapSol: null, marketCapUsd: null, ageSec: null, volumeSol: null, progress: null, href: `/trade/${r.mint}`, matched: [] }));
   return (
-    <div className="fixed inset-0 z-[200] flex items-start justify-center px-4 pt-[12vh]" style={{ background: "var(--modal-overlay)" }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="w-full max-w-[560px] overflow-hidden rounded-lg border border-line-100 bg-bg-50 shadow-2xl">
+    <div className="fixed inset-0 z-[200] flex items-start justify-center px-4 pt-[10vh]" style={{ background: "var(--modal-overlay)" }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div role="dialog" aria-modal="true" aria-label="Search tokens" className="flex max-h-[76vh] w-full max-w-[800px] flex-col overflow-hidden rounded-lg border border-line-100 bg-bg-50 shadow-2xl">
+        <div className="flex items-center justify-between gap-2 border-b border-line-50 px-3 py-2">
+          <div className="flex items-center gap-1.5">
+            {PAD_CHIPS.map((p) => {
+              const on = pads.has(p.id);
+              return (
+                <button key={p.id} type="button" disabled={!p.enabled} onClick={() => setPads((s) => { const n = new Set(s); if (n.has(p.id)) n.delete(p.id); else n.add(p.id); return n; })} className={cx("h-7 rounded-md border px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40", on ? "border-accent/40 bg-accent/15 text-accent" : "border-line-100 bg-bg-100 text-text-200 hover:text-text-100")} title={p.enabled ? undefined : `${p.label} — not available in DONCHAIN (Pump.fun only)`}>
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
+          <button type="button" onClick={onClose} className="rounded border border-line-100 px-1.5 py-0.5 text-[11px] text-text-300 hover:text-text-100">
+            Esc
+          </button>
+        </div>
         <div className="flex h-11 items-center gap-2 border-b border-line-100 px-3">
           <Search className="h-4 w-4 text-text-300" />
           <input
@@ -310,43 +343,65 @@ function SearchBody({ onClose }: { onClose: () => void }) {
             }}
             onKeyDown={(e) => {
               if (e.key === "Escape") onClose();
-              if (e.key === "ArrowDown") setIdx((i) => Math.min(hits.length - 1, i + 1));
+              if (e.key === "ArrowDown") setIdx((i) => Math.min(rows.length - 1, i + 1));
               if (e.key === "ArrowUp") setIdx((i) => Math.max(0, i - 1));
-              if (e.key === "Enter") {
-                if (isCa) go(q.trim());
-                else if (hits[idx]) go(hits[idx].mint);
-              }
+              if (e.key === "Enter" && rows[idx]) go(rows[idx].href);
             }}
-            placeholder="Search name, ticker, CA"
+            placeholder="Search by name, ticker, or CA"
             className="h-full min-w-0 flex-1 bg-transparent text-sm text-text-100 outline-none placeholder:text-text-300"
           />
-          <kbd className="rounded border border-line-100 px-1.5 text-[11px] text-text-300">Esc</kbd>
         </div>
-        <ul className="max-h-[360px] overflow-y-auto p-1">
-          {isCa ? (
-            <li>
-              <button type="button" onClick={() => go(q.trim())} className="flex w-full items-center gap-2.5 rounded-md bg-white/[0.04] px-2 py-1.5 text-left text-sm text-text-200">
-                Open <span className="font-mono text-text-100">{q.trim().slice(0, 6)}…{q.trim().slice(-6)}</span> <span className="ml-auto text-[11px] text-text-300">Enter</span>
-              </button>
-            </li>
+        <div className="flex items-center justify-between px-3 py-1.5 text-[11px] text-text-300">
+          <span className="font-medium">{debounced ? `Tokens (${rows.length})` : `History (${rows.length})`}</span>
+          {debounced ? (
+            <span className="flex items-center gap-1">
+              {(["mc", "age", "volume"] as SearchSort[]).map((s) => (
+                <button key={s} type="button" onClick={() => setSort(s)} className={cx("rounded px-1.5 py-0.5 transition-colors", sort === s ? "bg-accent-muted text-accent" : "hover:text-text-100")} title={s === "mc" ? "Sort by market cap" : s === "age" ? "Sort by age" : "Sort by volume"}>
+                  {s === "mc" ? "Market cap" : s === "age" ? "Age" : "Volume"}
+                </button>
+              ))}
+            </span>
           ) : null}
-          {hits.map((c, i) => (
-            <li key={c.mint}>
-              <button type="button" onMouseEnter={() => setIdx(i)} onClick={() => go(c.mint)} className={cx("flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors", i === idx && !isCa ? "bg-white/[0.04]" : "")}>
-                {/* eslint-disable-next-line @next/next/no-img-element -- token image */}
-                {c.image ? <img src={c.image} alt="" className="h-7 w-7 rounded-md object-cover" /> : <span className="h-7 w-7 rounded-md border border-line-100 bg-bg-100" />}
+        </div>
+        <ul className="min-h-0 flex-1 overflow-y-auto p-1">
+          {rows.map((r, i) => (
+            <li key={`${r.kind}-${r.mint ?? r.id}`}>
+              <button type="button" onMouseEnter={() => setIdx(i)} onClick={() => go(r.href)} className={cx("flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors", i === idx ? "bg-white/[0.04]" : "")}>
+                <PadAvatar src={r.image} alt={r.symbol ?? r.mint?.slice(0, 2) ?? "?"} size={32} />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[14px] font-medium text-text-100">{c.symbol ?? c.mint.slice(0, 6)}</span>
-                  <span className="block truncate text-[12px] text-text-300">{c.name}</span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="truncate text-[14px] font-medium text-text-100">{r.symbol ?? (r.mint ? short(r.mint, 4, 4) : "—")}</span>
+                    <span className="truncate text-[12px] text-text-300">{r.name ?? ""}</span>
+                    {r.mint ? (
+                      <span role="button" tabIndex={-1} onClick={(e) => { e.stopPropagation(); copy(r.mint!); }} className="text-text-300 hover:text-text-100" title="Copy address">
+                        {copied === r.mint ? <Check className="h-3 w-3 text-green-100" /> : <Copy className="h-3 w-3" />}
+                      </span>
+                    ) : null}
+                    {r.ageSec !== null ? <span className="text-[11px] text-green-100">{age(openedAt - r.ageSec * 1000, openedAt)}</span> : null}
+                    <span className="rounded border border-line-100 px-1 text-[10px] uppercase text-text-300">{r.kind}</span>
+                  </span>
                 </span>
-                <span className="text-[11px] text-text-300">{c.kind === "launch" ? "your launch" : "recent"}</span>
-                <span className="font-mono text-[12px] text-text-300">
-                  {c.mint.slice(0, 4)}…{c.mint.slice(-4)}
-                </span>
+                {debounced ? (
+                  <span className="flex shrink-0 items-center gap-1 text-[11px]">
+                    {[
+                      ["MC", mc(r)],
+                      ["ATH", "—"],
+                      ["V", r.volumeSol !== null ? (solUsd ? usd(r.volumeSol * solUsd) : `${r.volumeSol.toFixed(2)} SOL`) : "—"],
+                      ["L", "—"],
+                    ].map(([k, v]) => (
+                      <span key={k} className="rounded border border-line-100 bg-bg-100 px-1.5 py-0.5 text-text-200">
+                        <span className="text-text-300">{k} </span>
+                        {v}
+                      </span>
+                    ))}
+                  </span>
+                ) : (
+                  <span className="font-mono text-[11px] text-text-300">{r.mint ? short(r.mint, 4, 4) : ""}</span>
+                )}
               </button>
             </li>
           ))}
-          {!hits.length && !isCa ? <li className="px-3 py-6 text-center text-[13px] text-text-300">{needle ? "No launch or recent token matches. Paste a full mint address to open it." : "Paste a mint address, or type the name of one of your launches."}</li> : null}
+          {!rows.length ? <li className="px-3 py-6 text-center text-[13px] text-text-300">{search.error ? failureMessage(search.error) : debounced ? (search.loading ? "Searching…" : "No token matches.") : "No recently viewed tokens yet."}</li> : null}
         </ul>
       </div>
     </div>
