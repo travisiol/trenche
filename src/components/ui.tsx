@@ -1,0 +1,420 @@
+"use client";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { failureMessage, isApiFailure } from "@/lib/api";
+
+export function cx(...parts: (string | false | null | undefined)[]) {
+  return parts.filter(Boolean).join(" ");
+}
+
+/* ---------------------------------------------------------------- Button */
+
+type Variant = "primary" | "ghost" | "outline" | "up" | "down" | "warn" | "auto" | "danger";
+const variants: Record<Variant, string> = {
+  primary: "bg-accent text-white hover:bg-accent-hover shadow-[0_0_20px_#3b82f633]",
+  ghost: "bg-transparent text-text-2 hover:bg-white/5 hover:text-text",
+  outline: "bg-card border border-line text-text hover:border-line-hover hover:bg-card-2",
+  up: "bg-up text-black hover:brightness-110",
+  down: "bg-down text-white hover:brightness-110",
+  warn: "bg-warn text-black hover:brightness-110",
+  auto: "bg-auto text-white hover:brightness-110",
+  danger: "bg-down-soft text-down border border-down/40 hover:bg-down/20",
+};
+type Size = "xs" | "sm" | "md" | "lg";
+const sizes: Record<Size, string> = {
+  xs: "h-6 px-2 text-[11px] rounded-md gap-1",
+  sm: "h-8 px-3 text-xs rounded-lg gap-1.5",
+  md: "h-9 px-4 text-[13px] rounded-lg gap-2",
+  lg: "h-11 px-5 text-sm rounded-[10px] gap-2 font-semibold",
+};
+export function Button({
+  variant = "outline",
+  size = "md",
+  busy,
+  className,
+  children,
+  ...rest
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size; busy?: boolean }) {
+  return (
+    <button
+      {...rest}
+      disabled={rest.disabled || busy}
+      className={cx(
+        "inline-flex items-center justify-center font-medium whitespace-nowrap transition-[background,border-color,filter] disabled:opacity-50 disabled:pointer-events-none",
+        variants[variant],
+        sizes[size],
+        className,
+      )}
+    >
+      {busy ? <Spinner size={14} /> : null}
+      {children}
+    </button>
+  );
+}
+
+export function Spinner({ size = 16, className }: { size?: number; className?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className={cx("spin shrink-0", className)} aria-hidden>
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" fill="none" />
+      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" fill="none" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/* ------------------------------------------------------------- Containers */
+
+export function Panel({
+  title,
+  icon,
+  actions,
+  glow,
+  className,
+  bodyClassName,
+  children,
+}: {
+  title?: ReactNode;
+  icon?: ReactNode;
+  actions?: ReactNode;
+  glow?: boolean;
+  className?: string;
+  bodyClassName?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className={cx(glow ? "glow-frame" : "panel", "flex flex-col min-w-0", className)}>
+      {title !== undefined ? (
+        <header className="flex items-center gap-2.5 px-4 h-12 border-b border-line shrink-0">
+          {icon}
+          <h2 className="text-[15px] font-semibold tracking-tight truncate">{title}</h2>
+          <div className="ml-auto flex items-center gap-2">{actions}</div>
+        </header>
+      ) : null}
+      <div className={cx("min-w-0 min-h-0", bodyClassName ?? "p-4")}>{children}</div>
+    </section>
+  );
+}
+
+export function Label({ children, className, htmlFor }: { children: ReactNode; className?: string; htmlFor?: string }) {
+  return (
+    <label htmlFor={htmlFor} className={cx("label block mb-1.5", className)}>
+      {children}
+    </label>
+  );
+}
+
+export function Field({
+  label,
+  hint,
+  children,
+  className,
+  right,
+}: {
+  label: ReactNode;
+  hint?: ReactNode;
+  children: ReactNode;
+  className?: string;
+  right?: ReactNode;
+}) {
+  const id = useId();
+  return (
+    <div className={cx("min-w-0", className)}>
+      <div className="flex items-baseline justify-between mb-1.5">
+        <label htmlFor={id} className="label">
+          {label}
+        </label>
+        {right}
+      </div>
+      <div data-field-id={id}>{children}</div>
+      {hint ? <p className="mt-1 text-[11px] text-text-3">{hint}</p> : null}
+    </div>
+  );
+}
+
+export function Input(props: React.InputHTMLAttributes<HTMLInputElement> & { mono?: boolean; suffix?: ReactNode }) {
+  const { mono, suffix, className, ...rest } = props;
+  if (suffix) {
+    return (
+      <div className="relative">
+        <input {...rest} className={cx("input pr-12", mono && "mono", className)} />
+        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-text-3 pointer-events-none">{suffix}</span>
+      </div>
+    );
+  }
+  return <input {...rest} className={cx("input", mono && "mono", className)} />;
+}
+
+export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return <textarea {...props} className={cx("input", props.className)} />;
+}
+
+export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select {...props} className={cx("input appearance-none bg-[url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2212%22 height=%2212%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%236b7482%22 stroke-width=%222.5%22><path d=%22m6 9 6 6 6-6%22/></svg>')] bg-no-repeat bg-[right_10px_center] pr-8", props.className)} />
+  );
+}
+
+export function Toggle({ checked, onChange, label, color = "accent", disabled }: { checked: boolean; onChange: (v: boolean) => void; label?: ReactNode; color?: "accent" | "auto" | "up"; disabled?: boolean }) {
+  const bg = checked ? (color === "auto" ? "bg-auto" : color === "up" ? "bg-up" : "bg-accent") : "bg-line-hover";
+  return (
+    <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)} className="inline-flex items-center gap-2 disabled:opacity-50">
+      <span className={cx("relative inline-block w-8 h-[18px] rounded-full transition-colors", bg)}>
+        <span className={cx("absolute top-[2px] w-[14px] h-[14px] rounded-full bg-white transition-[left]", checked ? "left-[16px]" : "left-[2px]")} />
+      </span>
+      {label ? <span className="text-xs text-text-2">{label}</span> : null}
+    </button>
+  );
+}
+
+export function Segmented<T extends string>({ value, onChange, options, size = "sm" }: { value: T; onChange: (v: T) => void; options: { value: T; label: ReactNode }[]; size?: "xs" | "sm" }) {
+  return (
+    <div className={cx("inline-flex rounded-lg border border-line bg-bg p-0.5", size === "xs" ? "h-7" : "h-8")}>
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          onClick={() => onChange(o.value)}
+          className={cx(
+            "px-2.5 rounded-md font-medium transition-colors",
+            size === "xs" ? "text-[11px]" : "text-xs",
+            o.value === value ? "bg-accent-soft text-accent" : "text-text-3 hover:text-text-2",
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function Tabs<T extends string>({ value, onChange, tabs }: { value: T; onChange: (v: T) => void; tabs: { value: T; label: ReactNode; count?: number }[] }) {
+  return (
+    <div role="tablist" className="flex gap-1 border-b border-line px-2">
+      {tabs.map((t) => (
+        <button
+          key={t.value}
+          role="tab"
+          aria-selected={t.value === value}
+          onClick={() => onChange(t.value)}
+          className={cx(
+            "relative h-10 px-3 text-xs font-medium transition-colors",
+            t.value === value ? "text-text" : "text-text-3 hover:text-text-2",
+          )}
+        >
+          {t.label}
+          {t.count !== undefined ? <span className="ml-1.5 text-[10px] text-text-3 mono">{t.count}</span> : null}
+          {t.value === value ? <span className="absolute left-2 right-2 -bottom-px h-[2px] bg-accent rounded-full" /> : null}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function Capsule({ k, children, tone, className, title }: { k?: ReactNode; children: ReactNode; tone?: "up" | "down" | "warn" | "accent" | "auto"; className?: string; title?: string }) {
+  const toneCls =
+    tone === "up" ? "text-up border-up/30 bg-up-soft" : tone === "down" ? "text-down border-down/30 bg-down-soft" : tone === "warn" ? "text-warn border-warn/30 bg-warn-soft" : tone === "accent" ? "text-accent border-accent/30 bg-accent-soft" : tone === "auto" ? "text-auto border-auto/30 bg-auto-soft" : "";
+  return (
+    <span className={cx("capsule num", toneCls, className)} title={title}>
+      {k ? <b>{k}</b> : null}
+      {children}
+    </span>
+  );
+}
+
+export function Progress({ value, className, color }: { value: number | null | undefined; className?: string; color?: string }) {
+  const v = value === null || value === undefined ? 0 : Math.max(0, Math.min(100, value));
+  return (
+    <div className={cx("progress", className)}>
+      <i style={{ width: `${v}%`, background: color }} />
+    </div>
+  );
+}
+
+export function Stat({ label, value, sub, tone, big }: { label: ReactNode; value: ReactNode; sub?: ReactNode; tone?: "up" | "down"; big?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <div className="label">{label}</div>
+      <div className={cx("num font-semibold tracking-tight truncate", big ? "text-2xl mt-1" : "text-base mt-0.5", tone === "up" && "text-up", tone === "down" && "text-down")}>{value}</div>
+      {sub ? <div className="text-[11px] text-text-3 mt-0.5 truncate">{sub}</div> : null}
+    </div>
+  );
+}
+
+/* --------------------------------------------------------------- Feedback */
+
+export function Empty({ icon, title, children, action }: { icon?: ReactNode; title: ReactNode; children?: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="flex flex-col items-center justify-center text-center py-10 px-6 gap-2 fade-in">
+      {icon ? <div className="opacity-80 mb-1">{icon}</div> : null}
+      <div className="text-sm font-semibold">{title}</div>
+      {children ? <p className="text-xs text-text-3 max-w-[36ch] leading-relaxed">{children}</p> : null}
+      {action ? <div className="mt-2">{action}</div> : null}
+    </div>
+  );
+}
+
+/** "Server not reachable / route missing" — never mock data. */
+export function ApiError({ error, retry, compact }: { error: unknown; retry?: () => void; compact?: boolean }) {
+  if (!error) return null;
+  const kind = isApiFailure(error) ? error.kind : "error";
+  const title = kind === "network" ? "Server not reachable" : kind === "missing" ? "Route missing" : kind === "locked" ? "Vault locked" : "Request failed";
+  const detail = isApiFailure(error) ? (kind === "missing" ? `${error.path} is not served yet.` : kind === "network" ? "The TRENCH server did not answer. Is `npm run dev` running?" : error.message) : failureMessage(error);
+  if (compact) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-warn px-3 py-2 rounded-lg bg-warn-soft border border-warn/20">
+        <WarnIcon />
+        <span className="font-medium">{title}</span>
+        <span className="text-text-3 truncate">{detail}</span>
+        {retry ? (
+          <button onClick={retry} className="ml-auto underline text-text-2 hover:text-text">
+            Retry
+          </button>
+        ) : null}
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col items-center text-center gap-2 py-8 px-6 fade-in">
+      <div className="w-9 h-9 rounded-full bg-warn-soft text-warn flex items-center justify-center">
+        <WarnIcon size={18} />
+      </div>
+      <div className="text-sm font-semibold">{title}</div>
+      <p className="text-xs text-text-3 max-w-[40ch] mono break-all">{detail}</p>
+      {retry ? (
+        <Button size="sm" onClick={retry}>
+          Retry
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+export function WarnIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+      <path d="M12 9v4M12 17h.01" />
+    </svg>
+  );
+}
+
+export function InlineError({ children }: { children: ReactNode }) {
+  if (!children) return null;
+  return <div className="text-xs text-down bg-down-soft border border-down/20 rounded-lg px-3 py-2 break-words">{children}</div>;
+}
+
+/* ------------------------------------------------------------------ Modal */
+
+export function Modal({ open, onClose, title, children, footer, width = 480 }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; footer?: ReactNode; width?: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    const first = ref.current?.querySelector<HTMLElement>("input,select,textarea,button:not([data-close])");
+    first?.focus();
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-[2px] fade-in" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div ref={ref} role="dialog" aria-modal className="glow-frame w-full flex flex-col max-h-[92vh]" style={{ maxWidth: width }}>
+        <header className="flex items-center px-5 h-14 border-b border-line">
+          <h3 className="text-base font-semibold tracking-tight">{title}</h3>
+          <button data-close onClick={onClose} aria-label="Close" className="ml-auto w-8 h-8 rounded-lg text-text-3 hover:text-text hover:bg-white/5 flex items-center justify-center">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </header>
+        <div className="p-5 overflow-y-auto flex flex-col gap-4">{children}</div>
+        {footer ? <footer className="flex items-center justify-end gap-2 px-5 py-4 border-t border-line">{footer}</footer> : null}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ Toast */
+
+type Toast = { id: number; text: string; tone: "ok" | "err" | "info" };
+const toastListeners = new Set<(t: Toast) => void>();
+let toastId = 0;
+export function toast(text: string, tone: Toast["tone"] = "info") {
+  const t = { id: ++toastId, text, tone };
+  toastListeners.forEach((l) => l(t));
+}
+export function Toaster() {
+  const [items, setItems] = useState<Toast[]>([]);
+  useEffect(() => {
+    const l = (t: Toast) => {
+      setItems((s) => [...s, t]);
+      setTimeout(() => setItems((s) => s.filter((x) => x.id !== t.id)), 4200);
+    };
+    toastListeners.add(l);
+    return () => {
+      toastListeners.delete(l);
+    };
+  }, []);
+  return (
+    <div className="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 pointer-events-none">
+      {items.map((t) => (
+        <div
+          key={t.id}
+          className={cx(
+            "fade-in pointer-events-auto px-3.5 py-2.5 rounded-lg text-xs font-medium border shadow-lg max-w-[360px] break-words",
+            t.tone === "ok" ? "bg-up-soft border-up/30 text-up" : t.tone === "err" ? "bg-down-soft border-down/30 text-down" : "bg-card border-line text-text",
+          )}
+        >
+          {t.text}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------- Misc */
+
+export function Copy({ text, children, className }: { text: string; children?: ReactNode; className?: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      title="Copy"
+      className={cx("inline-flex items-center gap-1 mono text-text-2 hover:text-text transition-colors", className)}
+      onClick={(e) => {
+        e.stopPropagation();
+        navigator.clipboard?.writeText(text).then(() => {
+          setDone(true);
+          setTimeout(() => setDone(false), 1200);
+        });
+      }}
+    >
+      {children}
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={done ? "text-up" : "opacity-60"} aria-hidden>
+        {done ? <path d="m5 13 4 4L19 7" /> : <><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></>}
+      </svg>
+    </button>
+  );
+}
+
+export function Dot({ tone, pulse }: { tone: "up" | "down" | "warn" | "muted" | "accent"; pulse?: boolean }) {
+  const c = tone === "up" ? "bg-up" : tone === "down" ? "bg-down" : tone === "warn" ? "bg-warn" : tone === "accent" ? "bg-accent" : "bg-text-3";
+  return <span className={cx("inline-block w-1.5 h-1.5 rounded-full", c, pulse && "pulse")} />;
+}
+
+export function TokenImage({ src, alt, size = 40, className }: { src: string | null | undefined; alt: string; size?: number; className?: string }) {
+  const [broken, setBroken] = useState(false);
+  if (!src || broken) {
+    return (
+      <div className={cx("shrink-0 rounded-lg bg-card-2 border border-line flex items-center justify-center text-text-3 font-semibold", className)} style={{ width: size, height: size, fontSize: size / 3 }}>
+        {alt?.slice(0, 2).toUpperCase() || "?"}
+      </div>
+    );
+  }
+  // eslint-disable-next-line @next/next/no-img-element -- token images come from arbitrary ipfs gateways
+  return <img src={src} alt={alt} width={size} height={size} onError={() => setBroken(true)} className={cx("shrink-0 rounded-lg object-cover bg-card-2 border border-line", className)} style={{ width: size, height: size }} />;
+}
+
+export function Kbd({ children }: { children: ReactNode }) {
+  return <kbd className="inline-flex items-center justify-center min-w-5 h-5 px-1 rounded border border-line bg-bg text-[10px] mono text-text-2">{children}</kbd>;
+}

@@ -1,26 +1,288 @@
 @import "tailwindcss";
 
+/* TRENCH — Proxima skin, Block X structure. Every color lives here. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #080a0c;
+  --panel: #0e1116;
+  --card: #12161d;
+  --card-2: #171c25;
+  --line: #1c2230;
+  --line-hover: #273040;
+  --text: #fcfcfc;
+  --text-2: #aab2c0;
+  --text-3: #6b7482;
+  --accent: #3b82f6;
+  --accent-hover: #2f6fe0;
+  --accent-soft: #3b82f61a;
+  --up: #22c55e;
+  --up-soft: #22c55e1a;
+  --down: #ef4444;
+  --down-soft: #ef44441a;
+  --warn: #f59e0b;
+  --warn-soft: #f59e0b1a;
+  --auto: #8b5cf6;
+  --auto-soft: #8b5cf61a;
+  --radius: 10px;
+  --radius-lg: 12px;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-card: var(--card);
+  --color-card-2: var(--card-2);
+  --color-line: var(--line);
+  --color-line-hover: var(--line-hover);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-up: var(--up);
+  --color-up-soft: var(--up-soft);
+  --color-down: var(--down);
+  --color-down-soft: var(--down-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-auto: var(--auto);
+  --color-auto-soft: var(--auto-soft);
+  --font-sans: var(--font-inter), Inter, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), "JetBrains Mono", ui-monospace, monospace;
+  --radius-md: var(--radius);
+  --radius-lg: var(--radius-lg);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  * {
+    border-color: var(--line);
+  }
+  html {
+    color-scheme: dark;
+    background: var(--bg);
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: var(--accent);
+    color: #fff;
+  }
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+  button {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--line-hover);
+    border-radius: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer components {
+  /* Proxima hero backdrop: fine dot grid */
+  .dots {
+    background-image: radial-gradient(#ffffff0a 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  /* Signature frame: gradient hairline fading to transparent + soft blue glow */
+  .glow-frame {
+    position: relative;
+    border-radius: var(--radius-lg);
+    background: var(--panel);
+    box-shadow: 0 0 40px #3b82f633;
+  }
+  .glow-frame::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(160deg, var(--accent) 0%, #3b82f655 30%, transparent 70%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+  .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-3);
+    font-weight: 500;
+  }
+  .mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    transition: border-color 0.15s;
+  }
+  .card:hover {
+    border-color: var(--line-hover);
+  }
+  .row {
+    min-height: 44px;
+  }
+  .capsule {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 20px;
+    padding: 0 7px;
+    border-radius: 6px;
+    background: #ffffff08;
+    border: 1px solid var(--line);
+    font-size: 11px;
+    color: var(--text-2);
+    white-space: nowrap;
+  }
+  .capsule b {
+    color: var(--text-3);
+    font-weight: 500;
+  }
+  .progress {
+    height: 4px;
+    border-radius: 4px;
+    background: #ffffff10;
+    overflow: hidden;
+  }
+  .progress > i {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    border-radius: 4px;
+    transition: width 0.4s;
+  }
+  .input {
+    height: 36px;
+    width: 100%;
+    padding: 0 10px;
+    border-radius: 8px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--text);
+    transition: border-color 0.15s;
+  }
+  .input:hover {
+    border-color: var(--line-hover);
+  }
+  .input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .input::placeholder {
+    color: var(--text-3);
+  }
+  textarea.input {
+    height: auto;
+    padding: 8px 10px;
+    resize: vertical;
+  }
+  .pulse {
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  .spin {
+    animation: spin 0.9s linear infinite;
+  }
+  .fade-in {
+    animation: fade 0.25s ease-out both;
+  }
+  .flash-up {
+    animation: flashUp 0.8s ease-out;
+  }
+  .flash-down {
+    animation: flashDown 0.8s ease-out;
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes flashUp {
+  from {
+    background: var(--up-soft);
+  }
+}
+@keyframes flashDown {
+  from {
+    background: var(--down-soft);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
