@@ -4,7 +4,8 @@ import { useState } from "react";
 import { ChevronDown, Gift, GripVertical, Info, Maximize2, Minimize2, MoreHorizontal, Pencil, Plus, Rocket, Settings2, Square, Trash2 } from "lucide-react";
 import { CANDLE_TFS, type AutoClaimStatus, type CandleTf, type JobCreated, type LaunchPreset, type LaunchState, type LaunchTaskType, type PositionsResponse, type TokenCandlesResponse, type TokenInfo, type TokenTradesResponse, type WalletGroup, type WalletInfo } from "@/lib/types";
 import { failureMessage, post, useGet } from "@/lib/api";
-import { useSolPrice } from "@/lib/store";
+import { useSolPrice, useWallets } from "@/lib/store";
+import { tradeRowStyle } from "@/components/trade/tradeRowStyle";
 import { usePresetIndex, useTradingPresets } from "@/lib/presets";
 import { age, pct, short, sol, usd } from "@/lib/format";
 import { toast } from "@/components/ui";
@@ -573,6 +574,8 @@ export function ActivityPanel({ mint, live, frame, className }: { mint: string |
   const trades = useGet<TokenTradesResponse>(mint ? `/api/token/${mint}/trades?limit=100` : null, 2000);
   const price = useSolPrice();
   const rows = trades.data?.trades ?? [];
+  const vaultWallets = useWallets();
+  const mine = new Set((vaultWallets.data?.wallets ?? []).map((w) => w.address));
   const supply = Number(trades.data?.supplyTokens ?? 1e9) || 1e9;
   return (
     <Panel title="Activity" frame={frame} className={className}>
@@ -619,11 +622,13 @@ export function ActivityPanel({ mint, live, frame, className }: { mint: string |
               ) : (
                 rows.map((t) => {
                   const mcSol = Number(t.priceSol) * supply;
+                  const own = mine.has(t.wallet);
+                  const st = tradeRowStyle(t.side, own);
                   return (
                     <div key={t.signature} className="relative py-px">
-                      <div className="relative flex h-[30px] cursor-pointer flex-row bg-bg-100 px-2 hover:bg-hover-100">
+                      <div className={cx("relative flex h-[30px] cursor-pointer flex-row px-2 hover:brightness-125", st.row)}>
                         <div className="relative flex w-[22.5%] items-center justify-start overflow-hidden whitespace-nowrap p-1 leading-none">
-                          <div className={cx("flex items-center gap-0.5 text-[13px] font-normal leading-4", t.side === "buy" ? "text-increase" : "text-decrease")}>
+                          <div className={cx("flex items-center gap-0.5 text-[13px] font-normal leading-4", st.amount)}>
                             {/* eslint-disable-next-line @next/next/no-img-element -- static asset */}
                             <img src="/solana.svg" alt="" width={12} height={12} className="h-3 w-3 shrink-0 object-contain" />
                             <span>{sol(t.solAmount)}</span>
@@ -634,7 +639,7 @@ export function ActivityPanel({ mint, live, frame, className }: { mint: string |
                         </div>
                         <div className="relative flex w-[40%] items-center justify-start overflow-hidden whitespace-nowrap p-1 leading-none">
                           <div className="flex min-w-0 items-center gap-1 overflow-hidden text-[13px] font-medium leading-6 text-text-300" title={t.wallet}>
-                            <span className="max-w-[120px] truncate font-medium text-text-200">{t.wallet.slice(-4)}</span>
+                            <span className={cx("max-w-[120px] truncate font-medium", own ? "rounded bg-white/[0.06] px-1 text-text-100" : "text-text-200")}>{own ? "you" : t.wallet.slice(-4)}</span>
                           </div>
                         </div>
                         <div className="relative flex w-[15%] items-center justify-end overflow-hidden whitespace-nowrap p-1 leading-none">

@@ -13,6 +13,7 @@ import { TxLink, useExplorerSuffix } from "@/components/bx/Job";
 import { pushRecent } from "@/components/bx/recent";
 import { CandleChart } from "@/components/trade/Chart";
 import { InstantTrade, InstantTradeButton, TradePanel } from "@/components/trade/TradePanel";
+import { tradeRowStyle } from "@/components/trade/tradeRowStyle";
 
 const TF: CandleTf[] = CANDLE_TFS;
 
@@ -360,11 +361,12 @@ function TradesList({ mint, mine, supply, solUsd }: { mint: string; mine: Set<st
           {rows.map((tr) => {
             const mcSol = Number(tr.priceSol) * supply;
             const own = mine.has(tr.wallet);
+            const st = tradeRowStyle(tr.side, own);
             return (
               <div key={tr.signature} className="relative py-px">
-                <div className="relative flex h-[30px] cursor-pointer flex-row bg-bg-100 px-2 hover:bg-hover-100" style={{ backgroundImage: `linear-gradient(to right, color-mix(in srgb, var(--${tr.side === "buy" ? "increase" : "decrease"}) ${Math.min(20, Math.round(Number(tr.solAmount) * 20))}%, transparent) 0%, transparent 100%)` }}>
+                <div className={cx("relative flex h-[30px] cursor-pointer flex-row px-2 hover:brightness-125", st.row)}>
                   <div className="relative flex w-[22.5%] items-center justify-start overflow-hidden whitespace-nowrap p-1 leading-none">
-                    <div className={cx("flex items-center gap-0.5 text-[13px] font-normal leading-4", tr.side === "buy" ? "text-increase" : "text-decrease")}>
+                    <div className={cx("flex items-center gap-0.5 text-[13px] font-normal leading-4", st.amount)}>
                       {/* eslint-disable-next-line @next/next/no-img-element -- static asset */}
                       <img src="/solana.svg" alt="" width={12} height={12} className="h-3 w-3 shrink-0 object-contain" />
                       <span>{sol(tr.solAmount)}</span>
@@ -375,7 +377,7 @@ function TradesList({ mint, mine, supply, solUsd }: { mint: string; mine: Set<st
                   </div>
                   <div className="relative flex w-[40%] items-center justify-start overflow-hidden whitespace-nowrap p-1 leading-none">
                     <div className="flex min-w-0 cursor-pointer items-center gap-1 overflow-hidden text-[13px] font-medium leading-6 text-text-300" title={tr.wallet}>
-                      <span className={cx("max-w-[120px] truncate font-medium", own ? "rounded bg-accent-muted px-1 text-accent" : "text-text-200")}>{own ? "you" : tr.wallet.slice(-4)}</span>
+                      <span className={cx("max-w-[120px] truncate font-medium", own ? "rounded bg-white/[0.06] px-1 text-text-100" : "text-text-200")}>{own ? "you" : tr.wallet.slice(-4)}</span>
                     </div>
                   </div>
                   <div className="relative flex w-[15%] items-center justify-end gap-1 overflow-hidden whitespace-nowrap p-1 leading-none">
