@@ -1,4 +1,4 @@
-# TRENCH — rapport de build (2026-10-04)
+# DONCHAIN (ex-TRENCH) — rapport de build (2026-10-04)
 
 Remake privé de Block X (blockx.gg) pour un dev Solana / pump.fun : même fonctionnement, DA façon Proxima avec icônes 3D.
 Local uniquement : `npm run dev` → http://localhost:3985 (ou `npx next dev -p 3986`). Rien n'est déployé, rien n'est poussé.
