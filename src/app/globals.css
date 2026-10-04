@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
-/* TRENCH — Proxima skin, Block X structure. Every color lives here. */
+/* TRENCH — Proxima skin, Block X structure. Every color lives here.
+   Readability pass (ui2): body 14px, labels 11px uppercase only, one spacing scale 4/8/12/16/24/32. */
 :root {
   --bg: #080a0c;
   --panel: #0e1116;
@@ -65,8 +66,8 @@
     background: var(--bg);
     color: var(--text);
     font-family: var(--font-sans);
-    font-size: 13px;
-    line-height: 1.45;
+    font-size: 14px;
+    line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
@@ -111,6 +112,9 @@
   ::-webkit-scrollbar-track {
     background: transparent;
   }
+  table {
+    border-collapse: collapse;
+  }
 }
 
 @layer components {
@@ -139,12 +143,19 @@
     mask-composite: exclude;
     pointer-events: none;
   }
+  /* 11px uppercase: the only text allowed under 13px */
   .label {
     font-size: 11px;
+    line-height: 16px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--text-3);
     font-weight: 500;
+  }
+  .hint {
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--text-3);
   }
   .mono {
     font-family: var(--font-mono);
@@ -168,18 +179,18 @@
     border-color: var(--line-hover);
   }
   .row {
-    min-height: 44px;
+    min-height: 48px;
   }
   .capsule {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    height: 20px;
-    padding: 0 7px;
+    height: 24px;
+    padding: 0 8px;
     border-radius: 6px;
     background: #ffffff08;
     border: 1px solid var(--line);
-    font-size: 11px;
+    font-size: 13px;
     color: var(--text-2);
     white-space: nowrap;
   }
@@ -188,8 +199,8 @@
     font-weight: 500;
   }
   .progress {
-    height: 4px;
-    border-radius: 4px;
+    height: 6px;
+    border-radius: 6px;
     background: #ffffff10;
     overflow: hidden;
   }
@@ -197,17 +208,18 @@
     display: block;
     height: 100%;
     background: var(--accent);
-    border-radius: 4px;
+    border-radius: 6px;
     transition: width 0.4s;
   }
   .input {
-    height: 36px;
+    height: 40px;
     width: 100%;
-    padding: 0 10px;
+    padding: 0 12px;
     border-radius: 8px;
     background: var(--bg);
     border: 1px solid var(--line);
     color: var(--text);
+    font-size: 14px;
     transition: border-color 0.15s;
   }
   .input:hover {
@@ -221,10 +233,42 @@
   .input::placeholder {
     color: var(--text-3);
   }
+  .input:disabled {
+    opacity: 0.5;
+  }
   textarea.input {
     height: auto;
-    padding: 8px 10px;
+    padding: 10px 12px;
     resize: vertical;
+  }
+  .table th {
+    font-size: 11px;
+    line-height: 16px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-3);
+    font-weight: 500;
+    text-align: left;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  .table td {
+    padding: 0 16px;
+    height: 48px;
+    border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+    vertical-align: middle;
+  }
+  .table tr:last-child td {
+    border-bottom: 0;
+  }
+  .table th.r,
+  .table td.r {
+    text-align: right;
+  }
+  .table td.r {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
   }
   .pulse {
     animation: pulse 1.6s ease-in-out infinite;

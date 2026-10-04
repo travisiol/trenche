@@ -19,7 +19,7 @@ export function usd(v: number | string | null | undefined, digits = 1): string {
   if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(digits)}B`;
   if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(digits)}M`;
   if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(digits)}K`;
-  return `${sign}$${abs.toFixed(abs < 1 ? 4 : 2)}`;
+  return `${sign}$${abs.toFixed(abs > 0 && abs < 1 ? 4 : 2)}`;
 }
 
 /** SOL with sensible precision: 0.0123 · 1.25 · 1,240 */

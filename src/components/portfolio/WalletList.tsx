@@ -4,7 +4,8 @@ import type { WalletGroup, WalletInfo } from "@/lib/types";
 import { short, sol } from "@/lib/format";
 import { post, failureMessage } from "@/lib/api";
 import { walletsRes } from "@/lib/store";
-import { Button, Copy, cx, toast } from "../ui";
+import { Copy, cx, toast } from "../ui";
+import { Icon } from "../icons";
 
 type Props = {
   wallets: WalletInfo[];
@@ -25,6 +26,7 @@ async function update(body: Record<string, unknown>) {
   }
 }
 
+/** 48px row: handle · label (click to rename) + short address with copy · group chip · active badge · balance · menu */
 export function WalletRow({ w, active, balance, selected, onSelect, canSign, groups }: { w: WalletInfo; active: boolean; balance: string | null; selected: boolean; onSelect: (multi: boolean) => void; canSign: boolean; groups: WalletGroup[] }) {
   const [editing, setEditing] = useState(false);
   const [label, setLabel] = useState(w.label);
@@ -32,53 +34,59 @@ export function WalletRow({ w, active, balance, selected, onSelect, canSign, gro
     setEditing(false);
     if (label.trim() !== w.label) update({ address: w.address, label: label.trim() });
   };
+  const groupName = w.group ? (groups.find((g) => g.id === w.group)?.name ?? w.group) : null;
   return (
     <div
-      className={cx("row flex items-center gap-2.5 px-3 rounded-lg border transition-colors cursor-pointer select-none", selected ? "bg-accent-soft border-accent/40" : "bg-card border-line hover:border-line-hover")}
+      className={cx("flex items-center gap-3 h-12 px-3 rounded-lg border transition-colors cursor-pointer select-none", selected ? "bg-accent-soft border-accent/40" : "bg-card border-line hover:border-line-hover")}
       onClick={(e) => onSelect(e.ctrlKey || e.metaKey || e.shiftKey)}
+      aria-selected={selected}
     >
-      <span className="text-text-3 cursor-grab" title="Drag to reorder" aria-hidden>
+      <span className="text-text-3 cursor-grab shrink-0" title="Drag to reorder" aria-hidden>
         <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor"><circle cx="2.5" cy="2" r="1.3" /><circle cx="7.5" cy="2" r="1.3" /><circle cx="2.5" cy="7" r="1.3" /><circle cx="7.5" cy="7" r="1.3" /><circle cx="2.5" cy="12" r="1.3" /><circle cx="7.5" cy="12" r="1.3" /></svg>
       </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          {editing ? (
-            <input
-              autoFocus
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              onBlur={commit}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") commit();
-                if (e.key === "Escape") {
-                  setLabel(w.label);
-                  setEditing(false);
-                }
-              }}
-              onClick={(e) => e.stopPropagation()}
-              className="input h-6 px-1.5 text-xs w-36"
-            />
-          ) : (
-            <button
-              className="text-xs font-medium truncate hover:text-accent text-left"
-              title="Rename"
-              onClick={(e) => {
-                e.stopPropagation();
-                setEditing(true);
-              }}
-            >
-              {w.label || short(w.address)}
-            </button>
-          )}
-          {active ? <span className="text-[10px] font-semibold px-1.5 h-4 rounded bg-accent text-white uppercase tracking-wide">Active</span> : null}
-          {w.group ? <span className="text-[10px] px-1.5 h-4 rounded border border-line text-text-3 truncate max-w-[10ch]">{groups.find((g) => g.id === w.group)?.name ?? w.group}</span> : null}
-        </div>
-        <Copy text={w.address} className="text-[11px] text-text-3">
-          {short(w.address, 5, 5)}
+      <div className="min-w-0 flex-1 flex items-center gap-2">
+        {editing ? (
+          <input
+            autoFocus
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commit();
+              if (e.key === "Escape") {
+                setLabel(w.label);
+                setEditing(false);
+              }
+            }}
+            onClick={(e) => e.stopPropagation()}
+            className="input h-8 px-2 text-sm w-36"
+            aria-label="Wallet name"
+          />
+        ) : (
+          <button
+            className="text-sm font-medium truncate hover:text-accent text-left shrink min-w-0"
+            title="Click to rename"
+            onClick={(e) => {
+              e.stopPropagation();
+              setEditing(true);
+            }}
+          >
+            {w.label || short(w.address)}
+          </button>
+        )}
+        <Copy text={w.address} className="text-[13px] text-text-3 shrink-0">
+          {short(w.address, 4, 4)}
         </Copy>
+        {active ? <span className="text-[11px] leading-4 font-semibold px-1.5 py-0.5 rounded bg-accent text-white uppercase tracking-wide shrink-0">Active</span> : null}
+        {groupName ? (
+          <span className="hidden sm:inline-flex items-center gap-1 text-[13px] px-2 h-6 rounded-md border border-line text-text-2 truncate max-w-[12ch] shrink-0" title={`Group: ${groupName}`}>
+            <Icon name="tag" size={12} className="text-text-3" />
+            {groupName}
+          </span>
+        ) : null}
       </div>
-      <div className="text-right">
-        <div className="mono text-xs">{sol(balance ?? w.sol)} <span className="text-text-3">SOL</span></div>
+      <div className="text-right shrink-0 mono text-sm">
+        {sol(balance ?? w.sol)} <span className="text-text-3">SOL</span>
       </div>
       <RowMenu w={w} active={active} canSign={canSign} groups={groups} />
     </div>
@@ -89,27 +97,35 @@ function RowMenu({ w, active, canSign, groups }: { w: WalletInfo; active: boolea
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   return (
-    <div ref={ref} className="relative" onClick={(e) => e.stopPropagation()}>
-      <button aria-label="Wallet actions" onClick={() => setOpen((o) => !o)} className="w-7 h-7 rounded-md text-text-3 hover:text-text hover:bg-white/5 flex items-center justify-center">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="19" cy="12" r="2" /></svg>
+    <div ref={ref} className="relative shrink-0" onClick={(e) => e.stopPropagation()}>
+      <button aria-label="Wallet actions" onClick={() => setOpen((o) => !o)} className="w-8 h-8 rounded-md text-text-3 hover:text-text hover:bg-white/5 flex items-center justify-center">
+        <Icon name="more" size={16} />
       </button>
       {open ? (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-8 z-20 w-44 panel p-1 shadow-xl fade-in">
+          <div className="absolute right-0 top-9 z-20 w-52 panel p-1.5 shadow-2xl fade-in">
             {!active ? (
-              <MenuItem onClick={() => post("/api/wallets/active", { address: w.address }).then(() => walletsRes.refresh()).catch((e) => toast(failureMessage(e), "err"))}>Set active</MenuItem>
+              <MenuItem icon="check" onClick={() => post("/api/wallets/active", { address: w.address }).then(() => walletsRes.refresh()).catch((e) => toast(failureMessage(e), "err"))}>
+                Set as active wallet
+              </MenuItem>
             ) : null}
-            <div className="px-2 pt-1.5 pb-0.5 label">Group</div>
-            <MenuItem onClick={() => update({ address: w.address, group: null })} muted={!w.group}>No group</MenuItem>
+            <div className="px-2 pt-2 pb-1 label">Group</div>
+            <MenuItem onClick={() => update({ address: w.address, group: null })} muted={!w.group}>
+              No group
+            </MenuItem>
             {groups.map((g) => (
-              <MenuItem key={g.id} onClick={() => update({ address: w.address, group: g.id })} muted={w.group === g.id}>
+              <MenuItem key={g.id} icon={w.group === g.id ? "check" : undefined} onClick={() => update({ address: w.address, group: g.id })} muted={w.group === g.id}>
                 {g.name}
               </MenuItem>
             ))}
+            {!groups.length ? <p className="hint px-2 pb-1">No group yet — create one above.</p> : null}
             <div className="h-px bg-line my-1" />
-            <MenuItem onClick={() => update({ address: w.address, archived: !w.archived })}>{w.archived ? "Unarchive" : "Archive"}</MenuItem>
+            <MenuItem icon="archive" onClick={() => update({ address: w.address, archived: !w.archived })}>
+              {w.archived ? "Unarchive" : "Archive"}
+            </MenuItem>
             <MenuItem
+              icon="trash"
               danger
               disabled={!canSign}
               onClick={() => {
@@ -117,7 +133,7 @@ function RowMenu({ w, active, canSign, groups }: { w: WalletInfo; active: boolea
                   post("/api/wallets/remove", { addresses: [w.address] }).then(() => walletsRes.refresh()).catch((e) => toast(failureMessage(e), "err"));
               }}
             >
-              Remove
+              Remove from vault
             </MenuItem>
           </div>
         </>
@@ -126,9 +142,10 @@ function RowMenu({ w, active, canSign, groups }: { w: WalletInfo; active: boolea
   );
 }
 
-function MenuItem({ children, onClick, danger, muted, disabled }: { children: React.ReactNode; onClick: () => void; danger?: boolean; muted?: boolean; disabled?: boolean }) {
+function MenuItem({ children, onClick, danger, muted, disabled, icon }: { children: React.ReactNode; onClick: () => void; danger?: boolean; muted?: boolean; disabled?: boolean; icon?: "check" | "archive" | "trash" }) {
   return (
-    <button disabled={disabled} onClick={onClick} className={cx("w-full text-left text-xs px-2 h-7 rounded-md hover:bg-white/5 disabled:opacity-40", danger ? "text-down" : muted ? "text-text-3" : "text-text-2 hover:text-text")}>
+    <button disabled={disabled} onClick={onClick} className={cx("w-full text-left text-sm px-2 h-9 rounded-md hover:bg-white/5 disabled:opacity-40 flex items-center gap-2", danger ? "text-down" : muted ? "text-text-3" : "text-text-2 hover:text-text")}>
+      {icon ? <Icon name={icon} size={14} /> : <span className="w-3.5" />}
       {children}
     </button>
   );
@@ -161,7 +178,7 @@ export function WalletList({ wallets, groups, active, balances, selected, onSele
   };
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-2">
       {sorted.map((w, i) => (
         <div
           key={w.address}
@@ -192,12 +209,15 @@ export function WalletList({ wallets, groups, active, balances, selected, onSele
 
 export function GroupChip({ g, count, onRemove }: { g: WalletGroup; count: number; onRemove: () => void }) {
   return (
-    <div className="flex items-center gap-2 h-9 px-3 rounded-lg bg-card border border-line">
-      <span className="text-xs font-medium">{g.name}</span>
-      <span className="mono text-[11px] text-text-3">{count}</span>
-      <Button size="xs" variant="ghost" className="ml-auto text-text-3" onClick={onRemove} title="Delete group">
-        ×
-      </Button>
+    <div className="inline-flex items-center gap-2 h-9 pl-3 pr-1 rounded-lg bg-card border border-line text-sm">
+      <Icon name="tag" size={13} className="text-text-3" />
+      <span className="font-medium">{g.name}</span>
+      <span className="mono text-[13px] text-text-3">
+        {count} wallet{count !== 1 ? "s" : ""}
+      </span>
+      <button className="w-7 h-7 rounded-md text-text-3 hover:text-down hover:bg-white/5 flex items-center justify-center" onClick={onRemove} title="Delete group (wallets stay)" aria-label={`Delete group ${g.name}`}>
+        <Icon name="x" size={13} />
+      </button>
     </div>
   );
 }

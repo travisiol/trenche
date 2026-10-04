@@ -5,12 +5,15 @@ import type { WalletInfo, WalletsExportResponse, JobCreated } from "@/lib/types"
 import { post, failureMessage } from "@/lib/api";
 import { refreshVaultDependents, walletsRes } from "@/lib/store";
 import { short, sol } from "@/lib/format";
-import { Button, Copy, Field, InlineError, Input, Modal, Select, Textarea, toast, cx } from "../ui";
+import { Button, Copy, CostLine, Field, InlineError, Input, Modal, Note, Select, Textarea, toast, cx } from "../ui";
 import { JobProgress } from "../JobProgress";
 
-export type ModalKind = "create" | "import" | "export" | "deposit" | "withdraw" | "disperse" | "consolidate" | "transfer" | "group" | null;
+export type ModalKind = "create" | "import" | "export" | "deposit" | "withdraw" | "disperse" | "consolidate" | "transfer" | "group" | "airdrop" | null;
 
 type Base = { open: boolean; onClose: () => void; wallets: WalletInfo[]; selected: string[]; active: string | null; balances: Record<string, string | null> | null };
+
+/** Base fee of one simple SOL transfer (5 000 lamports) — the server re-checks the real amount. */
+const TX_FEE = 0.000005;
 
 function WalletSelect({ value, onChange, wallets, balances, placeholder = "Choose a wallet" }: { value: string; onChange: (v: string) => void; wallets: WalletInfo[]; balances: Base["balances"]; placeholder?: string }) {
   return (
@@ -28,23 +31,24 @@ function WalletSelect({ value, onChange, wallets, balances, placeholder = "Choos
 function MultiPick({ wallets, value, onChange, balances }: { wallets: WalletInfo[]; value: string[]; onChange: (v: string[]) => void; balances: Base["balances"] }) {
   const toggle = (a: string) => onChange(value.includes(a) ? value.filter((x) => x !== a) : [...value, a]);
   return (
-    <div className="flex flex-col gap-1 max-h-48 overflow-y-auto rounded-lg border border-line p-1 bg-bg">
-      <div className="flex gap-2 px-1 py-1 text-[11px]">
-        <button type="button" className="text-accent" onClick={() => onChange(wallets.map((w) => w.address))}>
-          All
+    <div className="flex flex-col gap-1 max-h-56 overflow-y-auto rounded-lg border border-line p-1.5 bg-bg">
+      <div className="flex gap-3 px-1.5 py-1 text-[13px]">
+        <button type="button" className="text-accent hover:underline" onClick={() => onChange(wallets.map((w) => w.address))}>
+          Select all
         </button>
-        <button type="button" className="text-text-3" onClick={() => onChange([])}>
+        <button type="button" className="text-text-3 hover:underline" onClick={() => onChange([])}>
           None
         </button>
         <span className="ml-auto text-text-3 mono">{value.length} selected</span>
       </div>
       {wallets.map((w) => (
-        <label key={w.address} className={cx("flex items-center gap-2 h-8 px-2 rounded-md cursor-pointer text-xs", value.includes(w.address) ? "bg-accent-soft" : "hover:bg-white/5")}>
-          <input type="checkbox" checked={value.includes(w.address)} onChange={() => toggle(w.address)} className="accent-accent" />
+        <label key={w.address} className={cx("flex items-center gap-2.5 h-9 px-2 rounded-md cursor-pointer text-sm", value.includes(w.address) ? "bg-accent-soft" : "hover:bg-white/5")}>
+          <input type="checkbox" checked={value.includes(w.address)} onChange={() => toggle(w.address)} className="accent-accent w-4 h-4" />
           <span className="truncate">{w.label || short(w.address)}</span>
-          <span className="ml-auto mono text-text-3">{sol(balances?.[w.address] ?? w.sol)}</span>
+          <span className="ml-auto mono text-text-3 text-[13px]">{sol(balances?.[w.address] ?? w.sol)} SOL</span>
         </label>
       ))}
+      {!wallets.length ? <p className="hint p-2">No other wallet.</p> : null}
     </div>
   );
 }
@@ -66,16 +70,28 @@ function useSubmit() {
   return { busy, err, run, setErr };
 }
 
+function Footer({ onClose, closeLabel = "Cancel", children }: { onClose: () => void; closeLabel?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex justify-end gap-2 pt-1">
+      <Button variant="ghost" onClick={onClose}>
+        {closeLabel}
+      </Button>
+      {children}
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------- Create */
 export function CreateModal({ open, onClose, groups }: { open: boolean; onClose: () => void; groups: { id: string; name: string }[] }) {
   const [count, setCount] = useState("5");
   const [label, setLabel] = useState("");
   const [group, setGroup] = useState("");
   const s = useSubmit();
+  const n = Math.max(1, Math.min(100, Number(count) || 0));
   return (
-    <Modal open={open} onClose={onClose} title="Create wallets" width={420}>
-      <Field label="How many" hint="Keypairs are generated and encrypted into the vault. Labels get a number suffix.">
-        <Input type="number" min={1} max={100} value={count} onChange={(e) => setCount(e.target.value)} mono />
+    <Modal open={open} onClose={onClose} title="Create wallets" description="Fresh keypairs, generated here and encrypted into your vault." width={440}>
+      <Field label="How many" hint="1 to 100. Labels get a number suffix: Bundle-1, Bundle-2…">
+        <Input type="number" min={1} max={100} value={count} onChange={(e) => setCount(e.target.value)} mono suffix="wallets" />
       </Field>
       <Field label="Label prefix (optional)">
         <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Bundle" />
@@ -91,25 +107,24 @@ export function CreateModal({ open, onClose, groups }: { open: boolean; onClose:
         </Select>
       </Field>
       <InlineError>{s.err}</InlineError>
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" onClick={onClose}>
-          Cancel
-        </Button>
+      <Footer onClose={onClose}>
         <Button
           variant="primary"
+          icon="plus"
           busy={s.busy}
+          disabled={!n}
           onClick={() =>
             s.run(async () => {
-              await post("/api/wallets/generate", { count: Number(count), label: label || undefined, group: group || undefined });
+              await post("/api/wallets/generate", { count: n, label: label || undefined, group: group || undefined });
               refreshVaultDependents();
-              toast(`${count} wallet(s) created`, "ok");
+              toast(`${n} wallet${n > 1 ? "s" : ""} created`, "ok");
               onClose();
             })
           }
         >
-          Create {count} wallet{Number(count) > 1 ? "s" : ""}
+          Create {n} wallet{n > 1 ? "s" : ""}
         </Button>
-      </div>
+      </Footer>
     </Modal>
   );
 }
@@ -120,17 +135,15 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
   const s = useSubmit();
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   return (
-    <Modal open={open} onClose={onClose} title="Import wallets" width={520}>
-      <Field label="Private keys" hint="One per line: base58 secret or JSON byte array. Optional label before a comma: `Dev, 5Kx…`. Keys are encrypted into the vault and never leave this machine.">
-        <Textarea rows={7} value={text} onChange={(e) => setText(e.target.value)} className="mono text-xs" placeholder={"Dev, 4NxQ…\n[12,34,…]"} spellCheck={false} />
+    <Modal open={open} onClose={onClose} title="Import wallets" description="Paste private keys; they are encrypted into the vault and never leave this machine." width={540}>
+      <Field label="Private keys" hint="One per line: a base58 secret or a JSON byte array. Optional label before a comma, e.g. “Dev, 5Kx…”.">
+        <Textarea rows={7} value={text} onChange={(e) => setText(e.target.value)} className="mono text-[13px]" placeholder={"Dev, 4NxQ…\n[12,34,…]"} spellCheck={false} />
       </Field>
       <InlineError>{s.err}</InlineError>
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" onClick={onClose}>
-          Cancel
-        </Button>
+      <Footer onClose={onClose}>
         <Button
           variant="primary"
+          icon="import"
           busy={s.busy}
           disabled={!lines.length}
           onClick={() =>
@@ -145,9 +158,9 @@ export function ImportModal({ open, onClose }: { open: boolean; onClose: () => v
             })
           }
         >
-          Import {lines.length || ""}
+          Import {lines.length || ""} key{lines.length !== 1 ? "s" : ""}
         </Button>
-      </div>
+      </Footer>
     </Modal>
   );
 }
@@ -158,46 +171,44 @@ export function ExportModal({ open, onClose, wallets, selected, active }: Base) 
   const [keys, setKeys] = useState<WalletsExportResponse["keys"] | null>(null);
   const s = useSubmit();
   const targets = selected.length ? selected : active ? [active] : [];
+  const names = targets.map((a) => wallets.find((w) => w.address === a)?.label || short(a));
   const close = () => {
     setKeys(null);
     setPass("");
     onClose();
   };
   return (
-    <Modal open={open} onClose={close} title={`Export ${targets.length} key${targets.length > 1 ? "s" : ""}`} width={520}>
+    <Modal open={open} onClose={close} title={`Export ${targets.length} private key${targets.length > 1 ? "s" : ""}`} description={targets.length ? `Keys of ${names.join(", ")} will be shown in clear.` : "Select wallets in the list first; without a selection the active wallet is exported."} width={540}>
       {!keys ? (
         <>
-          <p className="text-xs text-text-2">
-            Private keys of {targets.length ? targets.map((a) => wallets.find((w) => w.address === a)?.label || short(a)).join(", ") : "— select wallets first"} will be shown in clear. Re-enter the passphrase to confirm.
-          </p>
-          <Field label="Passphrase">
+          <Field label="Passphrase" hint="Re-enter your vault passphrase to confirm.">
             <Input type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="current-password" />
           </Field>
           <InlineError>{s.err}</InlineError>
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={close}>
-              Cancel
-            </Button>
-            <Button variant="danger" busy={s.busy} disabled={!pass || !targets.length} onClick={() => s.run(async () => setKeys((await post<WalletsExportResponse>("/api/wallets/export", { addresses: targets, passphrase: pass })).keys))}>
+          <Footer onClose={close}>
+            <Button variant="danger" icon="eye" busy={s.busy} disabled={!pass || !targets.length} onClick={() => s.run(async () => setKeys((await post<WalletsExportResponse>("/api/wallets/export", { addresses: targets, passphrase: pass })).keys))}>
               Reveal keys
             </Button>
-          </div>
+          </Footer>
         </>
       ) : (
         <>
+          <Note tone="warn">Anyone with these keys controls the wallets. Store them somewhere encrypted.</Note>
           <div className="flex flex-col gap-2">
             {keys.map((k) => (
               <div key={k.address} className="card p-3">
-                <div className="flex items-center justify-between text-xs">
+                <div className="flex items-center justify-between text-sm">
                   <span className="font-medium">{k.label || short(k.address)}</span>
-                  <Copy text={k.secret}>copy key</Copy>
+                  <Copy text={k.secret} className="text-[13px]">
+                    Copy key
+                  </Copy>
                 </div>
-                <div className="mono text-[11px] text-text-2 break-all mt-1 select-all">{k.secret}</div>
+                <div className="mono text-[13px] text-text-2 break-all mt-1 select-all">{k.secret}</div>
               </div>
             ))}
           </div>
-          <div className="flex justify-end gap-2">
-            <Copy text={keys.map((k) => `${k.label}, ${k.secret}`).join("\n")} className="text-xs">
+          <div className="flex justify-end gap-3 items-center">
+            <Copy text={keys.map((k) => `${k.label}, ${k.secret}`).join("\n")} className="text-sm">
               Copy all
             </Copy>
             <Button variant="primary" onClick={close}>
@@ -224,7 +235,7 @@ export function DepositModal({ open, onClose, wallets, selected, active, balance
     };
   }, [open, target]);
   return (
-    <Modal open={open} onClose={onClose} title="Deposit SOL" width={400}>
+    <Modal open={open} onClose={onClose} title="Deposit SOL" description="Send SOL from any wallet or exchange to this address. Solana mainnet only." width={420}>
       <Field label="Wallet">
         <WalletSelect value={target} onChange={setAddr} wallets={wallets} balances={balances} />
       </Field>
@@ -234,12 +245,15 @@ export function DepositModal({ open, onClose, wallets, selected, active, balance
             // eslint-disable-next-line @next/next/no-img-element -- data URL generated client-side
             <img src={qr} alt="Deposit address QR" width={220} height={220} className="rounded-lg border border-line" />
           ) : null}
-          <Copy text={target} className="text-xs break-all text-center">
+          <Copy text={target} className="text-sm break-all text-center justify-center">
             {target}
           </Copy>
-          <p className="text-[11px] text-text-3 text-center">Solana mainnet. Balance refreshes every 5 s.</p>
+          <p className="hint text-center">The balance refreshes every 5 seconds.</p>
         </div>
       ) : null}
+      <Footer onClose={onClose} closeLabel="Close">
+        <span />
+      </Footer>
     </Modal>
   );
 }
@@ -253,8 +267,16 @@ export function SendModal({ open, onClose, wallets, selected, active, balances, 
   const s = useSubmit();
   const f = from || selected[0] || active || "";
   const bal = Number(balances?.[f] ?? wallets.find((w) => w.address === f)?.sol ?? 0);
+  const amt = Number(amount) || 0;
+  const short_ = amt + TX_FEE > bal;
   return (
-    <Modal open={open} onClose={onClose} title={kind === "withdraw" ? "Withdraw SOL" : "Transfer between wallets"} width={440}>
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={kind === "withdraw" ? "Withdraw SOL" : "Transfer between wallets"}
+      description={kind === "withdraw" ? "Send SOL from one of your wallets to any Solana address." : "Move SOL from one vault wallet to another."}
+      width={460}
+    >
       <Field label="From">
         <WalletSelect value={f} onChange={setFrom} wallets={wallets} balances={balances} />
       </Field>
@@ -264,23 +286,30 @@ export function SendModal({ open, onClose, wallets, selected, active, balances, 
       <Field
         label="Amount"
         right={
-          <button type="button" className="text-[11px] text-accent" onClick={() => setAmount(Math.max(0, bal - 0.001).toFixed(4))}>
-            Max {sol(bal)}
+          <button type="button" className="text-[13px] text-accent hover:underline" onClick={() => setAmount(Math.max(0, bal - 0.001).toFixed(4))}>
+            Max {sol(bal)} SOL
           </button>
         }
       >
         <Input type="number" step="0.001" min={0} value={amount} onChange={(e) => setAmount(e.target.value)} suffix="SOL" mono />
       </Field>
+      <CostLine
+        rows={[
+          { label: "Amount", value: `${sol(amt)} SOL` },
+          { label: "Network fee", value: `~${TX_FEE} SOL` },
+          { label: "Available", value: `${sol(bal)} SOL`, tone: short_ && amt > 0 ? "down" : undefined },
+        ]}
+        total={{ value: `${sol(amt + TX_FEE)} SOL`, tone: short_ && amt > 0 ? "down" : undefined }}
+        note={short_ && amt > 0 ? "More than the wallet holds. Nothing will be sent." : undefined}
+      />
       <InlineError>{s.err}</InlineError>
       {jobId ? <JobProgress jobId={jobId} /> : null}
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" onClick={onClose}>
-          Close
-        </Button>
+      <Footer onClose={onClose} closeLabel={jobId ? "Close" : "Cancel"}>
         <Button
           variant="primary"
+          icon={kind === "withdraw" ? "withdraw" : "transfer"}
           busy={s.busy}
-          disabled={!f || !to || !(Number(amount) > 0)}
+          disabled={!f || !to || !(amt > 0)}
           onClick={() =>
             s.run(async () => {
               const r = await post<JobCreated>(`/api/fund/${kind}`, { from: f, to, sol: amount });
@@ -291,7 +320,7 @@ export function SendModal({ open, onClose, wallets, selected, active, balances, 
         >
           Send {amount || ""} SOL
         </Button>
-      </div>
+      </Footer>
     </Modal>
   );
 }
@@ -307,9 +336,13 @@ export function DisperseModal({ open, onClose, wallets, selected, active, balanc
   const [jobId, setJobId] = useState<string | null>(null);
   const s = useSubmit();
   const f = from || active || "";
-  const est = to.length * ((Number(minSol) + Number(maxSol)) / 2);
+  const bal = Number(balances?.[f] ?? wallets.find((w) => w.address === f)?.sol ?? 0);
+  const avg = to.length * ((Number(minSol) + Number(maxSol)) / 2);
+  const max = to.length * Number(maxSol);
+  const fees = to.length * TX_FEE;
+  const short_ = max + fees > bal;
   return (
-    <Modal open={open} onClose={onClose} title="Disperse SOL" width={520}>
+    <Modal open={open} onClose={onClose} title="Disperse SOL" description="One wallet sends a random amount to each selected wallet, one transfer at a time." width={540}>
       <Field label="From">
         <WalletSelect value={f} onChange={setFrom} wallets={wallets} balances={balances} />
       </Field>
@@ -317,32 +350,36 @@ export function DisperseModal({ open, onClose, wallets, selected, active, balanc
         <MultiPick wallets={wallets.filter((w) => w.address !== f)} value={to} onChange={setTo} balances={balances} />
       </Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Min SOL each">
+        <Field label="Min per wallet">
           <Input type="number" step="0.01" value={minSol} onChange={(e) => setMin(e.target.value)} mono suffix="SOL" />
         </Field>
-        <Field label="Max SOL each">
+        <Field label="Max per wallet">
           <Input type="number" step="0.01" value={maxSol} onChange={(e) => setMax(e.target.value)} mono suffix="SOL" />
         </Field>
-        <Field label="Min delay">
+        <Field label="Min delay between sends">
           <Input type="number" value={minDelay} onChange={(e) => setMinD(e.target.value)} mono suffix="ms" />
         </Field>
-        <Field label="Max delay">
+        <Field label="Max delay between sends">
           <Input type="number" value={maxDelay} onChange={(e) => setMaxD(e.target.value)} mono suffix="ms" />
         </Field>
       </div>
-      <p className="text-[11px] text-text-3">
-        About <span className="mono text-text-2">{sol(est)} SOL</span> will leave {f ? wallets.find((w) => w.address === f)?.label || short(f) : "the source"} across {to.length} sends. Each amount is random between min and max.
-      </p>
+      <CostLine
+        rows={[
+          { label: `${to.length} send${to.length !== 1 ? "s" : ""} · average`, value: `${sol(avg)} SOL` },
+          { label: "Worst case (all at max)", value: `${sol(max)} SOL` },
+          { label: "Network fees", value: `~${sol(fees, 6)} SOL` },
+          { label: "Available", value: `${sol(bal)} SOL`, tone: short_ && to.length ? "down" : undefined },
+        ]}
+        total={{ label: "Needed at most", value: `${sol(max + fees)} SOL`, tone: short_ && to.length ? "down" : undefined }}
+        note={short_ && to.length ? "The source may run short before the last send; the server stops at the first failure." : undefined}
+      />
       <InlineError>{s.err}</InlineError>
       {jobId ? <JobProgress jobId={jobId} /> : null}
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" onClick={onClose}>
-          Close
+      <Footer onClose={onClose} closeLabel={jobId ? "Close" : "Cancel"}>
+        <Button variant="primary" icon="disperse" busy={s.busy} disabled={!f || !to.length} onClick={() => s.run(async () => setJobId((await post<JobCreated>("/api/fund/disperse", { from: f, to, minSol, maxSol, minDelay: Number(minDelay), maxDelay: Number(maxDelay) })).jobId))}>
+          Disperse to {to.length} wallet{to.length !== 1 ? "s" : ""}
         </Button>
-        <Button variant="primary" busy={s.busy} disabled={!f || !to.length} onClick={() => s.run(async () => setJobId((await post<JobCreated>("/api/fund/disperse", { from: f, to, minSol, maxSol, minDelay: Number(minDelay), maxDelay: Number(maxDelay) })).jobId))}>
-          Disperse to {to.length}
-        </Button>
-      </div>
+      </Footer>
     </Modal>
   );
 }
@@ -356,26 +393,27 @@ export function ConsolidateModal({ open, onClose, wallets, selected, active, bal
   const t = to || active || "";
   const total = from.reduce((n, a) => n + Number(balances?.[a] ?? wallets.find((w) => w.address === a)?.sol ?? 0), 0);
   return (
-    <Modal open={open} onClose={onClose} title="Consolidate SOL" width={520}>
-      <Field label="From wallets (swept to the last lamport minus fee)">
+    <Modal open={open} onClose={onClose} title="Consolidate SOL" description="Sweeps every selected wallet down to zero (minus the network fee) into one wallet." width={540}>
+      <Field label="From wallets">
         <MultiPick wallets={wallets.filter((w) => w.address !== t)} value={from} onChange={setFrom} balances={balances} />
       </Field>
       <Field label="To">
         <WalletSelect value={t} onChange={setTo} wallets={wallets} balances={balances} />
       </Field>
-      <p className="text-[11px] text-text-3">
-        About <span className="mono text-text-2">{sol(total)} SOL</span> from {from.length} wallet{from.length > 1 ? "s" : ""}.
-      </p>
+      <CostLine
+        rows={[
+          { label: `Held by ${from.length} wallet${from.length !== 1 ? "s" : ""}`, value: `${sol(total)} SOL` },
+          { label: "Network fees", value: `~${sol(from.length * TX_FEE, 6)} SOL` },
+        ]}
+        total={{ label: "Arrives", value: `≈ ${sol(Math.max(0, total - from.length * TX_FEE))} SOL` }}
+      />
       <InlineError>{s.err}</InlineError>
       {jobId ? <JobProgress jobId={jobId} /> : null}
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" onClick={onClose}>
-          Close
+      <Footer onClose={onClose} closeLabel={jobId ? "Close" : "Cancel"}>
+        <Button variant="primary" icon="consolidate" busy={s.busy} disabled={!t || !from.length} onClick={() => s.run(async () => setJobId((await post<JobCreated>("/api/fund/consolidate", { from, to: t })).jobId))}>
+          Sweep {from.length} wallet{from.length !== 1 ? "s" : ""}
         </Button>
-        <Button variant="primary" busy={s.busy} disabled={!t || !from.length} onClick={() => s.run(async () => setJobId((await post<JobCreated>("/api/fund/consolidate", { from, to: t })).jobId))}>
-          Sweep {from.length} wallet{from.length > 1 ? "s" : ""}
-        </Button>
-      </div>
+      </Footer>
     </Modal>
   );
 }
@@ -385,17 +423,15 @@ export function GroupModal({ open, onClose }: { open: boolean; onClose: () => vo
   const [name, setName] = useState("");
   const s = useSubmit();
   return (
-    <Modal open={open} onClose={onClose} title="New group" width={380}>
-      <Field label="Name" hint="Groups are selectable as buyers, snipers or volume wallets on the Launch page.">
+    <Modal open={open} onClose={onClose} title="New group" description="A named set of wallets you can pick in one click as buyers, snipers or volume wallets." width={400}>
+      <Field label="Name">
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Bundle A" />
       </Field>
       <InlineError>{s.err}</InlineError>
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" onClick={onClose}>
-          Cancel
-        </Button>
+      <Footer onClose={onClose}>
         <Button
           variant="primary"
+          icon="plus"
           busy={s.busy}
           disabled={!name.trim()}
           onClick={() =>
@@ -409,7 +445,44 @@ export function GroupModal({ open, onClose }: { open: boolean; onClose: () => vo
         >
           Create group
         </Button>
-      </div>
+      </Footer>
+    </Modal>
+  );
+}
+
+/* ---------------------------------------------------------------- Airdrop (devnet only) */
+export function AirdropModal({ open, onClose, wallets, selected, active, balances }: Base) {
+  const [addr, setAddr] = useState(selected[0] ?? active ?? "");
+  const [amount, setAmount] = useState("1");
+  const s = useSubmit();
+  const target = addr || selected[0] || active || "";
+  return (
+    <Modal open={open} onClose={onClose} title="Request a devnet airdrop" description="Free test SOL from the devnet faucet. Only available while the cluster is set to devnet in Settings." width={420}>
+      <Field label="Wallet">
+        <WalletSelect value={target} onChange={setAddr} wallets={wallets} balances={balances} />
+      </Field>
+      <Field label="Amount" hint="The faucet usually allows up to 2 SOL per request.">
+        <Input type="number" step="0.5" min={0} max={5} value={amount} onChange={(e) => setAmount(e.target.value)} mono suffix="SOL" />
+      </Field>
+      <InlineError>{s.err}</InlineError>
+      <Footer onClose={onClose}>
+        <Button
+          variant="primary"
+          icon="drop"
+          busy={s.busy}
+          disabled={!target || !(Number(amount) > 0)}
+          onClick={() =>
+            s.run(async () => {
+              await post("/api/dev/airdrop", { address: target, sol: amount });
+              refreshVaultDependents();
+              toast(`Airdrop of ${amount} SOL requested`, "ok");
+              onClose();
+            })
+          }
+        >
+          Request {amount} SOL
+        </Button>
+      </Footer>
     </Modal>
   );
 }
