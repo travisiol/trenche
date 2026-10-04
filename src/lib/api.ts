@@ -132,6 +132,22 @@ type Listener = () => void;
  * A polled external store (useSyncExternalStore-friendly, no setState in effects).
  * `useResource` subscribes; polling runs only while someone is subscribed.
  */
+/* Polling pauses while the tab is hidden (visibilitychange) and every paused resource refreshes once it is
+ * visible again: a background tab must not keep the RPC queue busy. */
+const pausedResources = new Set<() => void>();
+let visibilityHooked = false;
+const tabHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+function hookVisibility() {
+  if (visibilityHooked || typeof document === "undefined") return;
+  visibilityHooked = true;
+  document.addEventListener("visibilitychange", () => {
+    if (tabHidden()) return;
+    const wake = [...pausedResources];
+    pausedResources.clear();
+    wake.forEach((fn) => fn());
+  });
+}
+
 export function createResource<T>(path: string, intervalMs = 0) {
   let state: ResourceState<T> = { data: null, error: null, loading: true, at: 0 };
   const listeners = new Set<Listener>();
@@ -144,17 +160,25 @@ export function createResource<T>(path: string, intervalMs = 0) {
     state = { ...state, ...patch };
     emit();
   };
+  const schedule = () => {
+    if (!(intervalMs > 0) || !listeners.size) return;
+    if (timer) clearTimeout(timer);
+    if (tabHidden()) {
+      // resume with an immediate refresh when the tab comes back
+      pausedResources.add(refresh);
+      return;
+    }
+    timer = setTimeout(refresh, intervalMs);
+  };
   const refresh = () => {
     if (inflight) return inflight;
+    hookVisibility();
     inflight = api<T>(currentPath)
       .then((data) => set({ data, error: null, loading: false, at: Date.now() }))
       .catch((error) => set({ error, loading: false, at: Date.now() }))
       .finally(() => {
         inflight = null;
-        if (intervalMs > 0 && listeners.size) {
-          if (timer) clearTimeout(timer);
-          timer = setTimeout(refresh, intervalMs);
-        }
+        schedule();
       });
     return inflight;
   };
@@ -163,9 +187,12 @@ export function createResource<T>(path: string, intervalMs = 0) {
     if (listeners.size === 1) refresh();
     return () => {
       listeners.delete(l);
-      if (!listeners.size && timer) {
-        clearTimeout(timer);
-        timer = null;
+      if (!listeners.size) {
+        pausedResources.delete(refresh);
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
       }
     };
   };

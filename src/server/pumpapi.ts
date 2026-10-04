@@ -248,8 +248,8 @@ function toTrade(t: RawTrade): PumpTrade {
     priceUsd: num(t.priceUsd),
     tokens: String(Number(t.baseAmount ?? 0)),
     blockTime: Number.isFinite(ms) ? Math.floor(ms / 1000) : 0,
-    // slotIndexId = zero-padded slot (10 digits) + index; the slot is informative only
-    slot: t.slotIndexId && /^\d{10}/.test(t.slotIndexId) ? Number(t.slotIndexId.slice(0, 10)) : 0,
+    // slotIndexId = zero-padded slot (12 digits) + transaction index (10 digits): "000453396800" + "0010880000"
+    slot: t.slotIndexId && /^\d{12}/.test(t.slotIndexId) ? Number(t.slotIndexId.slice(0, 12)) : 0,
     signature: t.tx,
   };
 }

@@ -1,8 +1,8 @@
 "use client";
 /** Block X launch workspace: Chart · Tasks · Token info · Activity panels + the right rail (Launch · Claim Rewards). */
 import { useState } from "react";
-import { ChevronDown, Gift, GripVertical, Info, Pencil, Plus, Rocket, Settings2, Square, Trash2 } from "lucide-react";
-import type { AutoClaimStatus, JobCreated, LaunchPreset, LaunchState, LaunchTaskType, PositionsResponse, TokenInfo, TokenTradesResponse, WalletGroup, WalletInfo } from "@/lib/types";
+import { ChevronDown, Gift, GripVertical, Info, Maximize2, Minimize2, MoreHorizontal, Pencil, Plus, Rocket, Settings2, Square, Trash2 } from "lucide-react";
+import { CANDLE_TFS, type AutoClaimStatus, type CandleTf, type JobCreated, type LaunchPreset, type LaunchState, type LaunchTaskType, type PositionsResponse, type TokenCandlesResponse, type TokenInfo, type TokenTradesResponse, type WalletGroup, type WalletInfo } from "@/lib/types";
 import { failureMessage, post, useGet } from "@/lib/api";
 import { useSolPrice } from "@/lib/store";
 import { usePresetIndex, useTradingPresets } from "@/lib/presets";
@@ -17,15 +17,95 @@ import { GlobalPresetsDialog } from "./GlobalPresetsDialog";
 import { TradingPresetsDialog } from "./TradingPresetsDialog";
 import { TASK_META, type FormTask, type LaunchForm } from "./model";
 
-export function Panel({ title, right, children, className }: { title: string; right?: React.ReactNode; children: React.ReactNode; className?: string }) {
+/** maximize / restore + "Reset layout" of one workspace panel (see layout.ts); absent on panels outside the workspace */
+export type PanelFrame = { maximized: boolean; onMaximize: () => void; onResetLayout: () => void };
+
+export function Panel({ title, right, children, className, frame }: { title: string; right?: React.ReactNode; children: React.ReactNode; className?: string; frame?: PanelFrame }) {
+  const [menu, setMenu] = useState(false);
   return (
     <div className={cx("flex flex-col overflow-hidden border border-line-100 bg-bg-100 shadow-[0_8px_24px_rgba(0,0,0,0.28)]", className)}>
       <div className="flex h-7 shrink-0 select-none items-center gap-1.5 border-b border-line-100 bg-surface-muted px-2 text-xs font-medium text-text-300">
         <GripVertical className="h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate">{title}</span>
         {right ? <div className="ml-auto shrink-0">{right}</div> : null}
+        {frame ? (
+          <div className={cx("flex shrink-0 items-center gap-0.5", right ? "" : "ml-auto")}>
+            <button type="button" onClick={frame.onMaximize} className="flex h-5 w-5 items-center justify-center rounded text-text-300 transition-colors hover:bg-hover-200 hover:text-text-100" aria-label={frame.maximized ? `Restore ${title}` : `Maximize ${title}`} title={frame.maximized ? "Restore the layout" : "Maximize this panel"}>
+              {frame.maximized ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
+            </button>
+            <div className="relative">
+              <button type="button" onClick={() => setMenu((m) => !m)} className="flex h-5 w-5 items-center justify-center rounded text-text-300 transition-colors hover:bg-hover-200 hover:text-text-100" aria-label={`${title} panel menu`} title="Panel menu">
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </button>
+              {menu ? (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setMenu(false)} />
+                  <div className="absolute right-0 top-6 z-20 w-40 rounded-md border border-line-100 bg-bg-50 p-1 shadow-xl">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMenu(false);
+                        frame.onMaximize();
+                      }}
+                      className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs text-text-100 hover:bg-hover-100"
+                    >
+                      {frame.maximized ? "Restore" : "Maximize"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMenu(false);
+                        frame.onResetLayout();
+                      }}
+                      className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs text-text-100 hover:bg-hover-100"
+                    >
+                      Reset layout
+                    </button>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
       </div>
       <div className="relative min-h-0 flex-1 overflow-hidden">{children}</div>
+    </div>
+  );
+}
+
+/** draggable gutter between two panels (4 px, highlights on hover); `onDrag` receives the pointer delta in px */
+export function Gutter({ axis, onDrag, onEnd }: { axis: "x" | "y"; onDrag: (delta: number) => void; onEnd?: () => void }) {
+  const start = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const target = e.currentTarget;
+    target.setPointerCapture(e.pointerId);
+    let last = axis === "x" ? e.clientX : e.clientY;
+    const move = (ev: PointerEvent) => {
+      const v = axis === "x" ? ev.clientX : ev.clientY;
+      onDrag(v - last);
+      last = v;
+    };
+    const up = () => {
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", up);
+      target.removeEventListener("pointercancel", up);
+      document.body.style.cursor = "";
+      onEnd?.();
+    };
+    document.body.style.cursor = axis === "x" ? "col-resize" : "row-resize";
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", up);
+    target.addEventListener("pointercancel", up);
+  };
+  return (
+    <div
+      role="separator"
+      aria-orientation={axis === "x" ? "vertical" : "horizontal"}
+      onPointerDown={start}
+      className={cx("group relative shrink-0 touch-none select-none", axis === "x" ? "w-4 -mx-1.5 cursor-col-resize" : "h-4 -my-1.5 cursor-row-resize")}
+      title="Drag to resize"
+    >
+      <div className={cx("absolute rounded-full bg-transparent transition-colors group-hover:bg-accent/50 group-active:bg-accent", axis === "x" ? "inset-y-0 left-1/2 w-0.5 -translate-x-1/2" : "inset-x-0 top-1/2 h-0.5 -translate-y-1/2")} />
     </div>
   );
 }
@@ -102,10 +182,20 @@ export function AutoClaimRow({ mint }: { mint: string }) {
 }
 
 /* ------------------------------------------------------------------ Chart */
-export function ChartPanel({ mint }: { mint: string | null }) {
-  const candles = useGet<{ candles: { time: number; open: number; high: number; low: number; close: number; volume: number }[] }>(mint ? `/api/token/${mint}/candles?tf=15s` : null, 5000);
+/** candles every 3 s while the mint is viewed (server cache: N clients = 1 pump.fun call); MC mode = price × supply × SOL/USD */
+export function ChartPanel({ mint, frame, className }: { mint: string | null; frame?: PanelFrame; className?: string }) {
+  const [tf, setTf] = useState<CandleTf>("15s");
+  const [mode, setMode] = useState<"MC" | "Price">("MC");
+  const candles = useGet<TokenCandlesResponse>(mint ? `/api/token/${mint}/candles?tf=${tf}` : null, 3000);
+  const token = useGet<TokenInfo>(mint ? `/api/token/${mint}` : null, 5000);
+  const price = useSolPrice();
+  const solUsd = token.data?.solPrice ?? price.data?.usd ?? null;
+  const supply = Number(token.data?.curve?.tokenTotalSupply ?? 1e15) / 1e6 || 1e9;
+  const mc = mode === "MC" && solUsd;
+  const rows = (candles.data?.candles ?? []).map((k) => (mc ? { ...k, open: k.open * supply * solUsd, high: k.high * supply * solUsd, low: k.low * supply * solUsd, close: k.close * supply * solUsd } : k));
+  const seg = (on: boolean) => cx("h-5 rounded px-1.5 text-[10px] font-medium transition-colors", on ? "bg-bg-100 text-text-100" : "text-text-300 hover:text-text-100");
   return (
-    <Panel title="Chart">
+    <Panel title="Chart" frame={frame} className={className}>
       {!mint ? (
         <section className="relative h-full min-h-0 w-full" aria-label="Price chart">
           <div className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-1 bg-bg-100 px-6 text-center">
@@ -113,10 +203,33 @@ export function ChartPanel({ mint }: { mint: string | null }) {
             <p className="text-xs text-text-300">The chart will load after you launch.</p>
           </div>
         </section>
-      ) : !candles.data?.candles.length ? (
-        <div className="flex h-full items-center justify-center text-xs text-text-300">{candles.loading ? "Loading…" : "No trade on the curve yet."}</div>
       ) : (
-        <CandleChart candles={candles.data.candles} live={null} height={360} />
+        <section className="relative h-full min-h-0 w-full" aria-label="Price chart">
+          <div className="absolute left-2 top-2 z-10 flex flex-wrap items-center gap-1">
+            <div className="inline-flex items-center rounded border border-line-100 bg-bg-50 p-px">
+              {CANDLE_TFS.map((x) => (
+                <button key={x} type="button" onClick={() => setTf(x)} className={seg(tf === x)}>
+                  {x}
+                </button>
+              ))}
+            </div>
+            <div className="inline-flex items-center rounded border border-line-100 bg-bg-50 p-px">
+              {(["MC", "Price"] as const).map((m) => (
+                <button key={m} type="button" onClick={() => setMode(m)} className={seg(mode === m)}>
+                  {m}
+                </button>
+              ))}
+            </div>
+            {candles.data?.source === "rpc" ? <span className="rounded border border-yellow-100/40 bg-yellow-100/10 px-1.5 text-[10px] text-yellow-100" title="pump.fun's candle API did not answer: candles built from the curve history read on the RPC">RPC</span> : null}
+          </div>
+          {candles.error ? (
+            <div className="flex h-full items-center justify-center px-4 text-center text-xs text-decrease">{failureMessage(candles.error)}</div>
+          ) : !rows.length ? (
+            <div className="flex h-full items-center justify-center text-xs text-text-300">{candles.loading ? "Loading…" : "No trade on the curve yet."}</div>
+          ) : (
+            <CandleChart candles={rows} live={null} fill mode={mc ? "mc" : "price"} fitKey={`${mint}|${tf}`} unitLabel={undefined} />
+          )}
+        </section>
       )}
     </Panel>
   );
@@ -135,6 +248,8 @@ export function TasksPanel({
   launchId,
   onDump,
   taskControls = true,
+  frame,
+  className,
 }: {
   form: LaunchForm;
   onChange: (f: LaunchForm) => void;
@@ -149,6 +264,8 @@ export function TasksPanel({
   onDump?: () => void;
   /** false for a CTO: task states are shown, Start / Stop happen on the right rail */
   taskControls?: boolean;
+  frame?: PanelFrame;
+  className?: string;
 }) {
   const [unit, setUnit] = useState<"SOL" | "%">("SOL");
   const [sortBy, setSortBy] = useState<"balance" | "pct">("balance");
@@ -165,7 +282,8 @@ export function TasksPanel({
   const dev = wallets.find((w) => w.address === form.devWallet) ?? null;
   const devBal = dev ? Number(balances?.[dev.address] ?? dev.sol ?? 0) : 0;
   const readOnly = !!live;
-  const positions = useGet<PositionsResponse>(live ? `/api/positions?mints=${live.mint}&wallets=${live.dev}` : null, 5000);
+  // positions walk the wallet trade history on the RPC: 15 s is plenty for a dev-wallet row
+  const positions = useGet<PositionsResponse>(live ? `/api/positions?mints=${live.mint}&wallets=${live.dev}` : null, 15000);
   const devRow = (positions.data ?? []).find((r) => r.wallet === live?.dev && r.mint === live?.mint) ?? null;
   const [sellBusy, setSellBusy] = useState<number | null>(null);
   const devSell = async (percent: number) => {
@@ -195,6 +313,8 @@ export function TasksPanel({
   return (
     <Panel
       title="Tasks"
+      frame={frame}
+      className={className}
       right={
         !readOnly ? (
           <div className="flex items-center gap-1">
@@ -340,8 +460,8 @@ export function TasksPanel({
 }
 
 /* ------------------------------------------------------------- Token info */
-export function TokenInfoPanel({ form, token, mint, onEdit }: { form: LaunchForm; token: TokenInfo | null; mint: string | null; onEdit?: () => void }) {
-  const positions = useGet<PositionsResponse>(mint ? `/api/positions?mints=${mint}` : null, 5000);
+export function TokenInfoPanel({ form, token, mint, onEdit, frame, className }: { form: LaunchForm; token: TokenInfo | null; mint: string | null; onEdit?: () => void; frame?: PanelFrame; className?: string }) {
+  const positions = useGet<PositionsResponse>(mint ? `/api/positions?mints=${mint}` : null, 15000);
   const price = useSolPrice();
   const rows = (positions.data ?? []).filter((r) => r.mint === mint);
   const bought = rows.reduce((n, r) => n + Number(r.costSol), 0);
@@ -356,7 +476,7 @@ export function TokenInfoPanel({ form, token, mint, onEdit }: { form: LaunchForm
   const r = 29;
   const circ = 2 * Math.PI * r;
   return (
-    <Panel title="Token info">
+    <Panel title="Token info" frame={frame} className={className}>
       <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden">
         <div className="glass-card flex min-h-0 w-full flex-1 flex-col overflow-hidden px-3 py-2">
           <div className="shrink-0">
@@ -447,14 +567,15 @@ export function TokenInfoPanel({ form, token, mint, onEdit }: { form: LaunchForm
 }
 
 /* --------------------------------------------------------------- Activity */
-export function ActivityPanel({ mint, live }: { mint: string | null; live: LaunchState | null }) {
+export function ActivityPanel({ mint, live, frame, className }: { mint: string | null; live: LaunchState | null; frame?: PanelFrame; className?: string }) {
   const [tab, setTab] = useState<"trades" | "log">("trades");
-  const trades = useGet<TokenTradesResponse>(mint ? `/api/token/${mint}/trades?limit=100` : null, 5000);
+  // trades every 2 s while the page is open (server-side pump.fun cache: N clients = 1 upstream call)
+  const trades = useGet<TokenTradesResponse>(mint ? `/api/token/${mint}/trades?limit=100` : null, 2000);
   const price = useSolPrice();
   const rows = trades.data?.trades ?? [];
   const supply = Number(trades.data?.supplyTokens ?? 1e9) || 1e9;
   return (
-    <Panel title="Activity">
+    <Panel title="Activity" frame={frame} className={className}>
       <section className="flex h-full min-h-0 w-full flex-col overflow-hidden" aria-label="Activity monitor">
         <div className="mb-2 mt-2 flex items-center gap-2 px-2" role="tablist">
           <div className="flex shrink-0 items-center gap-1 pl-0.5">

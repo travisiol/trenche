@@ -3,9 +3,9 @@
 import { createResource, useResource } from "./api";
 import type { BalancesResponse, Settings, SolPriceResponse, VaultStatus, WalletsResponse } from "./types";
 
-export const vaultRes = createResource<VaultStatus>("/api/vault", 5000);
+export const vaultRes = createResource<VaultStatus>("/api/vault", 10000);
 export const walletsRes = createResource<WalletsResponse>("/api/wallets", 10000);
-export const balancesRes = createResource<BalancesResponse>("/api/balances", 5000);
+export const balancesRes = createResource<BalancesResponse>("/api/balances", 15000);
 export const solPriceRes = createResource<SolPriceResponse>("/api/sol-price", 30000);
 export const settingsRes = createResource<Settings>("/api/settings", 0);
 

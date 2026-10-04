@@ -14,7 +14,7 @@ import { PadAvatar, cx } from "./ui";
 import { useSolPrice, useSettings } from "@/lib/store";
 import { failureMessage, useGet } from "@/lib/api";
 import { age, short, usd } from "@/lib/format";
-import type { PresetsResponse, SearchResponse, SearchSort } from "@/lib/types";
+import type { PresetsResponse, RpcHealthResponse, SearchResponse, SearchSort } from "@/lib/types";
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard" },
@@ -173,27 +173,16 @@ function RecentStrip() {
   );
 }
 
-/** Real numbers only: SOL price from the server, latency = round-trip of GET /api/vault every 10 s, FPS from rAF. */
+/** Real numbers only: SOL price from the server, latency = p50 of the RPC queue's last getSlot probes (GET /api/rpc/health
+ *  every 10 s — a lightweight read through the queue, never one slow page call), FPS from rAF. */
 function BottomBar() {
   const price = useSolPrice();
   const router = useRouter();
   const presets = useGet<PresetsResponse>("/api/presets", 0);
-  const [latency, setLatency] = useState<number | null>(null);
   const [fps, setFps] = useState<number | null>(null);
   const settings = useSettings();
   useEffect(() => {
     let alive = true;
-    const ping = async () => {
-      const t0 = performance.now();
-      try {
-        await fetch("/api/vault", { cache: "no-store" });
-        if (alive) setLatency(Math.round(performance.now() - t0));
-      } catch {
-        if (alive) setLatency(null);
-      }
-    };
-    ping();
-    const t = setInterval(ping, 10000);
     let frames = 0;
     let last = performance.now();
     let raf = 0;
@@ -209,13 +198,23 @@ function BottomBar() {
     raf = requestAnimationFrame(loop);
     return () => {
       alive = false;
-      clearInterval(t);
       cancelAnimationFrame(raf);
     };
   }, []);
   const quick = presets.data?.presets[0] ?? null;
-  const stable = latency !== null && latency < 400;
   const cluster = settings.data?.cluster ?? "mainnet";
+  // RPC situation from the server's queue (GET /api/rpc/health every 10 s): honest pill instead of raw 429 toasts
+  const rpc = useGet<RpcHealthResponse>("/api/rpc/health", 10000);
+  const h = rpc.data ?? null;
+  const limited = !!h && h.rateLimited > 0;
+  const rpcTone = !h ? "idle" : limited ? "warn" : h.lastError && h.lastErrorAt && h.at - h.lastErrorAt < 60_000 ? "warn" : "ok";
+  const rpcWord = !h ? "RPC" : limited ? (h.provider === "public" ? "public RPC rate-limited — add a Helius key in Settings" : `RPC rate-limited (${h.rateLimited}/min)`) : `RPC ${h.provider}${h.latencyMs !== null ? ` · ${h.latencyMs} ms` : ""}${h.queued ? ` · ${h.queued} queued` : ""}`;
+  const latency = h?.latencyMs ?? null;
+  const stable = latency !== null && latency < 800 && !limited;
+  const rpcTitle = h ? `${h.url}
+${h.requestsLastMinute} calls/min · ${h.cacheHitsLastMinute} cache hits · ${h.rateLimited} rate-limit answers in the last minute · ${h.inflight} in flight, ${h.queued} queued${h.lastError ? `
+last error: ${h.lastError}` : ""}
+pump.fun API: ${h.pump.ok ? "ok" : `in back-off (${h.pump.lastError ?? "blocked"})`}` : "RPC queue status";
   return (
     <footer className="relative z-[100] flex h-[calc(2.25rem+env(safe-area-inset-bottom))] max-w-full shrink-0 items-center justify-between border-t border-line-100 bg-bg-50 px-1.5 pb-[env(safe-area-inset-bottom)] text-sm font-medium">
       <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
@@ -242,15 +241,20 @@ function BottomBar() {
             <span className="text-sm tabular-nums">{price.data ? usd(price.data.usd, 2) : "—"}</span>
           </div>
           {cluster === "devnet" ? <span className="ml-3 rounded-md bg-yellow-100/15 px-1.5 py-0.5 text-xs text-yellow-100">devnet</span> : null}
+          <Link href="/settings" className={cx("ml-3 flex max-w-[360px] items-center gap-1.5 truncate rounded-md px-1.5 py-0.5 text-xs font-normal transition-colors hover:brightness-110", rpcTone === "warn" ? "bg-yellow-100/15 text-yellow-100" : rpcTone === "ok" ? "bg-white/[0.04] text-text-200" : "bg-white/[0.04] text-text-300")} title={rpcTitle} data-testid="rpc-pill">
+            <span className={cx("h-1.5 w-1.5 shrink-0 rounded-full", rpcTone === "warn" ? "bg-yellow-100" : rpcTone === "ok" ? "bg-accent" : "bg-text-300")} />
+            <span className="truncate">{rpcWord}</span>
+            {h && !h.pump.ok ? <span className="shrink-0 text-yellow-100" title={`pump.fun data API in back-off: ${h.pump.lastError ?? "blocked"} — falling back to the RPC`}>· pump.fun off</span> : null}
+          </Link>
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1 text-text-200">
         <div className="hidden md:contents">
-          <div className={cx("flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1", stable ? "bg-accent/15 text-accent" : latency === null ? "bg-white/[0.04] text-text-300" : "bg-decrease/15 text-decrease")} title="Server round-trip (GET /api/vault every 10 s) and UI frame rate">
+          <div className={cx("flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1", stable ? "bg-accent/15 text-accent" : latency === null ? "bg-white/[0.04] text-text-300" : "bg-decrease/15 text-decrease")} title="RPC latency: p50 of the queue's last getSlot probes (GET /api/rpc/health every 10 s) and UI frame rate">
             <span className={cx("flex h-3 w-3 shrink-0 items-center justify-center rounded-full", stable ? "bg-accent/25" : "bg-decrease/25")}>
               <span className={cx("h-2 w-2 rounded-full", stable ? "bg-accent" : latency === null ? "bg-text-300" : "bg-decrease")} />
             </span>
-            <span className="text-xs font-normal leading-4">{latency === null ? "Offline" : stable ? "Stable" : "Unstable"}</span>
+            <span className="text-xs font-normal leading-4">{latency === null ? (rpc.error ? "Offline" : "RPC") : stable ? "Stable" : "Unstable"}</span>
             <span className="text-xs font-normal leading-4">{latency === null ? "— MS" : `${latency} MS`}</span>
             <span className="mx-0.5 h-[7px] w-px bg-accent/30" />
             <span className="text-xs font-normal leading-4">{fps === null ? "— FPS" : `${fps} FPS`}</span>

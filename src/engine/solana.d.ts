@@ -118,10 +118,18 @@ declare module "@/engine/solana/send.js" {
     /** re-sign with a fresh blockhash when the transaction really was never included */
     rebuild?: () => Promise<Rebuilt>;
     maxRebuilds?: number;
+    /** first successful broadcast */
+    onSent?: (signature: string) => void;
+    /** status poll cadence: initial ms (600) and growth factor per poll (1.35; 1 = flat) */
+    pollMs?: number;
+    pollGrowth?: number;
   }
-  export interface SendManyOpts extends Omit<SendOpts, "verify" | "rebuild"> {
+  export interface SendManyOpts extends Omit<SendOpts, "verify" | "rebuild" | "onSent"> {
     verify?: (index: number) => Promise<boolean>;
     rebuild?: (index: number) => Promise<Rebuilt>;
+    onSent?: (index: number, signature: string) => void;
+    /** called as soon as one transaction's confirmation settles (before the others) */
+    onResult?: (index: number, result: SendResult) => void;
   }
   export function sendAndConfirm(
     read: Connection,

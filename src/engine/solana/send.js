@@ -36,7 +36,7 @@ function statusOf(conn, sig, history = false) {
     const list = b.pending.get(sig) ?? [];
     list.push(resolve);
     b.pending.set(sig, list);
-    if (!b.timer) b.timer = setTimeout(flushStatuses, 150);
+    if (!b.timer) b.timer = setTimeout(flushStatuses, 80);
   });
 }
 
@@ -44,7 +44,7 @@ async function flushStatuses() {
   const b = statusBatch,
     entries = [...b.pending.entries()].slice(0, 256);
   for (const [sig] of entries) b.pending.delete(sig);
-  b.timer = b.pending.size ? setTimeout(flushStatuses, 150) : null;
+  b.timer = b.pending.size ? setTimeout(flushStatuses, 80) : null;
   const sigs = entries.map(([sig]) => sig),
     res = await b.conn.getSignatureStatuses(sigs).catch(() => null);
   entries.forEach(([, cbs], i) => {
@@ -118,6 +118,7 @@ export async function sendAndConfirm(t, e, r, n = {}) {
         maxRetries: 0,
       }),
         d++);
+      d === 1 && typeof n.onSent == "function" && n.onSent(o);
     } catch (p) {
       const f = p.message ?? "";
       if (/already been processed|AlreadyProcessed/i.test(f)) {
@@ -159,7 +160,10 @@ export async function sendAndConfirm(t, e, r, n = {}) {
       expired: !0,
     });
   };
-  let poll = 600;
+  /* poll cadence: 400 ms flat on a private RPC (n.pollMs, n.pollGrowth = 1), 600 ms growing to 2.5 s on a public one */
+  const pollStart = n.pollMs ?? 600,
+    pollGrowth = n.pollGrowth ?? 1.35;
+  let poll = pollStart;
   for (;;) {
     for (; Date.now() < budgetEnd;) {
       const f = await statusOf(t, o);
@@ -170,11 +174,11 @@ export async function sendAndConfirm(t, e, r, n = {}) {
       if (lastValid !== void 0 && (await t.getBlockHeight("confirmed").catch(() => 0)) > lastValid) {
         const r2 = await notFound("blockhash expired (150 blocks)");
         if (r2) return r2;
-        poll = 600;
+        poll = pollStart;
         continue;
       }
       await sleep(poll);
-      poll = Math.min(2500, Math.round(poll * 1.35));
+      poll = Math.min(2500, Math.round(poll * pollGrowth));
       if (Date.now() - a > s) await u();
     }
     const r3 = await notFound("confirmation timed out");
@@ -194,7 +198,11 @@ export async function sendMany(t, e, r, n = {}) {
           ...n,
           rebuild: typeof n.rebuild == "function" ? () => n.rebuild(i) : void 0,
           verify: typeof n.verify == "function" ? () => n.verify(i) : void 0,
-        }).catch(s => ({
+          onSent: typeof n.onSent == "function" ? sig => n.onSent(i, sig) : void 0,
+          onResult: void 0,
+        })
+          .then(res => (typeof n.onResult == "function" && n.onResult(i, res), res))
+          .catch(s => ({
           signature: signatureOf(o),
           broadcasts: 0,
           confirmed: !1,

@@ -14,7 +14,8 @@ import { BxButton, BxModal, PadAvatar, cx } from "@/components/bx/ui";
 import { BxJob } from "@/components/bx/Job";
 import { LaunchModal } from "@/components/launch/LaunchModal";
 import { CtoModal } from "@/components/launch/CtoModal";
-import { ActivityPanel, ChartPanel, RightRail, TasksPanel, TokenInfoPanel } from "@/components/launch/Workspace";
+import { ActivityPanel, ChartPanel, Gutter, RightRail, TasksPanel, TokenInfoPanel, type PanelFrame } from "@/components/launch/Workspace";
+import { resetWorkspaceLayout, setWorkspaceLayout, useWorkspaceLayout, type PanelId } from "@/components/launch/layout";
 import { useLaunchState } from "@/components/launch/LaunchLive";
 import { deleteDraft, saveDraft, useDrafts, type DraftRow } from "@/components/launch/drafts";
 import { listenKeybinds, useKeybinds, type KeybindId } from "@/lib/keybinds";
@@ -62,6 +63,7 @@ function LaunchScreen() {
   const [tab, setTab] = useState<"draft" | "launched">("launched");
   const [q, setQ] = useState("");
   const [collapsed, setCollapsed] = useState(false);
+  const layout = useWorkspaceLayout();
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bootDone = useRef(false);
 
@@ -308,6 +310,13 @@ function LaunchScreen() {
   const bundleWallets = form ? form.tasks.filter((t) => t.type === "bundle").reduce((n, t) => n + taskWallets(t, live).length, 0) : 0;
   const dev = live.find((w) => w.address === form?.devWallet) ?? null;
   const sidebarW = collapsed ? 56 : 280;
+  const frameOf = (id: PanelId): PanelFrame => ({ maximized: layout.max === id, onMaximize: () => setWorkspaceLayout({ max: layout.max === id ? null : id }), onResetLayout: resetWorkspaceLayout });
+  const tasksPanel = (className: string) =>
+    isCto ? (
+      <TasksPanel form={ctoForm ?? newForm(active)} onChange={onCtoChange} wallets={live} groups={groups} balances={balances.data ?? null} presets={presets} onPreset={onPreset} live={ctoLive} launchId={null} onDump={viewingMint ? dumpAll : undefined} taskControls={false} frame={frameOf("tasks")} className={className} />
+    ) : (
+      <TasksPanel form={form ?? newForm(active)} onChange={onFormChange} wallets={live} groups={groups} balances={balances.data ?? null} presets={presets} onPreset={onPreset} live={viewingMint ? launchState.state : null} launchId={viewingMint} onDump={viewingMint ? dumpAll : undefined} frame={frameOf("tasks")} className={className} />
+    );
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
@@ -423,7 +432,10 @@ function LaunchScreen() {
                         <span className="block truncate text-[13px] font-medium text-text-100">{l.symbol}</span>
                         <span className="block truncate text-[11px] text-text-300">{l.name}</span>
                       </span>
-                      <span className={cx("shrink-0 text-[10px]", l.createConfirmed ? "text-green-100" : l.createError ? "text-decrease" : "text-text-300")}>{l.createConfirmed ? "live" : l.createError ? "failed" : "pending"}</span>
+                      {/* status comes from the server (reconcile.ts): a create confirmed on chain is "live" even when its confirmation timed out */}
+                      <span className={cx("shrink-0 text-[10px]", l.status === "launched" ? "text-green-100" : l.status === "failed" ? "text-decrease" : "text-text-300")} title={l.status === "failed" ? (l.createError ?? "failed") : l.status === "pending" ? "Create sent — waiting for the chain to confirm it (re-checked every 30 s)" : "Create confirmed on chain"}>
+                        {l.status === "launched" ? "live" : l.status}
+                      </span>
                     </button>
                   ))]
                 )}
@@ -457,30 +469,39 @@ function LaunchScreen() {
                 </div>
               ) : (
                 <div className="workspace-grid-canvas no-scrollbar min-h-0 flex-1 overflow-auto bg-bg-100">
-                  <div className="workspace-grid-surface flex h-full min-h-[720px] min-w-[1180px] gap-4 p-4">
-                    <div className="flex w-[380px] shrink-0 flex-col gap-4">
-                      <ChartPanel mint={viewingMint} />
-                      {dumpJob ? (
-                        <div className="rounded-md border border-line-100 bg-bg-50 p-3">
-                          <BxJob jobId={dumpJob} />
+                  {/* panels: widths / heights come from layout.ts (drag the gutters, persisted), one panel can fill the workspace */}
+                  <div className={cx("workspace-grid-surface flex h-full min-h-[720px] p-4", layout.max ? "min-w-0" : "min-w-[1180px]")}>
+                    {layout.max ? (
+                      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                        {layout.max === "chart" ? <ChartPanel mint={viewingMint} frame={frameOf("chart")} className="min-h-0 flex-1" /> : null}
+                        {layout.max === "tasks" ? tasksPanel("min-h-0 flex-1") : null}
+                        {layout.max === "info" ? <TokenInfoPanel form={isCto ? (ctoForm ?? newForm(active)) : (form ?? newForm(active))} token={token.data} mint={viewingMint} onEdit={isDraft ? () => setModal(true) : undefined} frame={frameOf("info")} className="min-h-0 flex-1" /> : null}
+                        {layout.max === "activity" ? <ActivityPanel mint={viewingMint} live={isCto ? ctoLive : viewingMint ? launchState.state : null} frame={frameOf("activity")} className="min-h-0 flex-1" /> : null}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex shrink-0 flex-col gap-4" style={{ width: layout.left }}>
+                          <ChartPanel mint={viewingMint} frame={frameOf("chart")} className="min-h-0 flex-1" />
+                          {dumpJob ? (
+                            <div className="rounded-md border border-line-100 bg-bg-50 p-3">
+                              <BxJob jobId={dumpJob} />
+                            </div>
+                          ) : null}
                         </div>
-                      ) : null}
-                    </div>
-                    <div className="flex min-w-0 flex-1 flex-col">
-                      {isCto ? (
-                        <TasksPanel form={ctoForm ?? newForm(active)} onChange={onCtoChange} wallets={live} groups={groups} balances={balances.data ?? null} presets={presets} onPreset={onPreset} live={ctoLive} launchId={null} onDump={viewingMint ? dumpAll : undefined} taskControls={false} />
-                      ) : (
-                        <TasksPanel form={form ?? newForm(active)} onChange={onFormChange} wallets={live} groups={groups} balances={balances.data ?? null} presets={presets} onPreset={onPreset} live={viewingMint ? launchState.state : null} launchId={viewingMint} onDump={viewingMint ? dumpAll : undefined} />
-                      )}
-                    </div>
-                    <div className="flex w-[400px] shrink-0 flex-col gap-4">
-                      <div className="h-[316px] shrink-0">
-                        <TokenInfoPanel form={isCto ? (ctoForm ?? newForm(active)) : (form ?? newForm(active))} token={token.data} mint={viewingMint} onEdit={isDraft ? () => setModal(true) : undefined} />
-                      </div>
-                      <div className="min-h-0 flex-1">
-                        <ActivityPanel mint={viewingMint} live={isCto ? ctoLive : viewingMint ? launchState.state : null} />
-                      </div>
-                    </div>
+                        <Gutter axis="x" onDrag={(dx) => setWorkspaceLayout({ left: layout.left + dx })} />
+                        <div className="flex min-w-0 flex-1 flex-col">{tasksPanel("min-h-0 flex-1")}</div>
+                        <Gutter axis="x" onDrag={(dx) => setWorkspaceLayout({ right: layout.right - dx })} />
+                        <div className="flex shrink-0 flex-col" style={{ width: layout.right }}>
+                          <div className="shrink-0" style={{ height: layout.infoH }}>
+                            <TokenInfoPanel form={isCto ? (ctoForm ?? newForm(active)) : (form ?? newForm(active))} token={token.data} mint={viewingMint} onEdit={isDraft ? () => setModal(true) : undefined} frame={frameOf("info")} className="h-full" />
+                          </div>
+                          <Gutter axis="y" onDrag={(dy) => setWorkspaceLayout({ infoH: layout.infoH + dy })} />
+                          <div className="min-h-0 flex-1">
+                            <ActivityPanel mint={viewingMint} live={isCto ? ctoLive : viewingMint ? launchState.state : null} frame={frameOf("activity")} className="h-full" />
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               )}

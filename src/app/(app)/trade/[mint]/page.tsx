@@ -18,11 +18,12 @@ const TF: CandleTf[] = CANDLE_TFS;
 
 export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
   const { mint } = use(params);
-  const token = useGet<TokenInfo>(`/api/token/${mint}`, 2000);
+  // token info 3 s (pump.fun coin row + cached curve read), candles 3 s, positions 15 s (RPC history walk)
+  const token = useGet<TokenInfo>(`/api/token/${mint}`, 3000);
   const [tf, setTf] = useState<CandleTf>("15s");
   const [mode, setMode] = useState<"MC" | "Price">("MC");
-  const candles = useGet<TokenCandlesResponse>(`/api/token/${mint}/candles?tf=${tf}`, 5000);
-  const positions = useGet<PositionsResponse>(`/api/positions?mints=${mint}`, 5000);
+  const candles = useGet<TokenCandlesResponse>(`/api/token/${mint}/candles?tf=${tf}`, 3000);
+  const positions = useGet<PositionsResponse>(`/api/positions?mints=${mint}`, 15000);
   const holders = useGet<TokenHoldersResponse>(`/api/token/${mint}/holders`, 15000);
   const wallets = useWallets();
   const vault = useVault();
@@ -169,6 +170,7 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
                 </div>
               </div>
               <div className="h-full min-h-0 w-full">
+                {candles.data?.source === "rpc" ? <span className="absolute right-16 top-2 z-10 rounded border border-yellow-100/40 bg-yellow-100/10 px-1.5 text-[10px] text-yellow-100" title="pump.fun's candle API did not answer: candles built from the curve history read on the RPC">RPC</span> : null}
                 {candles.error ? (
                   <div className="flex h-full items-center justify-center text-xs text-decrease">{failureMessage(candles.error)}</div>
                 ) : !chartCandles.length ? (
@@ -177,7 +179,7 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
                     <p className="text-xs text-text-300">Candles are built from the bonding-curve history as soon as a trade lands.</p>
                   </div>
                 ) : (
-                  <CandleChart candles={chartCandles} live={null} height={440} unitLabel={mode === "MC" && solUsd ? "Market cap, USD" : "SOL per token"} />
+                  <CandleChart candles={chartCandles} live={null} fill mode={mode === "MC" && solUsd ? "mc" : "price"} fitKey={`${mint}|${tf}`} />
                 )}
               </div>
             </section>
@@ -275,7 +277,7 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
       <InstantTrade mint={mint} symbol={t?.symbol ?? null} rows={rows} open={instant} onClose={() => setInstant(false)} />
       {/* mobile */}
       <div className="flex min-h-0 flex-1 flex-col lg:hidden">
-        <div className="h-[min(210px,34svh)] shrink-0 overflow-hidden border-b border-line-100">{chartCandles.length ? <CandleChart candles={chartCandles} live={null} height={210} /> : <div className="flex h-full items-center justify-center text-xs text-text-300">No trade yet</div>}</div>
+        <div className="h-[min(210px,34svh)] shrink-0 overflow-hidden border-b border-line-100">{chartCandles.length ? <CandleChart candles={chartCandles} live={null} height={210} mode={mode === "MC" && solUsd ? "mc" : "price"} fitKey={`${mint}|${tf}`} /> : <div className="flex h-full items-center justify-center text-xs text-text-300">No trade yet</div>}</div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           <TradePanel mint={mint} symbol={t?.symbol ?? null} rows={rows} />
           <div className="h-[320px]">{tradesList}</div>
@@ -298,7 +300,8 @@ function Risk({ icon, value, label, good, neutral }: { icon: React.ReactNode; va
 }
 
 function TradesList({ mint, mine, supply, solUsd }: { mint: string; mine: Set<string>; supply: number; solUsd: number | null }) {
-  const q = useGet<TokenTradesResponse>(`/api/token/${mint}/trades?limit=100`, 5000);
+  // 2 s while the page is open; the server caches pump.fun's answer so every open client shares one upstream call
+  const q = useGet<TokenTradesResponse>(`/api/token/${mint}/trades?limit=100`, 2000);
   const [filter, setFilter] = useState<"all" | "others">("all");
   const [othersUsd, setOthersUsd] = useState(false);
   const [newestFirst, setNewestFirst] = useState(true);

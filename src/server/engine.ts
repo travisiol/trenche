@@ -210,10 +210,28 @@ async function dispatch(
     invalidateRpcCache((k) => rows.some((r) => k.includes(r.address)) || k.includes(opts.mint));
     return out;
   }
-  const results: SendResult[] = await sendMany(conn, sendConn(), txs, { lastValidBlockHeight, staggerMs: 0, rebuild: hooks.rebuild, verify: hooks.verify });
+  // every transaction is journaled the moment it is broadcast ("sent") and again the moment ITS confirmation settles:
+  // the UI shows per-wallet progress within seconds instead of waiting for the slowest wallet
+  const settled = new Array<TradeOutcome | null>(txs.length).fill(null);
+  const results: SendResult[] = await sendMany(conn, sendConn(), txs, {
+    lastValidBlockHeight,
+    staggerMs: 0,
+    rebuild: hooks.rebuild,
+    verify: hooks.verify,
+    pollMs: isPublicRpc() ? 600 : 400,
+    pollGrowth: isPublicRpc() ? 1.35 : 1,
+    onSent: (k, sig) => jobNote(opts.job, `${rows[k].label}: sent`, { phase: "sent", address: rows[k].address, signature: sig }),
+    onResult: (k, r) => {
+      const row = rows[k];
+      noteRecovery(r, row.label);
+      const o: TradeOutcome = { address: row.address, label: row.label, ok: r.confirmed, signature: r.signature ?? null, error: r.confirmed ? null : (r.error ?? "not confirmed"), sol: row.sol };
+      settled[k] = o;
+      jobPush(opts.job, o.ok, { label: o.label, address: o.address, sol: o.sol, signature: o.signature, error: o.error ?? undefined, phase: "send" });
+    },
+  });
   results.forEach((r, k) => {
+    if (settled[k]) return out.push(settled[k]!);
     const row = rows[k];
-    noteRecovery(r, row.label);
     const o: TradeOutcome = { address: row.address, label: row.label, ok: r.confirmed, signature: r.signature ?? null, error: r.confirmed ? null : (r.error ?? "not confirmed"), sol: row.sol };
     out.push(o);
     jobPush(opts.job, o.ok, { label: o.label, address: o.address, sol: o.sol, signature: o.signature, error: o.error ?? undefined, phase: "send" });

@@ -45,6 +45,8 @@ type HostState = {
 };
 
 type Stats = {
+  /** round-trips of the health probe (getSlot through the queue), last 10 */
+  probes: number[];
   latencies: number[];
   rateLimitedAt: number[];
   requestsAt: number[];
@@ -73,7 +75,7 @@ function g(): RpcGlobal {
       cache: new Map(),
       inflight: new Map(),
       connections: new Map(),
-      stats: { latencies: [], rateLimitedAt: [], requestsAt: [], cacheHitsAt: [], lastError: null, lastErrorAt: null },
+      stats: { probes: [], latencies: [], rateLimitedAt: [], requestsAt: [], cacheHitsAt: [], lastError: null, lastErrorAt: null },
       lastReadUrl: "",
     };
   }
@@ -113,7 +115,7 @@ const CACHE_TTL: Record<string, number> = {
   getSignaturesForAddress: 2000,
   getTransaction: 60_000,
   getBlockHeight: 1000,
-  getSlot: 1000,
+  // getSlot is NOT cached: it is the health probe (one call per GET /api/rpc/health)
   getEpochInfo: 5000,
   getRecentPrioritizationFees: 5000,
   getMinimumBalanceForRentExemption: 300_000,
@@ -335,6 +337,22 @@ export function noteReadRpc(url: string): void {
   g().lastReadUrl = url;
 }
 
+/** one lightweight getSlot through the queue, timed; keeps the last 10 (p50 = the pill's latency) */
+export async function probeRpc(url: string): Promise<number | null> {
+  const s = g();
+  if (!Array.isArray(s.stats.probes)) s.stats.probes = [];
+  const t0 = Date.now();
+  try {
+    await queuedConnection(url).getSlot({ commitment: "processed" });
+  } catch {
+    return null;
+  }
+  const ms = Date.now() - t0;
+  s.stats.probes.push(ms);
+  if (s.stats.probes.length > 10) s.stats.probes.shift();
+  return ms;
+}
+
 export function rpcHealth(): RpcHealth {
   const s = g();
   const st = s.stats;
@@ -342,7 +360,8 @@ export function rpcHealth(): RpcHealth {
   prune(st.requestsAt, now);
   prune(st.rateLimitedAt, now);
   prune(st.cacheHitsAt, now);
-  const sorted = [...st.latencies].sort((a, b) => a - b);
+  const probes = Array.isArray(st.probes) ? st.probes : [];
+  const sorted = [...(probes.length ? probes : st.latencies.slice(-10))].sort((a, b) => a - b);
   const url = s.lastReadUrl;
   let inflight = 0;
   let queued = 0;

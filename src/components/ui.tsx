@@ -497,8 +497,15 @@ export function setToastsMuted(v: boolean) {
     /* ignore */
   }
 }
+/** raw RPC rate-limit errors are replaced by one honest sentence (the detail stays in the job log and /api/rpc/health) */
+export const RPC_RATE_LIMIT_RE = /429|Too Many Requests|Rate limit exceeded|rate.?limited|-32005/i;
+export const RPC_RATE_LIMIT_TOAST = "Public RPC rate-limited — the request was retried; add a Helius key in Settings for a private RPC.";
 export function toast(text: string, tone: Toast["tone"] = "info") {
   if (tone !== "err" && toastsMuted()) return;
+  if (tone === "err" && RPC_RATE_LIMIT_RE.test(text)) {
+    text = RPC_RATE_LIMIT_TOAST;
+    tone = "info";
+  }
   const t = { id: ++toastId, text, tone };
   toastListeners.forEach((l) => l(t));
 }
