@@ -21,7 +21,7 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
   const { mint } = use(params);
   // token info 3 s (pump.fun coin row + cached curve read), candles 3 s, positions 15 s (RPC history walk)
   const token = useGet<TokenInfo>(`/api/token/${mint}`, 3000);
-  const [tf, setTf] = useState<CandleTf>("15s");
+  const [tf, setTf] = useState<CandleTf>("1s");
   const [mode, setMode] = useState<"MC" | "Price">("MC");
   const candles = useGet<TokenCandlesResponse>(`/api/token/${mint}/candles?tf=${tf}`, 3000);
   const positions = useGet<PositionsResponse>(`/api/positions?mints=${mint}`, 15000);

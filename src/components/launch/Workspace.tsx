@@ -185,7 +185,7 @@ export function AutoClaimRow({ mint }: { mint: string }) {
 /* ------------------------------------------------------------------ Chart */
 /** candles every 3 s while the mint is viewed (server cache: N clients = 1 pump.fun call); MC mode = price × supply × SOL/USD */
 export function ChartPanel({ mint, frame, className }: { mint: string | null; frame?: PanelFrame; className?: string }) {
-  const [tf, setTf] = useState<CandleTf>("15s");
+  const [tf, setTf] = useState<CandleTf>("1s");
   const [mode, setMode] = useState<"MC" | "Price">("MC");
   const candles = useGet<TokenCandlesResponse>(mint ? `/api/token/${mint}/candles?tf=${tf}` : null, 3000);
   const token = useGet<TokenInfo>(mint ? `/api/token/${mint}` : null, 5000);
