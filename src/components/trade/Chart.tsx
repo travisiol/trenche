@@ -15,9 +15,10 @@ export function formatChartPrice(p: number, mode: ChartMode): string {
   if (!Number.isFinite(p)) return "";
   if (mode === "mc") {
     const abs = Math.abs(p);
+    // two decimals on K/M: a narrow range ($3.40K → $3.52K) must not print the same label on every tick
     if (abs >= 1e9) return `$${(p / 1e9).toFixed(2)}B`;
     if (abs >= 1e6) return `$${(p / 1e6).toFixed(2)}M`;
-    if (abs >= 1e3) return `$${(p / 1e3).toFixed(abs >= 1e5 ? 0 : 1)}K`;
+    if (abs >= 1e3) return `$${(p / 1e3).toFixed(abs >= 1e5 ? 1 : 2)}K`;
     return `$${p.toFixed(abs < 10 ? 2 : 0)}`;
   }
   if (p === 0) return "0";
