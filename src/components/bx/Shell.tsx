@@ -40,6 +40,12 @@ export function Shell({ children }: { children: ReactNode }) {
   const [menu, setMenu] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   useEffect(() => {
+    try {
+      const f = localStorage.getItem("donchain.font");
+      if (f) document.documentElement.dataset.font = f;
+    } catch {
+      /* ignore */
+    }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "/" && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
         e.preventDefault();

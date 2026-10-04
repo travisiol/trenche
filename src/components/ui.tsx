@@ -482,7 +482,23 @@ export function Popover({ trigger, children, width = 280, align = "right" }: { t
 type Toast = { id: number; text: string; tone: "ok" | "err" | "info" };
 const toastListeners = new Set<(t: Toast) => void>();
 let toastId = 0;
+const MUTE_KEY = "donchain.toasts.muted";
+export function toastsMuted(): boolean {
+  try {
+    return localStorage.getItem(MUTE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+export function setToastsMuted(v: boolean) {
+  try {
+    localStorage.setItem(MUTE_KEY, v ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
 export function toast(text: string, tone: Toast["tone"] = "info") {
+  if (tone !== "err" && toastsMuted()) return;
   const t = { id: ++toastId, text, tone };
   toastListeners.forEach((l) => l(t));
 }
@@ -504,8 +520,8 @@ export function Toaster() {
         <div
           key={t.id}
           className={cx(
-            "fade-in pointer-events-auto px-4 py-3 rounded-lg text-sm font-medium border shadow-lg max-w-[360px] break-words flex items-start gap-2",
-            t.tone === "ok" ? "bg-up-soft border-up/30 text-up" : t.tone === "err" ? "bg-down-soft border-down/30 text-down" : "bg-card border-line text-text",
+            "fade-in pointer-events-auto px-3 py-2.5 rounded-md text-xs font-medium border shadow-lg max-w-[360px] break-words flex items-start gap-2",
+            t.tone === "ok" ? "bg-bg-50 border-green-100/40 text-green-100" : t.tone === "err" ? "bg-bg-50 border-decrease/40 text-decrease" : "bg-bg-50 border-line-100 text-text-100",
           )}
         >
           <Icon name={t.tone === "ok" ? "check" : t.tone === "err" ? "warning" : "info"} size={15} className="mt-0.5" />

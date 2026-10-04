@@ -72,10 +72,13 @@ function LaunchScreen({ initial }: { initial: LaunchForm }) {
     if (!q || quickDone.current || !presetsQ.data) return;
     const p = presetsQ.data.presets.find((x) => x.id === q);
     quickDone.current = true;
-    if (!p) return toast("Preset not found — save one from the Tasks panel first", "err");
-    setForm((f) => fromPreset(p.data, f));
-    setView("draft");
-    setConfirm(true);
+    const t = setTimeout(() => {
+      if (!p) return toast("Preset not found — save one from the Tasks panel first", "err");
+      setForm((f) => fromPreset(p.data, f));
+      setView("draft");
+      setConfirm(true);
+    }, 0);
+    return () => clearTimeout(t);
   }, [params, presetsQ.data]);
 
   const onPreset = async (action: "load" | "quick" | "save" | "delete", preset?: LaunchPreset, name?: string) => {
