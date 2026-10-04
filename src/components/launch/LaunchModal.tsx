@@ -391,14 +391,6 @@ function LaunchModalBody({ onClose, form, onChange, wallets, balances }: Props) 
                   </div>
                 </div>
 
-                <div className="pb-2">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <label className={cx("inline-flex h-8 cursor-pointer items-center gap-2 rounded-md border px-2.5 text-xs transition-colors", form.cashback ? "border-accent/40 bg-accent/15 text-text-100" : "border-line-100 bg-bg-50 text-text-200 hover:bg-white/[0.04]")} title="Sets pump.fun's creator cashback flag on the token — the only launch option this server supports">
-                      <input type="checkbox" className="pi-checkbox" checked={form.cashback} onChange={(e) => set("cashback", e.target.checked)} />
-                      Cashback
-                    </label>
-                  </div>
-                </div>
 
                 <div className="pb-2">
                   <div className="flex min-w-0 items-center gap-2">

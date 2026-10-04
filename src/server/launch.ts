@@ -570,7 +570,7 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   saveLaunches(st);
   track(st, mint);
   job.extra = { mint, mode, phase: "preparing" };
-  jobRun(job, async () => runLaunch(run, { pendingKeypair: pending.keypair, uri: pending.uri, devBuyLamports, slippageBps, cuPrice, bundleTip, cashback: !!req.cashback, req }));
+  jobRun(job, async () => runLaunch(run, { pendingKeypair: pending.keypair, uri: pending.uri, devBuyLamports, slippageBps, cuPrice, bundleTip, cashback: false, req })); // pump.fun rejects cashback coins since 2026-10 (create_v2 error 6082 CashbackDeprecated): the flag is never sent
   return { jobId: job.id, id: mint, mint, mode, tasks: tasks.map((t) => ({ id: t.id, type: t.type })) };
 }
 

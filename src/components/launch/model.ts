@@ -348,7 +348,7 @@ export function toExecuteRequest(f: LaunchForm, mint: string): LaunchExecuteRequ
     sellOnExternalThreshold: f.sellOnExternalEnabled ? f.sellOnExternalThreshold : undefined,
     autoDevSell: f.autoDevSellEnabled && v > 0 ? { mode: f.autoDevSellMode, value: v } : undefined,
     slippageBps: f.slippageBps,
-    cashback: f.cashback || undefined,
+    cashback: false,
     draftId: f.id || undefined,
   };
 }
