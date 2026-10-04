@@ -1,25 +1,80 @@
-/* Token routes' data: info (metadata + curve), trades (curveTradeHistory), holders (getTokenLargestAccounts), candles. */
+/* Token routes' data: info, trades, candles, stats, holders.
+ * Primary source = pump.fun's public APIs (pumpapi.ts: coin list by creator, swap-api trades and candles — cached
+ * server-side, N clients = 1 upstream call). Fallback = the RPC (curve account, curveTradeHistory). The RPC curve
+ * read stays the truth for the CurveState when it answers; balances are always RPC. */
 import { PublicKey } from "@solana/web3.js";
 import { curveTradeHistory } from "@/engine/solana/pump/positions.js";
-import { TOKEN_2022_PROGRAM, associatedTokenAddress, bondingCurvePda, tokenProgramFor } from "@/engine/solana/pump/pdas.js";
-import type { Candle, CandleTf, StatsWindow, TokenCandlesResponse, TokenHolder, TokenHoldersResponse, TokenInfo, TokenStatsResponse, TokenTrade, TokenTradesResponse, WindowStats } from "@/lib/types";
+import { INITIAL_REAL_TOKENS, TOKEN_2022_PROGRAM, associatedTokenAddress, bondingCurvePda, tokenProgramFor } from "@/engine/solana/pump/pdas.js";
+import type { Candle, CandleTf, CurveState, StatsWindow, TokenCandlesResponse, TokenHolder, TokenHoldersResponse, TokenInfo, TokenStatsResponse, TokenTrade, TokenTradesResponse, WindowStats } from "@/lib/types";
 import { HttpError } from "./api";
-import { fetchCurve, readConn, toCurveState, tokenProgramOf } from "./engine";
+import { PUMP_SUPPLY_TOKENS, fetchCurve, readConn, toCurveState, tokenProgramOf } from "./engine";
 import { feedCard, feedSolUsd } from "./feed";
 import { resolveMeta } from "./metadata";
 import { solPrice } from "./price";
+import { store } from "./store";
+import { TF_SECONDS, aggregateCandles, candlesFromTrades, normalizeCandles, pumpCandles, pumpCoin, pumpTrades, type PumpCoin } from "./pumpapi";
+
+/** creator of a mint, remembered for the process (launch records first, then the curve read once) */
+const creators = new Map<string, string>();
+async function creatorOf(mint: string): Promise<string | null> {
+  const known = creators.get(mint);
+  if (known) return known;
+  const rec = store().launches.find((l) => l.mint === mint);
+  const fromCard = feedCard(mint)?.creator ?? null;
+  let c = rec?.dev ?? fromCard;
+  if (!c) {
+    const found = await fetchCurve(readConn(), new PublicKey(mint)).catch(() => null);
+    c = found?.curve.creator.toBase58() ?? null;
+  }
+  if (c) creators.set(mint, c);
+  return c;
+}
+
+/** pump.fun coin row when the API answers (never throws) */
+async function coinOf(mint: string): Promise<PumpCoin | null> {
+  const creator = await creatorOf(mint);
+  if (!creator) return null;
+  return pumpCoin(mint, creator).catch(() => null);
+}
+
+/** CurveState synthesized from the pump.fun coin row (used when the RPC curve read fails) */
+function curveFromCoin(c: PumpCoin, solUsd: number | null): CurveState | null {
+  if (!c.bondingCurve || c.virtualTokenReserves === "0") return null;
+  const vSol = Number(c.virtualSolReserves) / 1e9;
+  const vTok = Number(c.virtualTokenReserves) / 1e6;
+  const priceSol = vTok > 0 ? vSol / vTok : 0;
+  const sold = INITIAL_REAL_TOKENS - BigInt(c.realTokenReserves);
+  const progress = c.complete ? 100 : Math.max(0, Math.min(100, Number((sold * BigInt(10000)) / INITIAL_REAL_TOKENS) / 100));
+  const mcSol = c.marketCapSol ?? priceSol * PUMP_SUPPLY_TOKENS;
+  return {
+    bondingCurve: c.bondingCurve,
+    virtualTokenReserves: c.virtualTokenReserves,
+    virtualSolReserves: c.virtualSolReserves,
+    realTokenReserves: c.realTokenReserves,
+    realSolReserves: c.realSolReserves,
+    tokenTotalSupply: c.totalSupply,
+    complete: c.complete,
+    creator: c.creator ?? "",
+    isCashbackCoin: c.isCashback,
+    progress,
+    marketCapSol: mcSol,
+    marketCapUsd: c.marketCapUsd ?? (solUsd ? mcSol * solUsd : null),
+    priceSol,
+  };
+}
 
 export async function tokenInfo(mint: string): Promise<TokenInfo> {
   const conn = readConn();
   const mintPk = new PublicKey(mint);
   const card = feedCard(mint);
-  const [meta, found, price] = await Promise.all([
-    resolveMeta(mint, card ? { name: card.name, symbol: card.symbol, uri: card.uri } : undefined, conn),
-    fetchCurve(conn, mintPk),
-    solPrice().catch(() => null),
-  ]);
+  const [coin, found, price] = await Promise.all([coinOf(mint), fetchCurve(conn, mintPk).catch(() => null), solPrice().catch(() => null)]);
   const usd = price?.usd ?? feedSolUsd();
-  const curve = found ? toCurveState(found.curve, found.pda, usd) : null;
+  const hint = coin ? { name: coin.name ?? undefined, symbol: coin.symbol ?? undefined, uri: coin.uri ?? undefined } : card ? { name: card.name, symbol: card.symbol, uri: card.uri } : undefined;
+  // metadata: pump.fun row first (no RPC), else the on-chain metadata (resolveMeta caches it)
+  const meta = coin?.name && coin.symbol ? { name: coin.name, symbol: coin.symbol, uri: coin.uri, image: coin.image, description: coin.description, twitter: coin.twitter, telegram: coin.telegram, website: coin.website, tokenProgram: coin.tokenProgram } : await resolveMeta(mint, hint, conn);
+  const curve = found ? toCurveState(found.curve, found.pda, usd) : coin ? curveFromCoin(coin, usd) : null;
+  // pump.fun's USD market cap is fresher than solPrice × SOL mc when both exist
+  if (curve && coin?.marketCapUsd && !curve.complete) curve.marketCapUsd = coin.marketCapUsd;
   const tokenProgram = meta.tokenProgram ?? (found ? await tokenProgramOf(conn, mintPk).then((p) => p.toBase58()).catch(() => null) : null);
   return {
     mint,
@@ -32,53 +87,64 @@ export async function tokenInfo(mint: string): Promise<TokenInfo> {
     telegram: meta.telegram,
     website: meta.website,
     tokenProgram,
-    creator: curve?.creator ?? card?.creator ?? null,
-    createdAt: card?.createdAt ?? null,
+    creator: curve?.creator || coin?.creator || card?.creator || null,
+    createdAt: coin?.createdAt ?? card?.createdAt ?? null,
     curve,
-    complete: curve?.complete ?? card?.complete ?? false,
+    complete: curve?.complete ?? coin?.complete ?? card?.complete ?? false,
     solPrice: usd,
+    source: coin ? (found ? "pump+rpc" : "pump") : found ? "rpc" : "none",
+    athMarketCapSol: coin?.athMarketCapSol ?? null,
     links: { pumpfun: `https://pump.fun/coin/${mint}`, solscan: `https://solscan.io/token/${mint}` },
   };
 }
 
-export async function tokenTrades(mint: string, limit: number): Promise<TokenTradesResponse> {
+/** trades newest first: pump.fun swap-api (≤ 300), else the curve history read from the RPC */
+async function tradesOf(mint: string, limit: number): Promise<{ trades: TokenTrade[]; source: "pump" | "rpc" }> {
+  const pump = await pumpTrades(mint, limit).catch(() => null);
+  if (pump && pump.length) return { trades: pump.map(({ priceUsd: _u, tokens: _t, ...t }) => t), source: "pump" };
   const rows = await curveTradeHistory(readConn(), mint, { max: Math.min(600, Math.max(20, limit)) });
-  const trades: TokenTrade[] = rows.slice(0, limit).map((t) => ({ side: t.side, wallet: t.wallet, solAmount: t.quoteEth, priceSol: t.priceEth, blockTime: t.blockTime, slot: t.block, signature: t.hash }));
-  return { mint, trades, supplyTokens: "1000000000" };
+  return { trades: rows.slice(0, limit).map((t) => ({ side: t.side, wallet: t.wallet, solAmount: t.quoteEth, priceSol: t.priceEth, blockTime: t.blockTime, slot: t.block, signature: t.hash })), source: pump ? "pump" : "rpc" };
 }
 
-const TF_SEC: Record<CandleTf, number> = { "1s": 1, "5s": 5, "15s": 15, "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1D": 86400 };
+export async function tokenTrades(mint: string, limit: number): Promise<TokenTradesResponse> {
+  const { trades, source } = await tradesOf(mint, limit);
+  return { mint, trades, supplyTokens: "1000000000", source };
+}
 
 export async function tokenCandles(mint: string, tf: CandleTf): Promise<TokenCandlesResponse> {
-  const rows = await curveTradeHistory(readConn(), mint, { max: 600 });
-  const sec = TF_SEC[tf];
-  const sorted = rows.filter((t) => t.blockTime > 0 && Number(t.priceEth) > 0).sort((a, b) => a.blockTime - b.blockTime || a.block - b.block);
-  const candles: Candle[] = [];
-  for (const t of sorted) {
-    const bucket = Math.floor(t.blockTime / sec) * sec;
-    const price = Number(t.priceEth);
-    const vol = Number(t.quoteEth);
-    const last = candles[candles.length - 1];
-    if (last && last.time === bucket) {
-      last.high = Math.max(last.high, price);
-      last.low = Math.min(last.low, price);
-      last.close = price;
-      last.volume += vol;
-    } else candles.push({ time: bucket, open: last?.close ?? price, high: Math.max(price, last?.close ?? price), low: Math.min(price, last?.close ?? price), close: price, volume: vol });
+  const sec = TF_SECONDS[tf];
+  const coin = await coinOf(mint);
+  let candles: Candle[] | null = await pumpCandles(mint, tf, coin?.createdAt ?? null).catch(() => null);
+  let source: TokenCandlesResponse["source"] = "pump";
+  // sub-minute buckets: the candle API lags a few seconds behind the trade list — merge the trades' buckets on top
+  if (sec < 60) {
+    const recent = await pumpTrades(mint, 300).catch(() => null);
+    if (recent?.length) {
+      const fromTrades = candlesFromTrades(recent, sec);
+      const lastApi = candles?.length ? candles[candles.length - 1].time : -1;
+      const tail = fromTrades.filter((c) => c.time > lastApi);
+      candles = normalizeCandles([...(candles ?? []), ...tail]);
+      if (!lastApi) source = "trades";
+    }
   }
-  return { mint, tf, candles, trades: sorted.length };
+  if (!candles || !candles.length) {
+    const rows = await curveTradeHistory(readConn(), mint, { max: 600 });
+    candles = aggregateCandles(candlesFromTrades(rows.map((t) => ({ blockTime: t.blockTime, priceSol: t.priceEth, solAmount: t.quoteEth })), 1), sec);
+    source = "rpc";
+  }
+  return { mint, tf, candles, trades: candles.reduce((n, c) => n + (c.volume > 0 ? 1 : 0), 0), source };
 }
 
 const WINDOWS: Record<StatsWindow, number> = { "5m": 300, "1h": 3600, "6h": 6 * 3600, "24h": 24 * 3600 };
 
-/** Block X window stats (5m / 1h / 6h / 24h: volume, buys/sells, price change) from the last 600 curve trades */
+/** Block X window stats (5m / 1h / 6h / 24h: volume, buys/sells, price change) from the last 300 trades */
 export async function tokenStats(mint: string): Promise<TokenStatsResponse> {
-  const rows = await curveTradeHistory(readConn(), mint, { max: 600 });
-  const sorted = rows.filter((t) => t.blockTime > 0).sort((a, b) => a.blockTime - b.blockTime || a.block - b.block);
+  const { trades, source } = await tradesOf(mint, 300);
+  const sorted = trades.filter((t) => t.blockTime > 0).sort((a, b) => a.blockTime - b.blockTime || a.slot - b.slot);
   const now = Math.floor(Date.now() / 1000);
   const oldest = sorted[0]?.blockTime ?? now;
   const last = sorted[sorted.length - 1];
-  const lastPrice = last ? Number(last.priceEth) : null;
+  const lastPrice = last ? Number(last.priceSol) : null;
   const windows = {} as Record<StatsWindow, WindowStats>;
   for (const [name, sec] of Object.entries(WINDOWS) as [StatsWindow, number][]) {
     const start = now - sec;
@@ -88,7 +154,7 @@ export async function tokenStats(mint: string): Promise<TokenStatsResponse> {
       buys = 0,
       sells = 0;
     for (const t of inWin) {
-      const v = Number(t.quoteEth) || 0;
+      const v = Number(t.solAmount) || 0;
       if (t.side === "buy") {
         buysSol += v;
         buys++;
@@ -100,9 +166,9 @@ export async function tokenStats(mint: string): Promise<TokenStatsResponse> {
     // price change: last trade vs the last trade BEFORE the window (or the first inside it when history starts inside)
     const before = [...sorted].reverse().find((t) => t.blockTime < start);
     const base = before ?? inWin[0];
-    const basePrice = base ? Number(base.priceEth) : 0;
+    const basePrice = base ? Number(base.priceSol) : 0;
     const priceChangePct = lastPrice !== null && basePrice > 0 && inWin.length > 0 ? ((lastPrice - basePrice) / basePrice) * 100 : null;
-    const partial = sorted.length >= 600 && oldest > start;
+    const partial = sorted.length >= 300 && oldest > start;
     windows[name] = {
       volumeSol: round(buysSol + sellsSol),
       buysSol: round(buysSol),
@@ -115,7 +181,7 @@ export async function tokenStats(mint: string): Promise<TokenStatsResponse> {
       partial,
     };
   }
-  return { mint, at: Date.now(), lastPriceSol: lastPrice, tradesRead: sorted.length, windows };
+  return { mint, at: Date.now(), lastPriceSol: lastPrice, tradesRead: sorted.length, windows, source };
 }
 const round = (n: number) => Math.round(n * 1e6) / 1e6;
 

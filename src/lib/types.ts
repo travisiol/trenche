@@ -430,6 +430,10 @@ export type TokenInfo = {
   curve: CurveState | null;
   complete: boolean;
   solPrice: number | null;
+  /** where the row came from: pump.fun's API, the RPC curve read, both, or nothing answered */
+  source: "pump" | "rpc" | "pump+rpc" | "none";
+  /** all-time-high market cap in SOL (pump.fun), null when unknown */
+  athMarketCapSol: number | null;
   links: { pumpfun: string; solscan: string };
 };
 
@@ -446,7 +450,7 @@ export type TokenTrade = {
   signature: string;
 };
 /** GET /api/token/[mint]/trades?limit= */
-export type TokenTradesResponse = { mint: string; trades: TokenTrade[]; supplyTokens: string };
+export type TokenTradesResponse = { mint: string; trades: TokenTrade[]; supplyTokens: string; source: "pump" | "rpc" };
 
 export type TokenHolder = {
   /** token account */
@@ -483,7 +487,7 @@ export type Candle = {
   volume: number;
 };
 /** GET /api/token/[mint]/candles?tf= */
-export type TokenCandlesResponse = { mint: string; tf: CandleTf; candles: Candle[]; trades: number };
+export type TokenCandlesResponse = { mint: string; tf: CandleTf; candles: Candle[]; trades: number; source: "pump" | "trades" | "rpc" };
 
 /** Block X trading page "window stats" (5m +25.9% · Vol · Buys · Sells · Net Vol.) */
 export type StatsWindow = "5m" | "1h" | "6h" | "24h";
@@ -511,6 +515,29 @@ export type TokenStatsResponse = {
   lastPriceSol: number | null;
   tradesRead: number;
   windows: Record<StatsWindow, WindowStats>;
+  source: "pump" | "rpc";
+};
+
+/* ------------------------------------------------------------ rpc health */
+
+/** GET /api/rpc/health — the bottom-bar status pill */
+export type RpcHealthResponse = {
+  provider: "public" | "private";
+  /** read RPC URL with any api-key masked */
+  url: string;
+  /** median round-trip of the last 20 upstream calls (ms), null before the first call */
+  latencyMs: number | null;
+  /** 429 / rate-limit answers in the last 60 s */
+  rateLimited: number;
+  requestsLastMinute: number;
+  cacheHitsLastMinute: number;
+  inflight: number;
+  queued: number;
+  lastError: string | null;
+  lastErrorAt: number | null;
+  at: number;
+  /** pump.fun data API (coin / trades / candles) */
+  pump: { ok: boolean; blockedUntil: number | null; lastError: string | null; lastErrorAt: number | null; lastOkAt: number | null; callsLastMinute: number };
 };
 
 /** Holdings strip "Recently viewed": server-side list, newest first, 20 max */
@@ -965,7 +992,10 @@ export type LaunchRecord = {
 /* --------------------------------------------------------------- dev room */
 
 /** GET /api/dev/launches */
-export type LaunchesResponse = { launches: LaunchRecord[] };
+/** launched = create confirmed on chain · failed = definitive error (reverted / refused) · pending = signature sent,
+ *  chain not yet readable (an expired blockhash on a rate-limited RPC is never "failed": reconcile.ts re-checks) */
+export type LaunchRecordStatus = "launched" | "failed" | "pending";
+export type LaunchesResponse = { launches: (LaunchRecord & { status: LaunchRecordStatus })[] };
 
 /** GET /api/dev/fees/[mint] — creator fees accrue per CREATOR vault, not per mint */
 export type CreatorFeesResponse = {

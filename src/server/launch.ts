@@ -34,6 +34,7 @@ import { buyWithWallets, groupWallets, labelOf, readConn, requireUnlocked, sendC
 import { jobNew, jobNote, jobPush, jobRun } from "./jobs";
 import { registerRuntimeProducer, RESTORE_NOTE, restoreSection, saveRuntimeSoon } from "./persist";
 import { syncPumpCluster } from "./pumpcluster";
+import { checkCreateOnChain, reconcileLaunches } from "./reconcile";
 import { fetchUriJson } from "./metadata";
 import { ipfsToHttp } from "@/engine/solana/pump/metadata.js";
 import { isDevnet, logActivity, saveLaunches, store, track, type Job, type PendingMint } from "./store";
@@ -223,6 +224,8 @@ function registry(): Map<string, LaunchRun> {
       const run = restoreRun(sv);
       if (run) map.set(run.state.mint, run);
     }
+    // startup reconcile: records whose create was sent but never confirmed (RPC 429 during the window) are re-checked
+    setTimeout(() => void reconcileLaunches({ force: true }).catch(() => 0), 1500);
   }
   return rt.launches as Map<string, LaunchRun>;
 }
@@ -626,11 +629,35 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
       }
       break;
     } else {
-      const r = await engineExecuteLaunch(conn, sendConn(), prep, {});
+      const prepArgs = [
+        { dev: st.sol.keypair(dev), name: run.state.name, symbol: run.state.symbol, uri: o.uri, devBuyLamports: o.devBuyLamports, mint: o.pendingKeypair, cashback: o.cashback },
+        bundleRows,
+        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : tipLamportsFor(undefined) },
+      ] as const;
+      const r = await engineExecuteLaunch(conn, sendConn(), prep, {
+        // the create really never landed (not in the history, no curve): re-sign it with a fresh blockhash (2× max)
+        rebuildCreate: async () => {
+          const fresh = await prepareLaunch(conn, prepArgs[0], prepArgs[1], prepArgs[2]);
+          step(run, "create", true, "Create re-signed with a fresh blockhash (the first one expired without landing).");
+          return { tx: fresh.createTx, lastValidBlockHeight: fresh.lastValidBlockHeight };
+        },
+        onNote: (note) => step(run, "info", true, note),
+      });
       created = r.create;
       buyOutcomes = r.buys;
       break;
     }
+  }
+
+  // "blockhash expired" / "not found" on a rate-limited RPC is not a failure: ask the chain before deciding
+  if (!created.confirmed && created.signature && !/^simulation:|InstructionError|Custom/i.test(created.error ?? "")) {
+    step(run, "create", true, `Confirmation inconclusive (${created.error ?? "?"}) — checking the signature and the bonding curve on chain…`);
+    const check = await checkCreateOnChain(mint, created.signature, 4).catch(() => null);
+    if (check?.landed) {
+      created = { confirmed: true, signature: created.signature };
+      step(run, "create", true, check.how === "history" ? "Create found in the transaction history: the token exists." : "Bonding curve found on chain: the token exists.");
+    } else if (check?.reverted) created = { ...created, error: `Create transaction reverted: ${check.reverted}` };
+    else if (check?.unreadable) created = { ...created, error: `${created.error ?? "not confirmed"} — the RPC could not read the chain; the launch list re-checks it every 30 s` };
   }
 
   run.state.createSignature = created.signature ?? null;
