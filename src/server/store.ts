@@ -269,7 +269,9 @@ export function saveSettings(st: Store): void {
 }
 
 export function publicSettings(s: StoredSettings): Settings {
+  const pump = store().runtime.pumpCluster as Settings["pump"] & { rpcUrl?: string } | undefined;
   return {
+    pump: pump && pump.cluster === s.cluster ? { cluster: pump.cluster, feeRecipients: pump.feeRecipients, secondRecipients: pump.secondRecipients, initialVirtualSol: pump.initialVirtualSol, initialVirtualTokens: pump.initialVirtualTokens, initialRealTokens: pump.initialRealTokens, at: pump.at } : null,
     cluster: s.cluster,
     explorerSuffix: isDevnet(s) ? "?cluster=devnet" : "",
     effectiveRpcUrl: effectiveRpcUrl(s),

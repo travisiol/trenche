@@ -30,6 +30,7 @@ import { armAutodump, autodumpStatus } from "./autodump";
 import { buyWithWallets, groupWallets, readConn, requireUnlocked, sendConn, tipLamportsFor, vaultWallets } from "./engine";
 import { jobNew, jobNote, jobPush, jobRun } from "./jobs";
 import { registerRuntimeProducer, RESTORE_NOTE, restoreSection, saveRuntimeSoon } from "./persist";
+import { syncPumpCluster } from "./pumpcluster";
 import { fetchUriJson } from "./metadata";
 import { ipfsToHttp } from "@/engine/solana/pump/metadata.js";
 import { isDevnet, logActivity, saveLaunches, store, track, type Job, type PendingMint } from "./store";
@@ -343,6 +344,7 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   requireUnlocked();
   const st = store();
   const mint = String(req.mint ?? "").trim();
+  await syncPumpCluster();
   const pending = pendings().get(mint);
   if (!pending) throw new HttpError(404, "Unknown mint: call /api/launch/prepare first (pending mints are kept in runtime.json, 50 max).");
   if (registry().has(mint)) throw new HttpError(409, "This mint was already launched.");

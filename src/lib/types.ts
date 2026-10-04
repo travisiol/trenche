@@ -176,10 +176,12 @@ export type Settings = {
   presets: [string, string, string];
   keybinds: { quickBuy: [string, string, string]; close: string };
   theme: "dark";
+  /** pump.fun constants in use for this cluster (null until the first trade/launch read them on devnet) */
+  pump: { cluster: Cluster; feeRecipients: string[]; secondRecipients: string[]; initialVirtualSol: string; initialVirtualTokens: string; initialRealTokens: string; at: number } | null;
 };
 /** POST /api/settings — partial; `pumpportalKey: ""` clears the key, omit to keep */
 export type SettingsUpdateRequest = Partial<
-  Omit<Settings, "hasPumpportalKey" | "hasHeliusKey" | "theme" | "explorerSuffix" | "effectiveRpcUrl" | "effectiveSendRpcUrl">
+  Omit<Settings, "hasPumpportalKey" | "hasHeliusKey" | "theme" | "explorerSuffix" | "effectiveRpcUrl" | "effectiveSendRpcUrl" | "pump">
 > & {
   pumpportalKey?: string;
   /** "" clears, omit keeps */

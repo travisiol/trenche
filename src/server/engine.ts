@@ -15,6 +15,7 @@ import { buildBuyTx, buildSellTx, planBuys, planSells, signWith, type BuyRow, ty
 import type { CurveState, JobStep } from "@/lib/types";
 import { HttpError, lamportsOf, solString } from "./api";
 import { jobPush, jobNote } from "./jobs";
+import { syncPumpCluster } from "./pumpcluster";
 import { isDevnet, logActivity, store, track, type Job } from "./store";
 
 export { solString };
@@ -207,6 +208,7 @@ async function dispatch(
 /** buy `lamportsEach` of SOL on `mint` from every wallet. Fails cleanly (readable error) on empty wallets. */
 export async function buyWithWallets(opts: TradeOpts & { lamportsEach: bigint | ((address: string) => bigint) }): Promise<TradeOutcome[]> {
   requireUnlocked();
+  await syncPumpCluster();
   opts = devnetPlain(opts);
   const st = store();
   const conn = readConn();
@@ -258,6 +260,7 @@ export async function buyWithWallets(opts: TradeOpts & { lamportsEach: bigint | 
 /** sell `percent` of each wallet's balance. */
 export async function sellWithWallets(opts: TradeOpts & { percent: number }): Promise<TradeOutcome[]> {
   requireUnlocked();
+  await syncPumpCluster();
   opts = devnetPlain(opts);
   const st = store();
   const conn = readConn();

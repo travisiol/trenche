@@ -1,12 +1,16 @@
 import { intIn, json, lamportsOf, readBody, route, solString } from "@/server/api";
 import { publicSettings, saveSettings, store } from "@/server/store";
+import { syncPumpCluster } from "@/server/pumpcluster";
 import { normalizeSolanaRpc, isHeliusSender } from "@/engine/solana/config.js";
 import type { SettingsUpdateRequest } from "@/lib/types";
 import { HttpError } from "@/server/api";
 
 export const dynamic = "force-dynamic";
 
-export const GET = route(async () => json(publicSettings(store().settings)));
+export const GET = route(async () => {
+  await syncPumpCluster().catch(() => null);
+  return json(publicSettings(store().settings));
+});
 
 export const POST = route(async (req: Request) => {
   const body = await readBody<SettingsUpdateRequest>(req);
