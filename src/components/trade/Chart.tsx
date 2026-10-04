@@ -14,7 +14,7 @@ export function CandleChart({ candles, live, height = 380, unitLabel }: { candle
     if (!el.current) return;
     const c = createChart(el.current, {
       height,
-      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: "#aab2c0", fontFamily: "var(--font-jetbrains), monospace", fontSize: 11, attributionLogo: false },
+      layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: "#aab2c0", fontFamily: "var(--font-jetbrains), monospace", fontSize: 12, attributionLogo: false },
       grid: { vertLines: { color: "#1c2230" }, horzLines: { color: "#1c2230" } },
       rightPriceScale: { borderColor: "#1c2230", scaleMargins: { top: 0.08, bottom: 0.25 } },
       timeScale: { borderColor: "#1c2230", timeVisible: true, secondsVisible: true, rightOffset: 4 },

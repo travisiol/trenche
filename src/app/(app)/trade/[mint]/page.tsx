@@ -1,14 +1,15 @@
 "use client";
 import { use, useState } from "react";
 import { Icon3D } from "@/components/Icon3D";
-import { ApiError, Capsule, Panel, Segmented, Spinner, Tabs, cx } from "@/components/ui";
+import { ApiError, Card, KV, Loading, Page, Segmented, Spinner, Tabs, cx } from "@/components/ui";
 import { CandleChart } from "@/components/trade/Chart";
 import { TradePanel } from "@/components/trade/TradePanel";
 import { DevRoom, TokenHeader } from "@/components/dev/DevRoom";
 import { useGet, useSSE } from "@/lib/api";
 import { useWallets } from "@/lib/store";
+import { groupPositions } from "@/lib/positions";
 import { age, pct, short, sol, solscanAccount, solscanTx, time } from "@/lib/format";
-import type { Candle, CandleTf, FeedTrade, TokenCandlesResponse, TokenHoldersResponse, TokenInfo, TokenTradesResponse } from "@/lib/types";
+import type { Candle, CandleTf, FeedTrade, PositionsResponse, TokenCandlesResponse, TokenHoldersResponse, TokenInfo, TokenTradesResponse } from "@/lib/types";
 
 const TF: CandleTf[] = ["1s", "15s", "1m"];
 const TF_SEC: Record<CandleTf, number> = { "1s": 1, "15s": 15, "1m": 60 };
@@ -23,6 +24,8 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
   const [liveCandle, setLiveCandle] = useState<Candle | null>(null);
   const wallets = useWallets();
   const mine = new Set((wallets.data?.wallets ?? []).map((w) => w.address));
+  const positions = useGet<PositionsResponse>(`/api/positions?mints=${mint}`, 5000);
+  const myValue = groupPositions(positions.data).find((p) => p.mint === mint)?.valueSol;
 
   // live trades from the feed stream (only real PumpPortal trade events carry this mint reliably)
   useSSE("/api/feed/stream", {
@@ -44,106 +47,126 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
 
   const t = token.data;
   return (
-    <div className="flex-1 grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-4 p-4 min-h-0">
-      <div className="flex flex-col gap-4 min-w-0">
-        <Panel bodyClassName="p-4">
-          <TokenHeader mint={mint} token={t} error={token.error} retry={token.refresh} />
-        </Panel>
+    <Page>
+      <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-4 items-start">
+        <div className="flex flex-col gap-4 min-w-0">
+          {/* header */}
+          <Card>
+            <TokenHeader mint={mint} token={t} error={token.error} retry={token.refresh} />
+          </Card>
 
-        <Panel glow bodyClassName="p-0">
-          <div className="flex items-center gap-2 px-3 h-10 border-b border-line">
-            <Icon3D name="trending" size={18} />
-            <span className="text-xs font-semibold">{t?.symbol ?? short(mint)} / SOL</span>
-            <span className="ml-auto flex items-center gap-2">
-              {candles.data ? <span className="mono text-[11px] text-text-3">{candles.data.trades} trades</span> : null}
-              <Segmented size="xs" value={tf} onChange={setTf} options={TF.map((x) => ({ value: x, label: x }))} />
-            </span>
-          </div>
-          {candles.error ? (
-            <ApiError error={candles.error} retry={candles.refresh} />
-          ) : candles.loading && !candles.data ? (
-            <div className="h-[380px] flex items-center justify-center text-text-3">
-              <Spinner />
-            </div>
-          ) : !candles.data?.candles.length ? (
-            <div className="h-[380px] flex flex-col items-center justify-center text-text-3 text-xs gap-1">
-              <span className="font-medium text-text-2">No trade yet on the curve</span>
-              <span>Candles are built from the bonding-curve history as soon as a trade lands.</span>
-            </div>
-          ) : (
-            <CandleChart candles={candles.data.candles} live={liveCandle} unitLabel="SOL per token" />
-          )}
-        </Panel>
+          {/* chart */}
+          <Card
+            glow
+            title={`${t?.symbol ?? short(mint)} / SOL`}
+            description={candles.data ? `${candles.data.trades} trades on the curve · price in SOL per token` : "Price in SOL per token, built from the bonding-curve history."}
+            icon={<Icon3D name="trending" size={24} />}
+            actions={<Segmented size="xs" value={tf} onChange={setTf} options={TF.map((x) => ({ value: x, label: x }))} />}
+            flush
+          >
+            {candles.error ? (
+              <ApiError error={candles.error} retry={candles.refresh} />
+            ) : candles.loading && !candles.data ? (
+              <div className="h-[380px] flex items-center justify-center text-text-3">
+                <Spinner />
+              </div>
+            ) : !candles.data?.candles.length ? (
+              <div className="h-[380px] flex flex-col items-center justify-center text-center gap-1 px-6">
+                <span className="text-[15px] font-semibold">No trade yet on the curve</span>
+                <span className="text-sm text-text-2">Candles appear as soon as the first trade lands.</span>
+              </div>
+            ) : (
+              <CandleChart candles={candles.data.candles} live={liveCandle} />
+            )}
+          </Card>
 
-        <Panel bodyClassName="p-0 flex flex-col min-h-[280px]">
-          <Tabs value={tab} onChange={setTab} tabs={[{ value: "trades", label: "Trades" }, { value: "holders", label: "Holders" }, { value: "positions", label: "Positions" }]} />
-          <div className="flex-1 overflow-y-auto">
-            {tab === "trades" ? <TradesTab mint={mint} live={liveTrades} mine={mine} /> : tab === "holders" ? <HoldersTab mint={mint} mine={mine} /> : <div className="p-3"><DevRoom mint={mint} embedded /></div>}
-          </div>
-        </Panel>
+          {/* tabs */}
+          <Card flush className="min-h-[320px]">
+            <Tabs value={tab} onChange={setTab} tabs={[{ value: "trades", label: "Trades" }, { value: "holders", label: "Holders" }, { value: "positions", label: "My positions" }]} />
+            <div className="flex-1 overflow-auto">
+              {tab === "trades" ? (
+                <TradesTab mint={mint} live={liveTrades} mine={mine} />
+              ) : tab === "holders" ? (
+                <HoldersTab mint={mint} mine={mine} />
+              ) : (
+                <div className="p-4">
+                  <DevRoom mint={mint} embedded />
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+
+        <Card glow title={side(t)} description="One click per wallet. Nothing is sent before you press the big button." icon={<Icon3D name="buy" size={24} />} className="xl:sticky xl:top-[72px]">
+          <TradePanel mint={mint} symbol={t?.symbol ?? null} valueSol={myValue !== undefined ? Number(myValue) : undefined} />
+        </Card>
       </div>
-
-      <Panel glow title="Trade" icon={<Icon3D name="buy" size={22} />} bodyClassName="p-4" className="xl:sticky xl:top-[72px] self-start">
-        <TradePanel mint={mint} symbol={t?.symbol ?? null} />
-      </Panel>
-    </div>
+    </Page>
   );
+}
+
+function side(t: TokenInfo | null) {
+  return t?.symbol ? `Trade ${t.symbol}` : "Trade";
 }
 
 function TradesTab({ mint, live, mine }: { mint: string; live: FeedTrade[]; mine: Set<string> }) {
   const q = useGet<TokenTradesResponse>(`/api/token/${mint}/trades?limit=100`, 5000);
   if (q.error) return <ApiError error={q.error} retry={q.refresh} />;
-  if (q.loading && !q.data)
-    return (
-      <div className="flex items-center gap-2 text-xs text-text-3 p-4">
-        <Spinner size={14} /> Reading curve history…
-      </div>
-    );
+  if (q.loading && !q.data) return <Loading>Reading the curve history…</Loading>;
   const rows = q.data?.trades ?? [];
   return (
-    <table className="w-full text-xs">
-      <thead className="label text-left">
-        <tr className="border-b border-line">
-          <th className="font-medium px-3 py-2">Time</th>
-          <th className="font-medium px-3 py-2">Side</th>
-          <th className="font-medium px-3 py-2 text-right">SOL</th>
-          <th className="font-medium px-3 py-2 text-right">Price</th>
-          <th className="font-medium px-3 py-2">Wallet</th>
-          <th className="font-medium px-3 py-2 text-right">Tx</th>
+    <table className="table w-full text-sm">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Side</th>
+          <th className="r">SOL</th>
+          <th className="r">Price</th>
+          <th>Wallet</th>
+          <th className="r">Transaction</th>
         </tr>
       </thead>
       <tbody>
         {live.map((t, i) => (
-          <tr key={`l${i}`} className={cx("h-9 border-b border-line/60", t.side === "buy" ? "flash-up" : "flash-down")}>
-            <td className="px-3 mono text-text-3">{time(t.at)}</td>
-            <td className={cx("px-3 font-medium", t.side === "buy" ? "text-up" : "text-down")}>{t.side}</td>
-            <td className="px-3 text-right mono">{sol(t.solAmount)}</td>
-            <td className="px-3 text-right mono text-text-3">{t.tokenAmount ? (t.solAmount / t.tokenAmount).toExponential(2) : "—"}</td>
-            <td className="px-3 mono">{t.trader ? <span className={mine.has(t.trader) ? "text-accent" : ""}>{short(t.trader)}</span> : "—"}</td>
-            <td className="px-3 text-right">{t.signature ? <a href={solscanTx(t.signature)} target="_blank" rel="noreferrer" className="text-accent hover:underline mono">{short(t.signature)}</a> : <span className="text-text-3">live</span>}</td>
+          <tr key={`l${i}`} className={cx(t.side === "buy" ? "flash-up" : "flash-down")}>
+            <td className="mono text-text-3">{time(t.at)}</td>
+            <td className={cx("font-medium", t.side === "buy" ? "text-up" : "text-down")}>{t.side === "buy" ? "Buy" : "Sell"}</td>
+            <td className="r">{sol(t.solAmount)}</td>
+            <td className="r text-text-3">{t.tokenAmount ? (t.solAmount / t.tokenAmount).toExponential(2) : "—"}</td>
+            <td className="mono">{t.trader ? <span className={mine.has(t.trader) ? "text-accent" : ""}>{short(t.trader)}</span> : "—"}</td>
+            <td className="r">
+              {t.signature ? (
+                <a href={solscanTx(t.signature)} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                  {short(t.signature)} ↗
+                </a>
+              ) : (
+                <span className="text-text-3">live</span>
+              )}
+            </td>
           </tr>
         ))}
         {rows.map((t) => (
-          <tr key={t.signature} className="h-9 border-b border-line/60 hover:bg-white/[0.02]">
-            <td className="px-3 mono text-text-3">{time(t.blockTime * 1000)}</td>
-            <td className={cx("px-3 font-medium", t.side === "buy" ? "text-up" : "text-down")}>{t.side}</td>
-            <td className="px-3 text-right mono">{sol(t.solAmount)}</td>
-            <td className="px-3 text-right mono text-text-3">{Number(t.priceSol).toExponential(2)}</td>
-            <td className="px-3 mono">
-              <a href={solscanAccount(t.wallet)} target="_blank" rel="noreferrer" className={cx("hover:text-accent", mine.has(t.wallet) ? "text-accent" : "")}>
+          <tr key={t.signature} className="hover:bg-white/[0.02]">
+            <td className="mono text-text-3">{time(t.blockTime * 1000)}</td>
+            <td className={cx("font-medium", t.side === "buy" ? "text-up" : "text-down")}>{t.side === "buy" ? "Buy" : "Sell"}</td>
+            <td className="r">{sol(t.solAmount)}</td>
+            <td className="r text-text-3">{Number(t.priceSol).toExponential(2)}</td>
+            <td className="mono">
+              <a href={solscanAccount(t.wallet)} target="_blank" rel="noreferrer" className={cx("hover:text-accent", mine.has(t.wallet) ? "text-accent" : "")} title={mine.has(t.wallet) ? "One of your wallets" : undefined}>
                 {short(t.wallet)}
+                {mine.has(t.wallet) ? " (you)" : ""}
               </a>
             </td>
-            <td className="px-3 text-right">
-              <a href={solscanTx(t.signature)} target="_blank" rel="noreferrer" className="text-accent hover:underline mono">
-                {short(t.signature)}
+            <td className="r">
+              <a href={solscanTx(t.signature)} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                {short(t.signature)} ↗
               </a>
             </td>
           </tr>
         ))}
         {!rows.length && !live.length ? (
           <tr>
-            <td colSpan={6} className="p-4 text-text-3 text-center">
+            <td colSpan={6} className="p-6 text-text-2 text-center">
               No trade on this curve yet.
             </td>
           </tr>
@@ -156,45 +179,51 @@ function TradesTab({ mint, live, mine }: { mint: string; live: FeedTrade[]; mine
 function HoldersTab({ mint, mine }: { mint: string; mine: Set<string> }) {
   const q = useGet<TokenHoldersResponse>(`/api/token/${mint}/holders`, 10000);
   if (q.error) return <ApiError error={q.error} retry={q.refresh} />;
-  if (q.loading && !q.data)
-    return (
-      <div className="flex items-center gap-2 text-xs text-text-3 p-4">
-        <Spinner size={14} /> getTokenLargestAccounts…
-      </div>
-    );
+  if (q.loading && !q.data) return <Loading>Reading the largest token accounts…</Loading>;
   const rows = q.data?.holders ?? [];
   return (
     <div>
-      <div className="flex items-center gap-2 px-3 h-9 border-b border-line text-[11px] text-text-3">
-        <Capsule k="Top 10">{pct(q.data?.top10Pct, 1)}</Capsule>
-        <Capsule k="Dev">{pct(q.data?.devPct, 1)}</Capsule>
-        <span className="ml-auto mono">{rows.length} accounts</span>
+      <div className="flex items-center gap-6 px-4 py-3 border-b border-line">
+        <KV label="Top 10 hold" value={pct(q.data?.top10Pct, 1)} />
+        <KV label="Dev holds" value={pct(q.data?.devPct, 1)} />
+        <span className="ml-auto hint">
+          Top {rows.length} accounts from the RPC · {age(q.at)} ago
+        </span>
       </div>
-      <table className="w-full text-xs">
+      <table className="table w-full text-sm">
+        <thead>
+          <tr>
+            <th className="w-10">#</th>
+            <th>Owner</th>
+            <th className="r">Tokens</th>
+            <th className="r">Supply</th>
+          </tr>
+        </thead>
         <tbody>
           {rows.map((h, i) => (
-            <tr key={h.account} className="h-9 border-b border-line/60 hover:bg-white/[0.02]">
-              <td className="px-3 mono text-text-3 w-8">{i + 1}</td>
-              <td className="px-3 mono">
+            <tr key={h.account} className="hover:bg-white/[0.02]">
+              <td className="mono text-text-3">{i + 1}</td>
+              <td className="mono">
                 <a href={solscanAccount(h.owner ?? h.account)} target="_blank" rel="noreferrer" className={cx("hover:text-accent", h.owner && mine.has(h.owner) ? "text-accent" : "")}>
                   {short(h.owner ?? h.account, 6, 6)}
                 </a>
-                {h.isCurve ? <Capsule tone="accent" className="ml-2">curve</Capsule> : null}
-                {h.isDev ? <Capsule tone="warn" className="ml-2">dev</Capsule> : null}
-                {h.owner && mine.has(h.owner) ? <Capsule tone="up" className="ml-2">mine</Capsule> : null}
+                {h.isCurve ? <span className="ml-2 text-[13px] text-accent">bonding curve</span> : null}
+                {h.isDev ? <span className="ml-2 text-[13px] text-warn">dev</span> : null}
+                {h.owner && mine.has(h.owner) ? <span className="ml-2 text-[13px] text-up">you</span> : null}
               </td>
-              <td className="px-3 text-right mono">{sol(Number(h.amount) / 1e6, 0)}</td>
-              <td className="px-3 text-right mono text-text-2 w-20">{pct(h.pct, 2)}</td>
+              <td className="r">{sol(Number(h.amount) / 1e6, 0)}</td>
+              <td className="r text-text-2">{pct(h.pct, 2)}</td>
             </tr>
           ))}
           {!rows.length ? (
             <tr>
-              <td className="p-4 text-text-3 text-center">No holder found.</td>
+              <td colSpan={4} className="p-6 text-text-2 text-center">
+                No holder found.
+              </td>
             </tr>
           ) : null}
         </tbody>
       </table>
-      <p className="px-3 py-2 text-[10px] text-text-3">Top 20 accounts from the RPC; {age(q.at)} ago.</p>
     </div>
   );
 }

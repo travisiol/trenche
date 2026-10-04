@@ -5,7 +5,7 @@ import { TASK_LIMITS } from "@/lib/types";
 import { short, sol } from "@/lib/format";
 import { Icon3D } from "../Icon3D";
 import { Icon } from "../icons";
-import { Button, Field, Input, Segmented, Toggle, cx } from "../ui";
+import { Field, Input, Segmented, Toggle, cx } from "../ui";
 import { TASK_META, taskSentence, taskWallets, validateTask, type FormTask } from "./model";
 
 type Props = {

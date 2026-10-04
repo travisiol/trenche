@@ -5,8 +5,10 @@ import type { FeedCard as Card, JobCreated } from "@/lib/types";
 import { failureMessage, post } from "@/lib/api";
 import { useSettings, useVault, useWallets } from "@/lib/store";
 import { age, compact, pct, short, sol, usd } from "@/lib/format";
-import { Button, Capsule, Copy, Progress, TokenImage, cx, toast } from "../ui";
+import { Button, Capsule, Copy, KV, Progress, TokenImage, cx, toast } from "../ui";
+import { Icon } from "../icons";
 
+/** Calm card: image · symbol + name · age, then two rows of labelled stats, one quick-buy button. */
 export function FeedCardView({ card, now, preset, hovered, onHover }: { card: Card; now: number; preset: string; hovered: boolean; onHover: (mint: string | null) => void }) {
   const router = useRouter();
   const [confirm, setConfirm] = useState(false);
@@ -31,6 +33,7 @@ export function FeedCardView({ card, now, preset, hovered, onHover }: { card: Ca
     }
   };
 
+  const approx = card.volumeApprox ? "≈ " : "";
   return (
     <div
       role="button"
@@ -40,57 +43,64 @@ export function FeedCardView({ card, now, preset, hovered, onHover }: { card: Ca
       onMouseLeave={() => onHover(null)}
       onClick={() => router.push(`/trade/${card.mint}`)}
       onKeyDown={(e) => e.key === "Enter" && router.push(`/trade/${card.mint}`)}
-      className={cx("card p-2.5 flex gap-2.5 cursor-pointer fade-in", hovered ? "!border-accent/60" : "")}
+      className={cx("card p-3 flex flex-col gap-3 cursor-pointer fade-in", hovered ? "!border-accent/60" : "")}
     >
-      <TokenImage src={card.image} alt={card.symbol ?? "?"} size={56} className="rounded-xl" />
-      <div className="min-w-0 flex-1 flex flex-col gap-1.5">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <span className="font-semibold text-[13px] truncate">{card.symbol ?? short(card.mint)}</span>
-          <span className="text-text-3 text-xs truncate">{card.name}</span>
-          <span className="ml-auto text-[11px] text-up mono shrink-0">{age(card.createdAt, now)}</span>
-        </div>
-        <div className="flex items-center gap-2 text-[11px]">
-          <Copy text={card.mint} className="text-text-3">
-            {short(card.mint, 4, 4)}
-          </Copy>
-          {card.isMayhem ? <Capsule tone="warn">mayhem</Capsule> : null}
-          {card.migrated ? <Capsule tone="up">migrated</Capsule> : null}
-        </div>
-        <div className="flex flex-wrap gap-1">
-          <Capsule k="MC">{card.marketCapUsd !== null ? usd(card.marketCapUsd) : card.marketCapSol !== null ? `${sol(card.marketCapSol)} SOL` : "—"}</Capsule>
-          {card.volumeSol !== null ? <Capsule k="V" title={card.volumeApprox ? "approximate (curve deltas every 2 s)" : "real trade events"}>{sol(card.volumeSol)}{card.volumeApprox ? "~" : ""}</Capsule> : null}
-          {card.trades !== null ? <Capsule k="TX">{compact(card.trades)}{card.volumeApprox ? "~" : ""}</Capsule> : null}
-          {card.feesSol !== null ? <Capsule k="F">{sol(card.feesSol)}</Capsule> : null}
-          {card.devBuySol !== null ? <Capsule k="Dev buy">{sol(card.devBuySol)}</Capsule> : null}
-        </div>
-        {card.progress !== null && !card.migrated ? (
-          <div className="flex items-center gap-2">
-            <Progress value={card.progress} className="flex-1" />
-            <span className="mono text-[10px] text-text-2 w-9 text-right">{card.progress.toFixed(0)} %</span>
+      <div className="flex items-center gap-3 min-w-0">
+        <TokenImage src={card.image} alt={card.symbol ?? "?"} size={48} className="rounded-xl" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="font-semibold text-sm truncate">{card.symbol ?? short(card.mint)}</span>
+            <span className="text-text-3 text-sm truncate">{card.name}</span>
           </div>
-        ) : null}
-        <div className="flex items-center gap-1">
-          {card.top10Pct !== null ? <Capsule k="Top 10" tone={card.top10Pct > 30 ? "down" : undefined}>{pct(card.top10Pct)}</Capsule> : null}
-          {card.devPct !== null ? <Capsule k="Dev" tone={card.devPct > 10 ? "warn" : undefined}>{pct(card.devPct)}</Capsule> : null}
-          {card.bundlePct !== null ? <Capsule k="Bundle">{pct(card.bundlePct)}</Capsule> : null}
-          {card.holders !== null ? <Capsule k="H">{card.holders}</Capsule> : null}
-          <span className="ml-auto" onClick={(e) => e.stopPropagation()}>
-            {confirm ? (
-              <span className="flex gap-1">
-                <Button size="xs" variant="up" busy={busy} onClick={quickBuy}>
-                  Confirm {preset}
-                </Button>
-                <Button size="xs" variant="ghost" onClick={() => setConfirm(false)}>
-                  ×
-                </Button>
-              </span>
-            ) : (
-              <Button size="xs" variant="primary" disabled={!canSign} onClick={() => setConfirm(true)} title={canSign ? "Quick buy with the active wallet" : "Unlock the vault and pick an active wallet"}>
-                ⚡ {preset} SOL
-              </Button>
-            )}
-          </span>
+          <div className="flex items-center gap-2 text-[13px] mt-0.5">
+            <span className="text-up mono">{age(card.createdAt, now)}</span>
+            <Copy text={card.mint} className="text-text-3">
+              {short(card.mint, 4, 4)}
+            </Copy>
+            {card.isMayhem ? <Capsule tone="warn">mayhem</Capsule> : null}
+            {card.migrated ? <Capsule tone="up">Migrated</Capsule> : null}
+          </div>
         </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <KV label="Market cap" value={card.marketCapUsd !== null ? usd(card.marketCapUsd) : card.marketCapSol !== null ? `${sol(card.marketCapSol)} SOL` : "—"} />
+        <KV label="Volume" value={card.volumeSol !== null ? `${approx}${sol(card.volumeSol)} SOL` : "—"} />
+        <KV label="Trades" value={card.trades !== null ? `${approx}${compact(card.trades)}` : "—"} />
+      </div>
+      {card.progress !== null && !card.migrated ? (
+        <div className="flex items-center gap-2">
+          <span className="label w-14 shrink-0">Bonded</span>
+          <Progress value={card.progress} className="flex-1" />
+          <span className="mono text-[13px] text-text-2 w-12 text-right">{card.progress.toFixed(0)} %</span>
+        </div>
+      ) : null}
+      {card.top10Pct !== null || card.devPct !== null || card.devBuySol !== null || card.feesSol !== null || card.holders !== null ? (
+        <div className="grid grid-cols-3 gap-2">
+          {card.devBuySol !== null ? <KV label="Dev buy" value={`${sol(card.devBuySol)} SOL`} /> : null}
+          {card.devPct !== null ? <KV label="Dev holds" value={pct(card.devPct)} tone={card.devPct > 10 ? "warn" : undefined} /> : null}
+          {card.top10Pct !== null ? <KV label="Top 10 hold" value={pct(card.top10Pct)} tone={card.top10Pct > 30 ? "down" : undefined} /> : null}
+          {card.feesSol !== null ? <KV label="Creator fees" value={`${sol(card.feesSol)} SOL`} /> : null}
+          {card.holders !== null ? <KV label="Holders" value={String(card.holders)} /> : null}
+          {card.bundlePct !== null ? <KV label="Bundled" value={pct(card.bundlePct)} /> : null}
+        </div>
+      ) : null}
+
+      <div className="flex items-center justify-end" onClick={(e) => e.stopPropagation()}>
+        {confirm ? (
+          <span className="flex gap-1.5">
+            <Button size="sm" variant="up" busy={busy} onClick={quickBuy} icon="zap">
+              Confirm {preset} SOL
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setConfirm(false)} aria-label="Cancel">
+              <Icon name="x" size={14} />
+            </Button>
+          </span>
+        ) : (
+          <Button size="sm" variant="primary" disabled={!canSign} onClick={() => setConfirm(true)} icon="zap" title={canSign ? "Quick buy with the active wallet" : "Unlock the vault and pick an active wallet"}>
+            Buy {preset} SOL
+          </Button>
+        )}
       </div>
     </div>
   );
