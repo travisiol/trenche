@@ -39,7 +39,7 @@ import { isDevnet, logActivity, saveLaunches, store, track, type Job, type Pendi
 import { loops, TradeLoop, type SavedLoop } from "./tradeloop";
 import { resolveWashPairs, washPairs } from "./wash";
 import { markDraftLaunched } from "./drafts";
-import { grindVanity, takeReserved } from "./vanity";
+import { grindVanity, takeReserved, unuseReserved } from "./vanity";
 
 /* ------------------------------------------------------------------ prepare */
 
@@ -74,6 +74,9 @@ export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<Laun
   } else if (req.mint !== undefined && String(req.mint).trim() !== "") {
     const addr = String(req.mint).trim();
     if (!endsWithSuffix(addr)) throw new HttpError(400, `The reserved mint ${addr} does not end with "${suffix}".`);
+    // a reservation marked used by a launch that never broadcast (refused at a guard, server restarted…) is still free:
+    // only a mint in the launch registry has really been created on-chain by this server
+    if (!registry().has(addr)) unuseReserved(addr);
     keypair = takeReserved(addr);
     mintSource = "reserved";
   } else if (suffix) {
@@ -100,7 +103,7 @@ export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<Laun
   const j = await fetchUriJson(uri, 5000).catch(() => null);
   if (j && typeof j.image === "string") image = ipfsToHttp(j.image);
   const pm = pendings();
-  pm.set(mint, { keypair, uri, name, symbol, image, at: Date.now() });
+  pm.set(mint, { keypair, uri, name, symbol, image, at: Date.now(), reserved: mintSource === "reserved" });
   // keep memory bounded
   if (pm.size > 50) {
     const oldest = [...pm.entries()].sort((a, b) => a[1].at - b[1].at)[0];
@@ -472,6 +475,7 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   if (req.launchpad && req.launchpad !== "pumpfun") throw new HttpError(400, "launchpad must be \"pumpfun\".");
   if (req.quote && req.quote !== "SOL") throw new HttpError(400, "quote must be \"SOL\".");
   const dev = String(req.devWallet ?? "").trim();
+  if (!dev) throw new HttpError(400, "Select a developer wallet first (devWallet).");
   vaultWallets([dev]);
   const devBuyLamports = lamportsOf(req.devBuySol ?? "0", "devBuySol", true);
   const tasks = normalizeTasks(req, dev);
@@ -492,19 +496,24 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   const bundleTip = devnet ? BigInt(0) : mode === "bundle" ? (bundleTasks[0].tipLamports > BigInt(0) ? bundleTasks[0].tipLamports : tipLamportsFor(st.settings.tipSol)) : tipLamportsFor(undefined);
   if (mode === "bundle" && !devnet && bundleTip < BigInt(1000)) throw new HttpError(400, "A Jito bundle needs a tip (bundle task `tip` or Settings → default tip).");
 
-  // balance pre-checks: a readable refusal instead of a failed broadcast
+  // balance pre-checks: a readable refusal instead of a failed broadcast — a reserved …pump address goes back to the pool
+  // (the draft keeps pointing at it, so the next Launch click can use it again)
+  const refuse = (status: number, message: string): never => {
+    if (pending.reserved) unuseReserved(mint);
+    throw new HttpError(status, message);
+  };
   const conn = readConn();
   const CREATE_COST = BigInt(30_000_000); // mint rent + ATA + fees ≈ 0.02–0.03 SOL
   const devBal = await getSolBalance(conn, dev).catch(() => null);
-  if (devBal === null) throw new HttpError(503, "RPC unreachable: the dev balance could not be read. Nothing was sent.");
+  if (devBal === null) refuse(503, "RPC unreachable: the dev balance could not be read. Nothing was sent.");
   const devNeed = devBuyLamports + CREATE_COST + (mode === "bundle" ? bundleTip : BigInt(0));
-  if (devBal < devNeed) throw new HttpError(402, `Dev wallet holds ${solString(devBal)} SOL but needs at least ${solString(devNeed)} SOL (dev buy + creation + fees${mode === "bundle" ? " + tip" : ""}). Nothing was sent.`);
+  if (devBal! < devNeed) refuse(402, `Dev wallet holds ${solString(devBal!)} SOL but needs at least ${solString(devNeed)} SOL (dev buy + creation + fees${mode === "bundle" ? " + tip" : ""}). Nothing was sent.`);
   for (const t of bundleTasks) {
     const infos = await conn.getMultipleAccountsInfo(t.wallets.map((w) => new PublicKey(w)), "confirmed").catch(() => null);
     t.wallets.forEach((w, i) => {
       const bal = BigInt(infos?.[i]?.lamports ?? 0);
       const need = t.amounts.get(w)! + BigInt(3_000_000) + bundleTip;
-      if (infos && bal < need) throw new HttpError(402, `Bundle wallet ${w.slice(0, 6)}… holds ${solString(bal)} SOL but needs ${solString(need)} SOL (buy + fees + tip). Nothing was sent.`);
+      if (infos && bal < need) refuse(402, `Bundle wallet ${w.slice(0, 6)}… holds ${solString(bal)} SOL but needs ${solString(need)} SOL (buy + fees + tip). Nothing was sent.`);
     });
   }
 

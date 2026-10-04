@@ -157,6 +157,15 @@ export function takeReserved(mint: string): Keypair {
   return kp;
 }
 
+/** a launch that was refused before anything was sent hands the reserved mint back (usedAt cleared) */
+export function unuseReserved(mint: string): void {
+  const r = bag().mints.get(mint);
+  if (r && r.usedAt) {
+    r.usedAt = null;
+    saveRuntimeSoon();
+  }
+}
+
 export function releaseReserved(mint: string): void {
   const b = bag();
   const r = b.mints.get(mint);

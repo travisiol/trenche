@@ -45,6 +45,8 @@ export type PendingMint = {
   symbol: string;
   image: string | null;
   at: number;
+  /** came from the reserved pool ("Fetch mint address"): handed back when the launch is refused before sending */
+  reserved?: boolean;
 };
 
 export type Job = {
