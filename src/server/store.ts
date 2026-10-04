@@ -17,7 +17,12 @@ export type WalletMetaFile = {
   active: string | null;
 };
 
+export type Cluster = "mainnet" | "devnet";
+export const DEVNET_RPC = "https://api.devnet.solana.com";
+
 export type StoredSettings = {
+  /** "mainnet" (default) or "devnet": devnet reads/sends on api.devnet.solana.com, disables Jito, links the explorer with ?cluster=devnet */
+  cluster: Cluster;
   rpcUrl: string;
   sendRpcUrl: string;
   pumpportalKey: string;
@@ -48,7 +53,8 @@ export type Job = {
   sent: number;
   failed: number;
   steps: import("@/lib/types").JobStep[];
-  status: "running" | "done" | "error";
+  status: "running" | "done" | "error" | "stopped";
+  cluster: Cluster;
   nextAt: number;
   error: string | null;
   extra: Record<string, unknown> | null;
@@ -68,6 +74,8 @@ export type Store = {
     launches: string;
     presets: string;
     tracked: string;
+    jobs: string;
+    runtime: string;
   };
   sol: SolanaState;
   passphrase: string | null;
@@ -86,6 +94,7 @@ export type Store = {
 };
 
 const DEFAULT_SETTINGS: StoredSettings = {
+  cluster: "mainnet",
   rpcUrl: "",
   sendRpcUrl: HELIUS_SENDER_URL,
   pumpportalKey: "",
@@ -98,7 +107,10 @@ const DEFAULT_SETTINGS: StoredSettings = {
   keybinds: { quickBuy: ["1", "2", "3"], close: "Escape" },
 };
 
+/** %LOCALAPPDATA%/trench, or TRENCH_DATA_DIR (an isolated directory for tests: own vault, settings, jobs) */
 export function dataDir(): string {
+  const override = process.env.TRENCH_DATA_DIR?.trim();
+  if (override) return override;
   const base = process.env.LOCALAPPDATA || join(homedir(), ".local", "share");
   return join(base, "trench");
 }
@@ -130,6 +142,8 @@ function build(): Store {
     launches: join(dir, "launches.json"),
     presets: join(dir, "presets.json"),
     tracked: join(dir, "tracked.json"),
+    jobs: join(dir, "jobs.json"),
+    runtime: join(dir, "runtime.json"),
   };
   const settings = { ...DEFAULT_SETTINGS, ...readJson<Partial<StoredSettings>>(paths.settings, {}) };
   const store: Store = {
@@ -144,13 +158,62 @@ function build(): Store {
     launches: readJson<LaunchRecord[]>(paths.launches, []),
     presets: readJson<LaunchPreset[]>(paths.presets, []),
     tracked: readJson<string[]>(paths.tracked, []),
-    jobs: new Map(),
+    jobs: loadJobs(paths.jobs),
     pendingMints: new Map(),
     balances: null,
     runtime: {},
   };
   applySettings(store);
   return store;
+}
+
+/** jobs.json → Map; a job that was still running when the server died becomes "stopped" (nothing more is sent) */
+function loadJobs(path: string): Map<string, Job> {
+  const map = new Map<string, Job>();
+  for (const raw of readJson<Partial<Job>[]>(path, [])) {
+    if (!raw || typeof raw.id !== "string") continue;
+    const job: Job = {
+      id: raw.id,
+      kind: raw.kind ?? "job",
+      label: raw.label ?? "",
+      total: raw.total ?? 0,
+      completed: raw.completed ?? 0,
+      sent: raw.sent ?? 0,
+      failed: raw.failed ?? 0,
+      steps: Array.isArray(raw.steps) ? raw.steps : [],
+      status: raw.status ?? "stopped",
+      cluster: raw.cluster === "devnet" ? "devnet" : "mainnet",
+      nextAt: 0,
+      error: raw.error ?? null,
+      extra: raw.extra ?? null,
+      startedAt: raw.startedAt ?? Date.now(),
+      endedAt: raw.endedAt ?? null,
+      stop: true,
+    };
+    if (job.status === "running") {
+      job.status = "stopped";
+      job.error = "Server restarted while this job was running: nothing more was sent. Check the signatures above on the explorer.";
+      job.endedAt = Date.now();
+      job.steps.push({ ok: false, at: Date.now(), note: job.error });
+    }
+    map.set(job.id, job);
+  }
+  return map;
+}
+
+let jobsTimer: ReturnType<typeof setTimeout> | null = null;
+/** write jobs.json at most every 400 ms (every job mutation calls it) */
+export function saveJobsSoon(st: Store = store()): void {
+  if (jobsTimer) return;
+  jobsTimer = setTimeout(() => {
+    jobsTimer = null;
+    try {
+      const list = [...st.jobs.values()].sort((a, b) => b.startedAt - a.startedAt).slice(0, 200).map(({ stop: _stop, ...j }) => j);
+      writeJson(st.paths.jobs, list);
+    } catch {
+      /* disk error: keep in memory */
+    }
+  }, 400);
 }
 
 declare global {
@@ -162,19 +225,39 @@ export function store(): Store {
   return globalThis.__trench;
 }
 
-/** effective read RPC: explicit rpcUrl > Helius key > public */
+export const isDevnet = (s: StoredSettings = store().settings): boolean => s.cluster === "devnet";
+
+/** effective read RPC — mainnet: explicit rpcUrl > Helius key > public; devnet: an explicit rpcUrl that
+ *  names devnet, else api.devnet.solana.com (a saved mainnet RPC is never reused on devnet) */
 export function effectiveRpcUrl(s: StoredSettings): string {
   const explicit = normalizeSolanaRpc(s.rpcUrl);
+  if (isDevnet(s)) return explicit && /devnet/i.test(explicit) ? explicit : DEVNET_RPC;
   if (explicit) return explicit;
   if (s.heliusKey.trim()) return `https://mainnet.helius-rpc.com/?api-key=${s.heliusKey.trim()}`;
   return SOLANA_PUBLIC_RPC;
 }
 
+/** effective send RPC — devnet has no Helius Sender nor Jito: sends go to the read RPC */
+export function effectiveSendRpcUrl(s: StoredSettings): string {
+  const read = effectiveRpcUrl(s);
+  if (isDevnet(s)) {
+    const explicit = s.sendRpcUrl.trim();
+    return explicit && /devnet/i.test(explicit) ? explicit : read;
+  }
+  return s.sendRpcUrl.trim() || read;
+}
+
+/** explorer link for a signature or an address, on the active cluster */
+export function explorerUrl(kind: "tx" | "address", value: string, s: StoredSettings = store().settings): string {
+  return `https://solscan.io/${kind}/${value}${isDevnet(s) ? "?cluster=devnet" : ""}`;
+}
+
 export function applySettings(st: Store): void {
   st.sol.config = {
     ...st.sol.config,
+    cluster: isDevnet(st.settings) ? "devnet" : "mainnet-beta",
     rpcUrl: effectiveRpcUrl(st.settings),
-    sendRpcUrl: st.settings.sendRpcUrl.trim() || effectiveRpcUrl(st.settings),
+    sendRpcUrl: effectiveSendRpcUrl(st.settings),
     slippageBps: st.settings.slippageBps,
     priorityMicroLamports: st.settings.cuPrice,
   };
@@ -187,6 +270,10 @@ export function saveSettings(st: Store): void {
 
 export function publicSettings(s: StoredSettings): Settings {
   return {
+    cluster: s.cluster,
+    explorerSuffix: isDevnet(s) ? "?cluster=devnet" : "",
+    effectiveRpcUrl: effectiveRpcUrl(s),
+    effectiveSendRpcUrl: effectiveSendRpcUrl(s),
     rpcUrl: s.rpcUrl,
     sendRpcUrl: s.sendRpcUrl,
     hasPumpportalKey: !!s.pumpportalKey.trim(),

@@ -1,6 +1,6 @@
 /* In-memory job registry (donchain's jobNew/jobRun/jobPush/jobWait, typed). */
 import type { JobStep, JobView } from "@/lib/types";
-import { store, type Job } from "./store";
+import { saveJobsSoon, store, type Job } from "./store";
 
 export function jobNew(kind: string, total: number, label = ""): Job {
   const st = store();
@@ -15,6 +15,7 @@ export function jobNew(kind: string, total: number, label = ""): Job {
     failed: 0,
     steps: [],
     status: "running",
+    cluster: st.settings.cluster,
     nextAt: 0,
     error: null,
     extra: null,
@@ -27,6 +28,7 @@ export function jobNew(kind: string, total: number, label = ""): Job {
     const oldest = [...st.jobs.values()].filter((j) => j.status !== "running").sort((a, b) => a.startedAt - b.startedAt)[0];
     if (oldest) st.jobs.delete(oldest.id);
   }
+  saveJobsSoon(st);
   return job;
 }
 
@@ -42,11 +44,13 @@ export function jobPush(job: Job | null, ok: boolean, row: Omit<JobStep, "ok" | 
   else job.failed++;
   job.steps.push({ ok, at: Date.now(), ...row });
   if (job.steps.length > 400) job.steps.splice(0, job.steps.length - 400);
+  saveJobsSoon();
 }
 
 export function jobNote(job: Job | null, note: string, extra: Partial<JobStep> = {}): void {
   if (!job) return;
   job.steps.push({ ok: true, at: Date.now(), note, ...extra });
+  saveJobsSoon();
 }
 
 export function jobRun(job: Job, fn: (job: Job) => Promise<void>): void {
@@ -55,11 +59,13 @@ export function jobRun(job: Job, fn: (job: Job) => Promise<void>): void {
     .then(() => {
       if (job.status === "running") job.status = "done";
       job.endedAt = Date.now();
+      saveJobsSoon();
     })
     .catch((err: unknown) => {
       job.status = "error";
       job.error = (err instanceof Error ? err.message : String(err)).slice(0, 400);
       job.endedAt = Date.now();
+      saveJobsSoon();
     });
 }
 
@@ -69,6 +75,7 @@ export function jobView(job: Job): JobView {
     kind: job.kind,
     label: job.label,
     status: job.status,
+    cluster: job.cluster,
     done: job.status !== "running",
     total: job.total,
     completed: job.completed,

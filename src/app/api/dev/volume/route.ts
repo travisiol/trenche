@@ -2,7 +2,7 @@ import { HttpError, json, readBody, requireAddress, requireAddresses, route } fr
 import { groupWallets, requireUnlocked } from "@/server/engine";
 import { loopGet, volumeLoopFromConfig } from "@/server/tradeloop";
 import { logActivity, store } from "@/server/store";
-import type { JobCreated, VolumeStartRequest, VolumeStatus, VolumeStopRequest } from "@/lib/types";
+import type { JobCreated, VolumeResumeRequest, VolumeStartRequest, VolumeStatus, VolumeStopRequest } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +14,7 @@ function status(mint: string): VolumeStatus {
   return {
     mint,
     running: loop.status === "running" || loop.status === "paused",
+    resumable: loop.resumable || undefined,
     jobId: loop.job.id,
     round: Math.ceil(loop.done / c.wallets.length),
     rounds,
@@ -30,8 +31,15 @@ export const GET = route(async (req: Request) => {
 
 export const POST = route(async (req: Request) => {
   requireUnlocked();
-  const body = await readBody<VolumeStartRequest | VolumeStopRequest>(req);
+  const body = await readBody<VolumeStartRequest | VolumeStopRequest | VolumeResumeRequest>(req);
   const mint = requireAddress(body.mint, "mint");
+  if (body.action === "resume") {
+    const loop = loopGet(`vol:${mint}`);
+    if (!loop || !loop.resumable) throw new HttpError(409, "Nothing to resume: no volume bot restored from a restart on this mint (start one instead).");
+    loop.start();
+    logActivity(store(), { kind: "volume", ok: true, message: `Volume bot resumed on ${mint.slice(0, 6)}… (${loop.done}/${loop.cfg.totalTrades} trades done before the restart)`, mint, wallets: loop.cfg.wallets, jobId: loop.job.id });
+    return json({ ...status(mint), jobId: loop.job.id });
+  }
   if (body.action === "stop") {
     const loop = loopGet(`vol:${mint}`);
     if (loop) {
@@ -40,7 +48,7 @@ export const POST = route(async (req: Request) => {
     }
     return json({ ok: true, ...status(mint) });
   }
-  if (body.action !== "start") throw new HttpError(400, "action must be start or stop.");
+  if (body.action !== "start") throw new HttpError(400, "action must be start, stop or resume.");
   const groupId = body.groupId ?? body.group;
   const wallets = groupId ? groupWallets(String(groupId)) : requireAddresses(body.wallets, "wallets");
   if (wallets.length === 0) throw new HttpError(400, "The group has no active wallet.");

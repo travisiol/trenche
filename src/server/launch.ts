@@ -4,6 +4,7 @@
 import { PublicKey } from "@solana/web3.js";
 import { getSolBalance } from "@/engine/solana/rpc.js";
 import { generateMint } from "@/engine/solana/pump/create.js";
+import { base58Encode, parseSolanaKey } from "@/engine/solana/keys.js";
 import { executeLaunch as engineExecuteLaunch, launchBundle, prepareLaunch, type LaunchPrep } from "@/engine/solana/pump/launch.js";
 import { uploadPumpMetadata } from "@/engine/solana/pump/metadata.js";
 import type { BuyRow } from "@/engine/solana/pump/math.js";
@@ -28,10 +29,11 @@ import { HttpError, intIn, lamportsOf, solString } from "./api";
 import { armAutodump, autodumpStatus } from "./autodump";
 import { buyWithWallets, groupWallets, readConn, requireUnlocked, sendConn, tipLamportsFor, vaultWallets } from "./engine";
 import { jobNew, jobNote, jobPush, jobRun } from "./jobs";
+import { registerRuntimeProducer, RESTORE_NOTE, restoreSection, saveRuntimeSoon } from "./persist";
 import { fetchUriJson } from "./metadata";
 import { ipfsToHttp } from "@/engine/solana/pump/metadata.js";
-import { logActivity, saveLaunches, store, track, type Job } from "./store";
-import { loops, TradeLoop } from "./tradeloop";
+import { isDevnet, logActivity, saveLaunches, store, track, type Job, type PendingMint } from "./store";
+import { loops, TradeLoop, type SavedLoop } from "./tradeloop";
 import { washTokens } from "./wash";
 
 /* ------------------------------------------------------------------ prepare */
@@ -63,12 +65,14 @@ export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<Laun
   let image: string | null = null;
   const j = await fetchUriJson(uri, 5000).catch(() => null);
   if (j && typeof j.image === "string") image = ipfsToHttp(j.image);
-  st.pendingMints.set(mint, { keypair, uri, name, symbol, image, at: Date.now() });
+  const pm = pendings();
+  pm.set(mint, { keypair, uri, name, symbol, image, at: Date.now() });
   // keep memory bounded
-  if (st.pendingMints.size > 50) {
-    const oldest = [...st.pendingMints.entries()].sort((a, b) => a[1].at - b[1].at)[0];
-    if (oldest) st.pendingMints.delete(oldest[0]);
+  if (pm.size > 50) {
+    const oldest = [...pm.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (oldest) pm.delete(oldest[0]);
   }
+  saveRuntimeSoon();
   logActivity(st, { kind: "launch", ok: true, message: `Launch prepared: ${symbol} · metadata ${uri}`, mint, data: { uri } });
   return { uri, mint, name, symbol };
 }
@@ -90,10 +94,103 @@ export type LaunchRun = {
   record: LaunchRecord;
 };
 
+/* ------------------------------------------------------------------ persistence (runtime.json) */
+
+type SavedTask =
+  | { id: string; type: "bundle" | "sniper"; wallets: string[]; autoStart: boolean; amounts: Record<string, string>; slippageBps: number; tipLamports: string; autoRetryCount: number }
+  | { id: string; type: "buy" | "volume"; wallets: string[]; autoStart: boolean; loopCfg: Omit<SavedLoop["cfg"], "id" | "taskId" | "mint" | "label"> }
+  | { id: string; type: "wash"; wallets: string[]; autoStart: boolean };
+type SavedRun = { state: LaunchState; tasks: SavedTask[]; taskStates: LaunchTaskState[]; loops: Record<string, SavedLoop>; jobId: string };
+type SavedPending = { mint: string; secret: string; uri: string; name: string; symbol: string; image: string | null; at: number };
+
+function serializeRun(run: LaunchRun): SavedRun {
+  return {
+    state: { ...run.state, autoDump: null, tasks: [], steps: run.state.steps.slice(-200) },
+    tasks: run.tasks.map((t): SavedTask => {
+      if (t.type === "bundle" || t.type === "sniper") return { id: t.id, type: t.type, wallets: t.wallets, autoStart: t.autoStart, amounts: Object.fromEntries([...t.amounts].map(([k, v]) => [k, v.toString()])), slippageBps: t.slippageBps, tipLamports: t.tipLamports.toString(), autoRetryCount: t.autoRetryCount };
+      if (t.type === "buy" || t.type === "volume") {
+        const c = t.loopCfg;
+        return { id: t.id, type: t.type, wallets: t.wallets, autoStart: t.autoStart, loopCfg: { ...c, minLamports: c.minLamports.toString(), maxLamports: c.maxLamports.toString(), tipLamports: c.tipLamports.toString() } };
+      }
+      return { id: t.id, type: "wash", wallets: t.wallets, autoStart: t.autoStart };
+    }),
+    taskStates: [...run.taskStates.values()],
+    loops: Object.fromEntries([...run.loops].map(([id, l]) => [id, l.snapshot()])),
+    jobId: run.job.id,
+  };
+}
+
+function restoreRun(sv: SavedRun): LaunchRun | null {
+  const st = store();
+  if (!sv?.state?.mint || !Array.isArray(sv.tasks)) return null;
+  const mint = sv.state.mint;
+  const tasks: NormTask[] = sv.tasks.map((t) => {
+    if (t.type === "bundle" || t.type === "sniper") return { id: t.id, type: t.type, wallets: t.wallets, autoStart: t.autoStart, amounts: new Map(Object.entries(t.amounts ?? {}).map(([k, v]) => [k, BigInt(v)])), slippageBps: t.slippageBps, tipLamports: BigInt(t.tipLamports ?? "0"), autoRetryCount: t.autoRetryCount ?? 0 };
+    if (t.type === "buy" || t.type === "volume") {
+      const c = t.loopCfg;
+      return { id: t.id, type: t.type, wallets: t.wallets, autoStart: t.autoStart, loopCfg: { ...c, type: t.type, minLamports: BigInt(c.minLamports), maxLamports: BigInt(c.maxLamports), tipLamports: BigInt(c.tipLamports) } };
+    }
+    return { id: t.id, type: "wash", wallets: t.wallets, autoStart: t.autoStart };
+  });
+  const record = st.launches.find((l) => l.mint === mint) ?? { mint, name: sv.state.name, symbol: sv.state.symbol, uri: null, image: null, dev: sv.state.dev, mode: sv.state.mode, at: sv.state.startedAt, createSignature: sv.state.createSignature, createConfirmed: !!sv.state.createConfirmed, createError: null, wallets: [sv.state.dev, ...tasks.flatMap((t) => t.wallets)], buysConfirmed: 0, buysTotal: 0, jobId: sv.jobId };
+  const job: Job = st.jobs.get(sv.jobId) ?? { id: sv.jobId, kind: `launch-${sv.state.mode}`, label: `Launch ${sv.state.symbol}`, total: 0, completed: 0, sent: 0, failed: 0, steps: [], status: "stopped", cluster: st.settings.cluster, nextAt: 0, error: RESTORE_NOTE, extra: { mint }, startedAt: sv.state.startedAt, endedAt: Date.now(), stop: true };
+  if (!st.jobs.has(job.id)) st.jobs.set(job.id, job);
+  const state: LaunchState = { ...sv.state, tasks: [], autoDump: null, restored: { at: Date.now(), note: RESTORE_NOTE } };
+  if (state.status === "preparing" || state.status === "sending") {
+    state.status = state.createConfirmed ? "live" : "failed";
+    state.error = state.createConfirmed ? null : `Server restarted during the send. Create signature: ${state.createSignature ?? "none — check the dev wallet on the explorer before retrying"}.`;
+  }
+  state.steps.push({ at: Date.now(), phase: "info", ok: true, message: RESTORE_NOTE });
+  const run: LaunchRun = { state, job, subs: new Set(), tasks, loops: new Map(), taskStates: new Map((sv.taskStates ?? []).map((t) => [t.id, t])), record };
+  for (const [taskId, saved] of Object.entries(sv.loops ?? {})) {
+    try {
+      const loop = TradeLoop.restore(saved, (s) => emit(run, { type: "task_status", data: s }));
+      run.loops.set(taskId, loop);
+      loops().set(loop.cfg.id, loop);
+    } catch {
+      /* unreadable loop */
+    }
+  }
+  for (const ts of run.taskStates.values()) {
+    if (ts.status === "running" || ts.status === "paused") {
+      ts.status = "stopped";
+      ts.error = RESTORE_NOTE;
+      ts.endedAt = Date.now();
+    }
+  }
+  return run;
+}
+
 function registry(): Map<string, LaunchRun> {
   const rt = store().runtime;
-  if (!rt.launches) rt.launches = new Map<string, LaunchRun>();
+  if (!rt.launches) {
+    const map = new Map<string, LaunchRun>();
+    rt.launches = map;
+    registerRuntimeProducer("launches", () => [...map.values()].slice(-50).map(serializeRun));
+    for (const sv of restoreSection<SavedRun[]>("launches") ?? []) {
+      const run = restoreRun(sv);
+      if (run) map.set(run.state.mint, run);
+    }
+  }
   return rt.launches as Map<string, LaunchRun>;
+}
+
+/** pending mints (prepare → execute) also survive a restart: the mint keypair is worthless until the create lands */
+function pendings(): Map<string, PendingMint> {
+  const st = store();
+  const rt = st.runtime;
+  if (!rt.pendingsReady) {
+    rt.pendingsReady = true;
+    registerRuntimeProducer("pendingMints", () => [...st.pendingMints.entries()].map(([mint, p]): SavedPending => ({ mint, secret: base58Encode(p.keypair.secretKey), uri: p.uri, name: p.name, symbol: p.symbol, image: p.image, at: p.at })));
+    for (const sv of restoreSection<SavedPending[]>("pendingMints") ?? []) {
+      try {
+        if (!st.pendingMints.has(sv.mint)) st.pendingMints.set(sv.mint, { keypair: parseSolanaKey(sv.secret), uri: sv.uri, name: sv.name, symbol: sv.symbol, image: sv.image, at: sv.at });
+      } catch {
+        /* unreadable entry */
+      }
+    }
+  }
+  return st.pendingMints;
 }
 
 export function launchGet(id: string): LaunchRun | undefined {
@@ -127,6 +224,7 @@ function step(run: LaunchRun, phase: LaunchStep["phase"], ok: boolean, message: 
   run.state.steps.push(s);
   jobNote(run.job, message, { ok, phase, signature: s.signature ?? undefined });
   emit(run, { type: "step", data: s });
+  saveRuntimeSoon();
 }
 
 function taskState(run: LaunchRun, taskId: string): LaunchTaskState {
@@ -144,6 +242,7 @@ function setTask(run: LaunchRun, taskId: string, patch: Partial<LaunchTaskState>
   const s = Object.assign(taskState(run, taskId), patch);
   run.taskStates.set(taskId, s);
   emit(run, { type: "task_status", data: s });
+  saveRuntimeSoon();
   return s;
 }
 
@@ -244,7 +343,7 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   requireUnlocked();
   const st = store();
   const mint = String(req.mint ?? "").trim();
-  const pending = st.pendingMints.get(mint);
+  const pending = pendings().get(mint);
   if (!pending) throw new HttpError(404, "Unknown mint: call /api/launch/prepare first (the mint keypair lives in server memory).");
   if (registry().has(mint)) throw new HttpError(409, "This mint was already launched.");
   if (req.launchpad && req.launchpad !== "pumpfun") throw new HttpError(400, "launchpad must be \"pumpfun\".");
@@ -257,8 +356,9 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   const mode: "bundle" | "plain" = bundleTasks.length > 0 ? "bundle" : "plain";
   const slippageBps = intIn(req.slippageBps, 0, 9000, st.settings.slippageBps);
   const cuPrice = intIn(req.cuPrice, 0, 50_000_000, st.settings.cuPrice);
-  const bundleTip = mode === "bundle" ? (bundleTasks[0].tipLamports > BigInt(0) ? bundleTasks[0].tipLamports : tipLamportsFor(st.settings.tipSol)) : tipLamportsFor(undefined);
-  if (mode === "bundle" && bundleTip < BigInt(1000)) throw new HttpError(400, "A Jito bundle needs a tip (bundle task `tip` or Settings → default tip).");
+  const devnet = isDevnet(st.settings);
+  const bundleTip = devnet ? BigInt(0) : mode === "bundle" ? (bundleTasks[0].tipLamports > BigInt(0) ? bundleTasks[0].tipLamports : tipLamportsFor(st.settings.tipSol)) : tipLamportsFor(undefined);
+  if (mode === "bundle" && !devnet && bundleTip < BigInt(1000)) throw new HttpError(400, "A Jito bundle needs a tip (bundle task `tip` or Settings → default tip).");
 
   // balance pre-checks: a readable refusal instead of a failed broadcast
   const conn = readConn();
@@ -321,6 +421,7 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
     record,
   };
   registry().set(mint, run);
+  saveRuntimeSoon();
   st.launches.unshift(record);
   saveLaunches(st);
   track(st, mint);
@@ -339,7 +440,9 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   const bundleRows: BuyRow[] = bundleTasks.flatMap((t) => t.wallets.map((w) => ({ label: w.slice(0, 6), signer: st.sol.keypair(w), solIn: t.amounts.get(w)!, cuPrice: o.cuPrice })));
   const rowAddr = bundleTasks.flatMap((t) => t.wallets);
   const retries = bundleTasks.length ? Math.max(...bundleTasks.map((t) => t.autoRetryCount)) : 0;
-  step(run, "prepare", true, `Preparing ${run.state.mode} launch · dev buy ${solString(o.devBuyLamports)} SOL · ${bundleRows.length} bundle wallet(s)`);
+  const devnet = isDevnet(st.settings);
+  step(run, "prepare", true, `Preparing ${run.state.mode} launch · dev buy ${solString(o.devBuyLamports)} SOL · ${bundleRows.length} bundle wallet(s)${devnet ? " · devnet" : ""}`);
+  if (devnet && run.state.mode === "bundle") step(run, "info", true, "Devnet: Jito is mainnet-only — the bundle is sent as sequential transactions (create first, then the buys), no tip, not atomic.");
   run.state.status = "sending";
   emit(run, { type: "state", data: launchStateOf(run) });
 
@@ -352,14 +455,14 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
         conn,
         { dev: st.sol.keypair(dev), name: run.state.name, symbol: run.state.symbol, uri: o.uri, devBuyLamports: o.devBuyLamports, mint: o.pendingKeypair, cashback: o.cashback },
         bundleRows,
-        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: run.state.mode === "bundle" ? o.bundleTip : tipLamportsFor(undefined) },
+        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? o.bundleTip : tipLamportsFor(undefined) },
       );
     } catch (e) {
       created = { confirmed: false, error: e instanceof Error ? e.message : String(e) };
       break;
     }
     if (attempt === 0) step(run, "prepare", true, prep.atomic ? "Dev buy is atomic with the creation (guaranteed first buyer)." : o.devBuyLamports > BigInt(0) ? "Name/URI too long for an atomic dev buy: the dev buy goes in a separate transaction." : "No dev buy.");
-    if (run.state.mode === "bundle") {
+    if (run.state.mode === "bundle" && !devnet) {
       const r = await launchBundle(conn, prep, {
         timeoutMs: 45_000,
         onStep: (s) => {
@@ -422,7 +525,8 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
     throw new Error(run.state.error);
   }
   run.state.status = "live";
-  st.pendingMints.delete(mint);
+  pendings().delete(mint);
+  saveRuntimeSoon();
   run.job.extra = { ...(run.job.extra ?? {}), phase: "live", createSignature: created.signature ?? null };
 
   // auto-dump / sell-on-external (one watcher per mint, both triggers merged)
@@ -488,6 +592,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   }
 
   emit(run, { type: "done", data: launchStateOf(run) });
+  saveRuntimeSoon();
 }
 
 async function runWash(run: LaunchRun, t: Extract<NormTask, { type: "wash" }>): Promise<void> {
@@ -519,7 +624,7 @@ export async function taskAction(launchId: string, taskId: string, action: "paus
   if (loop) {
     if (action === "pause") loop.pause();
     else if (action === "resume") {
-      if (loop.status === "pending") loop.start();
+      if (loop.status === "pending" || (loop.status === "stopped" && loop.resumable)) loop.start();
       else loop.resume();
     } else loop.stop();
     return loop.state();

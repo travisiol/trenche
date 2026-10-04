@@ -11,6 +11,7 @@ import type { AutoDumpConfig, AutoDumpStatus } from "@/lib/types";
 import { HttpError } from "./api";
 import { curveMetrics, fetchCurve, readConn, sellWithWallets, tipLamportsFor, vaultWallets } from "./engine";
 import { jobNew, jobRun } from "./jobs";
+import { registerRuntimeProducer, RESTORE_NOTE, restoreSection, saveRuntimeSoon } from "./persist";
 import { solPrice, solPriceCached } from "./price";
 import { logActivity, store } from "./store";
 
@@ -28,12 +29,24 @@ export type DumpWatch = {
   jobId: string | null;
   timer: ReturnType<typeof setInterval> | null;
   busy: boolean;
+  /** restored from runtime.json after a restart: disarmed until POST {action:"resume"} */
+  resumable?: boolean;
   onFire?: (reason: string, jobId: string) => void;
 };
 
+type SavedWatch = Pick<DumpWatch, "mint" | "config" | "wallets" | "armedAt" | "lastMcUsd" | "firedAt" | "firedReason" | "jobId"> & { armed: boolean };
+
 function registry(): Map<string, DumpWatch> {
   const rt = store().runtime;
-  if (!rt.autodump) rt.autodump = new Map<string, DumpWatch>();
+  if (!rt.autodump) {
+    const map = new Map<string, DumpWatch>();
+    rt.autodump = map;
+    registerRuntimeProducer("autodumps", () => [...map.values()].map((w): SavedWatch => ({ mint: w.mint, config: w.config, wallets: w.wallets, armedAt: w.armedAt, lastMcUsd: w.lastMcUsd, firedAt: w.firedAt, firedReason: w.firedReason, jobId: w.jobId, armed: w.timer !== null })));
+    for (const sv of restoreSection<SavedWatch[]>("autodumps") ?? []) {
+      if (!sv?.mint || !sv.config) continue;
+      map.set(sv.mint, { mint: sv.mint, config: sv.config, wallets: sv.wallets ?? [], armedAt: sv.armedAt, lastMcUsd: sv.lastMcUsd ?? null, lastRealSol: null, curveVolumeSol: 0, externalVolumeSol: 0, firedAt: sv.firedAt ?? null, firedReason: sv.firedReason ?? null, jobId: sv.jobId ?? null, timer: null, busy: false, resumable: sv.armed && !sv.firedAt });
+    }
+  }
   return rt.autodump as Map<string, DumpWatch>;
 }
 
@@ -44,6 +57,7 @@ export function autodumpStatus(mint: string): AutoDumpStatus {
   return {
     mint,
     armed: w.timer !== null,
+    resumable: w.resumable || undefined,
     percent: w.config.percent,
     mcUsd: w.config.mcUsd ?? null,
     delaySec,
@@ -93,6 +107,7 @@ export function armAutodump(mint: string, config: AutoDumpConfig & { externalVol
   };
   w.timer = setInterval(() => void tick(w), 2000);
   registry().set(mint, w);
+  saveRuntimeSoon();
   logActivity(st, { kind: "autodump", ok: true, message: `Auto-dump armed on ${mint.slice(0, 6)}…: ${percent}%${config.mcUsd ? ` at MC ≥ $${config.mcUsd}` : ""}${config.afterSec ? ` after ${config.afterSec}s` : ""}${config.externalVolumeSol ? ` when external volume ≥ ${config.externalVolumeSol} SOL` : ""}`, mint, wallets: w.wallets });
   void tick(w);
   return autodumpStatus(mint);
@@ -105,8 +120,20 @@ export function disarmAutodump(mint: string): AutoDumpStatus {
     w.timer = null;
     logActivity(store(), { kind: "autodump", ok: true, message: `Auto-dump disarmed on ${mint.slice(0, 6)}…`, mint });
   }
+  if (w?.resumable) w.resumable = false;
+  saveRuntimeSoon();
   return autodumpStatus(mint);
 }
+
+/** re-arm a watcher restored after a restart with its saved config (the delay trigger restarts from now) */
+export function resumeAutodump(mint: string): AutoDumpStatus {
+  const w = registry().get(mint);
+  if (!w || !w.resumable) throw new HttpError(409, "Nothing to resume: this auto-dump was not restored from a restart (arm it instead).");
+  const { wallets: _w, ...config } = w.config;
+  return armAutodump(mint, config, w.wallets);
+}
+
+export const AUTODUMP_RESTORE_NOTE = RESTORE_NOTE;
 
 async function tick(w: DumpWatch): Promise<void> {
   if (w.busy || w.timer === null) return;
@@ -145,6 +172,7 @@ function fire(w: DumpWatch, reason: string): void {
   w.timer = null;
   w.firedAt = Date.now();
   w.firedReason = reason;
+  saveRuntimeSoon();
   const st = store();
   if (/migrated/.test(reason)) {
     logActivity(st, { kind: "autodump", ok: false, message: `Auto-dump on ${w.mint.slice(0, 6)}… cancelled: ${reason}`, mint: w.mint });

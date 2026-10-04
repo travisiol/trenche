@@ -12,6 +12,10 @@ export const POST = route(async (req: Request) => {
   const body = await readBody<SettingsUpdateRequest>(req);
   const st = store();
   const s = st.settings;
+  if (body.cluster !== undefined) {
+    if (body.cluster !== "mainnet" && body.cluster !== "devnet") throw new HttpError(400, "cluster must be \"mainnet\" or \"devnet\".");
+    s.cluster = body.cluster;
+  }
   if (body.rpcUrl !== undefined) {
     const u = normalizeSolanaRpc(String(body.rpcUrl));
     if (u && isHeliusSender(u)) throw new HttpError(400, "The read RPC cannot be a Sender endpoint (…/fast): put it in the send RPC field.");

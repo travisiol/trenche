@@ -69,7 +69,8 @@ export type BalancesResponse = Record<string, string | null>;
 
 /* ------------------------------------------------------------------- jobs */
 
-export type JobStatus = "running" | "done" | "error";
+/** "stopped" = the server restarted while the job ran (restored from jobs.json; nothing more will be sent) */
+export type JobStatus = "running" | "done" | "error" | "stopped";
 export type JobStep = {
   ok: boolean;
   /** epoch ms */
@@ -88,7 +89,9 @@ export type JobView = {
   kind: string;
   label: string;
   status: JobStatus;
-  /** true when status is "done" or "error" */
+  /** cluster the job ran on — build explorer links with `?cluster=devnet` when "devnet" */
+  cluster: Cluster;
+  /** true when status is "done", "error" or "stopped" */
   done: boolean;
   total: number;
   /** steps completed (ok or failed) */
@@ -111,7 +114,9 @@ export type JobsListResponse = { jobs: JobView[] };
 /* ------------------------------------------------------------------ funds */
 
 export type FundWithdrawRequest = { from: string; to: string; sol: string };
-export type FundTransferRequest = { from: string; to: string; sol: string };
+/** viaRelay: source → fresh in-memory relay wallet → destination (two signatures per transfer; the relay key is
+ *  never stored; on a hop-2 failure the relay sweeps back to the source). The job shows both hops. */
+export type FundTransferRequest = { from: string; to: string; sol: string; viaRelay?: boolean };
 export type FundDisperseRequest = {
   from: string;
   to: string[];
@@ -120,12 +125,37 @@ export type FundDisperseRequest = {
   /** delays in milliseconds between sends */
   minDelay: number;
   maxDelay: number;
+  /** one fresh relay wallet per destination (see FundTransferRequest) */
+  viaRelay?: boolean;
+};
+/** POST /api/dev/airdrop — devnet only (409 on mainnet); 429 when the faucet refuses, 504 when not confirmed in 60 s */
+export type AirdropRequest = { wallet: string; sol?: string };
+export type AirdropResponse = {
+  wallet: string;
+  sol: string;
+  signature: string;
+  confirmed: boolean;
+  error: string | null;
+  cluster: "devnet";
+  explorer: string;
+  /** wallet balance after the airdrop, null when unreadable */
+  balance: string | null;
 };
 export type FundConsolidateRequest = { from: string[]; to: string };
 
 /* --------------------------------------------------------------- settings */
 
+export type Cluster = "mainnet" | "devnet";
 export type Settings = {
+  /** "mainnet" (default) or "devnet". On devnet: reads/sends on api.devnet.solana.com (or a saved RPC whose
+   *  URL names devnet), Jito and the Helius Sender are disabled (bundles fall back to sequential sends, the job
+   *  says so), explorer links need `explorerSuffix`, and POST /api/dev/airdrop is enabled. */
+  cluster: Cluster;
+  /** "" on mainnet, "?cluster=devnet" on devnet — append it to every solscan link */
+  explorerSuffix: string;
+  /** the RPC URLs actually used right now (resolved from cluster, rpcUrl, Helius key) */
+  effectiveRpcUrl: string;
+  effectiveSendRpcUrl: string;
   /** read RPC (default SOLANA_PUBLIC_RPC) */
   rpcUrl: string;
   /** send RPC (default Helius sender; may equal rpcUrl) */
@@ -149,7 +179,7 @@ export type Settings = {
 };
 /** POST /api/settings — partial; `pumpportalKey: ""` clears the key, omit to keep */
 export type SettingsUpdateRequest = Partial<
-  Omit<Settings, "hasPumpportalKey" | "hasHeliusKey" | "theme">
+  Omit<Settings, "hasPumpportalKey" | "hasHeliusKey" | "theme" | "explorerSuffix" | "effectiveRpcUrl" | "effectiveSendRpcUrl">
 > & {
   pumpportalKey?: string;
   /** "" clears, omit keeps */
@@ -571,6 +601,8 @@ export type LaunchTaskState = {
   endedAt: number | null;
   /** last 50 steps */
   steps: JobStep[];
+  /** true when the task was restored after a server restart: status is "stopped" and POST …/resume restarts it */
+  resumable?: boolean;
 };
 export type LaunchStep = {
   at: number;
@@ -597,6 +629,8 @@ export type LaunchState = {
   /** external volume watcher */
   sellOnExternal: { enabled: boolean; threshold: string; externalVolumeSol: number; fired: boolean } | null;
   autoDump: AutoDumpStatus | null;
+  /** set when the launch was restored from disk after a server restart (its loops are "stopped", resumable) */
+  restored?: { at: number; note: string };
 };
 /** SSE on GET /api/launch/[id]/stream: `state` (full snapshot first), then `step`, `task_status`,
  *  `done`, `error` */
@@ -664,9 +698,13 @@ export type DumpRequest = {
 };
 export type VolumeStartRequest = VolumeConfig & { action: "start"; mint: string };
 export type VolumeStopRequest = { action: "stop"; mint: string };
+/** restart a volume bot restored after a server restart (status.resumable) with its saved config */
+export type VolumeResumeRequest = { action: "resume"; mint: string };
 export type VolumeStatus = {
   mint: string;
   running: boolean;
+  /** true when the bot was restored after a restart and can be resumed with {action:"resume"} */
+  resumable?: boolean;
   jobId: string | null;
   round: number;
   rounds: number;
@@ -678,9 +716,13 @@ export type VolumeStatus = {
 };
 export type AutoDumpArmRequest = AutoDumpConfig & { action: "arm"; mint: string };
 export type AutoDumpDisarmRequest = { action: "disarm"; mint: string };
+/** re-arm a watcher restored after a server restart (status.resumable) with its saved config */
+export type AutoDumpResumeRequest = { action: "resume"; mint: string };
 export type AutoDumpStatus = {
   mint: string;
   armed: boolean;
+  /** true when the watcher was restored disarmed after a restart; its `config` is the saved one */
+  resumable?: boolean;
   percent: number | null;
   mcUsd: number | null;
   delaySec: number | null;
