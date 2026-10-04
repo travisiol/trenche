@@ -15,7 +15,7 @@ function ammCreatorVaultAta(t) {
   return associatedTokenAddress(e, WSOL_MINT, new PublicKey(TOKEN_PROGRAM));
 }
 
-var VAULT_RENT_LAMPORTS = 890880n,
+var VAULT_RENT_LAMPORTS = 650240n, // getMinimumBalanceForRentExemption(0) on mainnet, verified 2026-10-05 (was 890880 in the original build: hid up to 0.00024 SOL of pending fees)
   CLAIM_CU_PER_WALLET = 16e3;
 
 export async function readPumpCreatorFees(t, e) {
