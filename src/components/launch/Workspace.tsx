@@ -71,7 +71,7 @@ export function TasksPanel({
   groups: WalletGroup[];
   balances: Record<string, string | null> | null;
   presets: LaunchPreset[];
-  onPreset: (action: "load" | "quick" | "save" | "update" | "delete", preset?: LaunchPreset, name?: string) => Promise<void> | void;
+  onPreset: (action: "load" | "quick" | "save" | "update" | "delete", preset?: LaunchPreset, name?: string) => Promise<string | void> | void;
   /** live launch state once launched / when viewing a launched token */
   live: LaunchState | null;
   launchId: string | null;

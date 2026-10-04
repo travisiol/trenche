@@ -157,13 +157,16 @@ function LaunchScreen() {
     if (form) saveDraft(form).catch((e) => toast(failureMessage(e), "err"));
   };
 
-  const onPreset = async (action: "load" | "quick" | "save" | "update" | "delete", preset?: LaunchPreset, name?: string) => {
+  /** returns the new preset id on "save" so the dialog keeps it selected (Update / Delete / Load act on it right away) */
+  const onPreset = async (action: "load" | "quick" | "save" | "update" | "delete", preset?: LaunchPreset, name?: string): Promise<string | void> => {
     if (!form) return;
     try {
       if (action === "save" && name) {
-        await post("/api/presets", { preset: { id: `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now().toString(36)}`, name, data: presetData(form) } });
+        const id = `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now().toString(36)}`;
+        await post("/api/presets", { preset: { id, name, data: presetData(form) } });
         await presetsQ.refresh();
         toast(`Preset “${name}” saved`, "ok");
+        return id;
       } else if (action === "update" && preset) {
         await post("/api/presets", { preset: { id: preset.id, name: preset.name, createdAt: preset.createdAt, data: presetData(form) } });
         await presetsQ.refresh();
