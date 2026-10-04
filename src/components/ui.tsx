@@ -369,7 +369,7 @@ export function ApiError({ error, retry, compact }: { error: unknown; retry?: ()
   if (!error) return null;
   const kind = isApiFailure(error) ? error.kind : "error";
   const title = kind === "network" ? "Server not reachable" : kind === "missing" ? "Route missing" : kind === "locked" ? "Vault locked" : "Request failed";
-  const detail = isApiFailure(error) ? (kind === "missing" ? `${error.path} is not served yet.` : kind === "network" ? "The TRENCH server did not answer. Is `npm run dev` running?" : error.message) : failureMessage(error);
+  const detail = isApiFailure(error) ? (kind === "missing" ? `${error.path} is not served yet.` : kind === "network" ? "The DONCHAIN server did not answer. Is `npm run dev` running?" : error.message) : failureMessage(error);
   if (compact) {
     return (
       <div className="flex items-center gap-2 text-sm text-warn px-3 py-2 rounded-lg bg-warn-soft border border-warn/20 min-w-0">

@@ -17,8 +17,8 @@ export default function Home() {
     };
   }, [router]);
   return (
-    <div className="flex flex-1 items-center justify-center dots">
-      <div className="text-text-3 label pulse">Opening TRENCH…</div>
+    <div className="flex flex-1 items-center justify-center bg-bg-100">
+      <div className="text-xs text-text-300">Opening DONCHAIN…</div>
     </div>
   );
 }
