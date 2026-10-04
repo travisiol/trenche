@@ -7,6 +7,7 @@ import { Activity, BookOpen, ChartLine, Gift, Rocket } from "lucide-react";
 import { BxCard, BxSeg, PadAvatar, cx } from "@/components/bx/ui";
 import { DOCS_URL } from "@/components/bx/Shell";
 import { PnlCalendar, dailyPnl } from "@/components/bx/PnlCalendar";
+import { useDrafts } from "@/components/launch/drafts";
 import { TaskRowCompact } from "@/components/dev/TaskRowCompact";
 import { failureMessage, useGet } from "@/lib/api";
 import { useSolPrice, useWallets } from "@/lib/store";
@@ -45,6 +46,9 @@ export default function DashboardPage() {
   const basis = pnl ? Number(pnl.buysSol) : 0;
   const pct = basis > 0 ? (total / basis) * 100 : 0;
   const launches = d?.recentLaunches ?? [];
+  /** Block X lists drafts under Latest launches too (`??` avatar · $TOKEN · Draft · $0.00) */
+  const { drafts } = useDrafts();
+  const draftRows = drafts.filter((x) => !x.launchedMint).slice(0, 5);
   const pnlByMint = new Map(grouped.map((p) => [p.mint, Number(p.pnlSol)]));
   const days = dailyPnl(activity.data?.items ?? []);
   const walletCount = (wallets.data?.wallets ?? []).filter((w) => !w.archived).length;
@@ -113,7 +117,26 @@ export default function DashboardPage() {
                     </li>
                   );
                 })}
-                {Array.from({ length: Math.max(0, 5 - launches.length) }).map((_, i) => (
+                {draftRows.map((x) => (
+                  <li key={x.id}>
+                    <Link href={`/launch?draft=${x.id}`} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-white/[0.04]">
+                      <span className="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-line-100 bg-bg-100 text-[11px] font-semibold text-text-300">
+                        {x.image ? (
+                          // eslint-disable-next-line @next/next/no-img-element -- local data URL
+                          <img src={x.image} alt="" className="h-full w-full object-cover" />
+                        ) : (
+                          "??"
+                        )}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[14px] font-medium tracking-[-0.02em] text-text-100">{x.symbol ? `${x.symbol}` : "$TOKEN"}</span>
+                        <span className="block truncate text-[12px] text-text-300">Draft{x.name ? ` · ${x.name}` : ""}</span>
+                      </span>
+                      <span className="inline-flex shrink-0 items-center gap-1 text-[13px] font-medium tabular-nums text-text-300">{money(0, solUsd, unit)}</span>
+                    </Link>
+                  </li>
+                ))}
+                {Array.from({ length: Math.max(0, 5 - launches.length - draftRows.length) }).map((_, i) => (
                   <li key={`ph${i}`} className="pointer-events-none">
                     <div className="flex items-center gap-2.5 rounded-md px-2.5 py-1.5 opacity-40">
                       <span className="h-8 w-8 shrink-0 rounded-md border border-line-100 bg-bg-100" />
