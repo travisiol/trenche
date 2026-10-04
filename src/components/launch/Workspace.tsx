@@ -1,20 +1,21 @@
 "use client";
 /** Block X launch workspace: Chart · Tasks · Token info · Activity panels + the right rail (Launch · Claim Rewards). */
 import { useState } from "react";
-import { ChevronDown, Gift, GripVertical, Info, Pause, Pencil, Play, Plus, Rocket, Square, Trash2 } from "lucide-react";
-import type { LaunchState, LaunchTaskState, PositionsResponse, TaskActionResponse, TokenInfo, TokenTradesResponse, WalletGroup, WalletInfo } from "@/lib/types";
-import { PAUSABLE_TASKS } from "@/lib/types";
+import { ChevronDown, Gift, GripVertical, Info, Pencil, Plus, Rocket, Settings2, Square, Trash2 } from "lucide-react";
+import type { JobCreated, LaunchPreset, LaunchState, LaunchTaskType, PositionsResponse, TokenInfo, TokenTradesResponse, WalletGroup, WalletInfo } from "@/lib/types";
 import { failureMessage, post, useGet } from "@/lib/api";
-import { useSettings, useSolPrice } from "@/lib/store";
-import { age, short, sol, usd } from "@/lib/format";
+import { useSolPrice } from "@/lib/store";
+import { usePresetIndex, useTradingPresets } from "@/lib/presets";
+import { age, pct, short, sol, usd } from "@/lib/format";
 import { toast } from "@/components/ui";
-import { BxSwitch, cx } from "@/components/bx/ui";
+import { cx } from "@/components/bx/ui";
 import { TxLink } from "@/components/bx/Job";
 import { CandleChart } from "@/components/trade/Chart";
-import { TaskCard, TASK_TYPES } from "./TaskEditor";
-import { TASK_META, newTask, solForSupplyPct, supplyPctForSol, type LaunchForm } from "./model";
-import { TASK_STATUS_WORD } from "../dev/TaskRowCompact";
-import type { LaunchPreset } from "@/lib/types";
+import { LiveTaskCard, TaskCard } from "./TaskEditor";
+import { TaskDialog, TASK_TYPES } from "./TaskDialog";
+import { GlobalPresetsDialog } from "./GlobalPresetsDialog";
+import { TradingPresetsDialog } from "./TradingPresetsDialog";
+import { TASK_META, type FormTask, type LaunchForm } from "./model";
 
 export function Panel({ title, right, children, className }: { title: string; right?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
@@ -62,6 +63,7 @@ export function TasksPanel({
   live,
   launchId,
   onDump,
+  taskControls = true,
 }: {
   form: LaunchForm;
   onChange: (f: LaunchForm) => void;
@@ -69,26 +71,55 @@ export function TasksPanel({
   groups: WalletGroup[];
   balances: Record<string, string | null> | null;
   presets: LaunchPreset[];
-  onPreset: (action: "load" | "quick" | "save" | "delete", preset?: LaunchPreset, name?: string) => void;
+  onPreset: (action: "load" | "quick" | "save" | "update" | "delete", preset?: LaunchPreset, name?: string) => Promise<void> | void;
   /** live launch state once launched / when viewing a launched token */
   live: LaunchState | null;
   launchId: string | null;
   onDump?: () => void;
+  /** false for a CTO: task states are shown, Start / Stop happen on the right rail */
+  taskControls?: boolean;
 }) {
-  const settings = useSettings();
   const [unit, setUnit] = useState<"SOL" | "%">("SOL");
-  const [balOpen, setBalOpen] = useState(false);
+  const [sortBy, setSortBy] = useState<"balance" | "pct">("balance");
   const [addOpen, setAddOpen] = useState(false);
-  const [presetOpen, setPresetOpen] = useState(false);
-  const [presetName, setPresetName] = useState("");
+  const [dialog, setDialog] = useState<{ type: LaunchTaskType; task?: FormTask } | null>(null);
+  const [globalOpen, setGlobalOpen] = useState(false);
+  const [presetsOpen, setPresetsOpen] = useState(false);
+  const [details, setDetails] = useState(true);
+  const [devOpen, setDevOpen] = useState(true);
+  const [presetIndex, setPresetIndex] = usePresetIndex();
+  const { presets: trading } = useTradingPresets();
+  const tp = trading[presetIndex];
   const set = <K extends keyof LaunchForm>(k: K, v: LaunchForm[K]) => onChange({ ...form, [k]: v });
-  const quick = settings.data?.presets ?? ["0.1", "0.5", "1"];
   const dev = wallets.find((w) => w.address === form.devWallet) ?? null;
   const devBal = dev ? Number(balances?.[dev.address] ?? dev.sol ?? 0) : 0;
-  const involved = Array.from(new Set([form.devWallet, ...form.tasks.flatMap((t) => [...t.walletIds, ...wallets.filter((w) => t.walletGroupIds.includes(w.group ?? "")).map((w) => w.address)])].filter(Boolean)));
-  const total = involved.reduce((n, a) => n + (Number(balances?.[a] ?? wallets.find((w) => w.address === a)?.sol ?? 0) || 0), 0);
-  const devPct = supplyPctForSol(Number(form.devBuySol) || 0);
   const readOnly = !!live;
+  const positions = useGet<PositionsResponse>(live ? `/api/positions?mints=${live.mint}&wallets=${live.dev}` : null, 5000);
+  const devRow = (positions.data ?? []).find((r) => r.wallet === live?.dev && r.mint === live?.mint) ?? null;
+  const [sellBusy, setSellBusy] = useState<number | null>(null);
+  const devSell = async (percent: number) => {
+    if (!live) return;
+    setSellBusy(percent);
+    try {
+      await post<JobCreated>("/api/trade/sell", { mint: live.mint, wallets: [live.dev], percent, slippageBps: tp.slippagePercent * 100, tipSol: tp.tipSol });
+      toast(`Selling ${percent}% of the dev wallet`, "info");
+    } catch (e) {
+      toast(failureMessage(e), "err");
+    } finally {
+      setSellBusy(null);
+    }
+  };
+  const dumpAll = () => {
+    if (!live || !onDump) return toast("Dump All failed — No launch wallets to sell.", "err");
+    onDump();
+  };
+  const submitTask = (t: FormTask) => {
+    const exists = form.tasks.some((x) => x.id === t.id);
+    set("tasks", exists ? form.tasks.map((x) => (x.id === t.id ? t : x)) : [...form.tasks, t]);
+    setDialog(null);
+  };
+  const seg = (on: boolean) => cx("h-full rounded px-1.5 text-[10px] font-medium transition-colors", on ? "bg-btn-secondary text-accent" : "text-text-300 hover:text-text-100");
+  const liveTasks = live ? [...live.tasks].sort((a, b) => (sortBy === "pct" ? b.wallets.length - a.wallets.length : 0)) : [];
 
   return (
     <Panel
@@ -97,37 +128,20 @@ export function TasksPanel({
         !readOnly ? (
           <div className="flex items-center gap-1">
             <div className="flex h-5 items-center gap-0.5 rounded bg-input-100 p-0.5">
-              {(["SOL", "%"] as const).map((u) => (
-                <button key={u} type="button" onClick={() => setUnit(u)} className={cx("h-full rounded px-1.5 text-[10px] font-medium", unit === u ? "bg-btn-secondary text-accent" : "text-text-300 hover:text-text-100")}>
-                  {u}
-                </button>
-              ))}
-            </div>
-            <div className="relative">
-              <button type="button" onClick={() => setBalOpen((o) => !o)} className="inline-flex h-5 items-center gap-1 rounded border border-line-100 bg-bg-50 px-1.5 text-[10px] font-medium text-text-200 hover:bg-white/[0.04]">
-                Balance <ChevronDown className="h-3 w-3" />
+              <button type="button" onClick={() => setUnit("SOL")} className={seg(unit === "SOL")} title="Buy with SOL amounts">
+                SOL
               </button>
-              {balOpen ? (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setBalOpen(false)} />
-                  <div className="absolute right-0 top-6 z-20 w-56 rounded-md border border-line-100 bg-bg-50 p-2 text-[11px] shadow-xl">
-                    <div className="mb-1 flex justify-between text-text-300">
-                      <span>Involved wallets</span>
-                      <span className="font-mono text-text-100">{involved.length}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-text-300">Total SOL</span>
-                      <span className="font-mono text-text-100">{sol(total)}</span>
-                    </div>
-                    {dev ? (
-                      <div className="flex justify-between">
-                        <span className="text-text-300">Dev ({dev.label || short(dev.address)})</span>
-                        <span className="font-mono text-text-100">{sol(devBal)}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                </>
-              ) : null}
+              <button type="button" onClick={() => setUnit("%")} className={seg(unit === "%")} title="Buy with percent of SOL balance">
+                %
+              </button>
+            </div>
+            <div className="flex h-5 items-center gap-0.5 rounded bg-input-100 p-0.5">
+              <button type="button" onClick={() => setSortBy("balance")} className={seg(sortBy === "balance")} title="Sort wallets by token balance">
+                Balance
+              </button>
+              <button type="button" onClick={() => setSortBy("pct")} className={seg(sortBy === "pct")} title="Sort wallets by holding percent">
+                %
+              </button>
             </div>
             <div className="relative">
               <button type="button" onClick={() => setAddOpen((o) => !o)} className="inline-flex h-5 items-center gap-1 rounded border border-line-100 bg-bg-50 px-1.5 text-[10px] font-medium text-text-200 hover:bg-white/[0.04]">
@@ -136,58 +150,27 @@ export function TasksPanel({
               {addOpen ? (
                 <>
                   <div className="fixed inset-0 z-10" onClick={() => setAddOpen(false)} />
-                  <div className="absolute right-0 top-6 z-20 w-56 rounded-md border border-line-100 bg-bg-50 p-1 shadow-xl">
+                  <div className="absolute right-0 top-6 z-20 w-44 rounded-md border border-line-100 bg-bg-50 p-1 shadow-xl">
                     {TASK_TYPES.map((t) => (
                       <button
                         key={t}
                         type="button"
                         onClick={() => {
-                          set("tasks", [...form.tasks, { ...newTask(t), tip: form.tipSol }]);
                           setAddOpen(false);
+                          setDialog({ type: t });
                         }}
-                        className="flex w-full flex-col rounded px-2 py-1.5 text-left hover:bg-hover-100"
+                        className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs text-text-100 hover:bg-hover-100"
                       >
-                        <span className="text-xs font-medium text-text-100">{TASK_META[t].label}</span>
-                        <span className="text-[10px] text-text-300">{TASK_META[t].short}</span>
+                        {TASK_META[t].title}
                       </button>
                     ))}
                   </div>
                 </>
               ) : null}
             </div>
-            <div className="relative">
-              <button type="button" onClick={() => setPresetOpen((o) => !o)} className="inline-flex h-5 items-center gap-1 rounded border border-line-100 bg-bg-50 px-1.5 text-[10px] font-medium text-text-200 hover:bg-white/[0.04]">
-                Presets
-              </button>
-              {presetOpen ? (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setPresetOpen(false)} />
-                  <div className="absolute right-0 top-6 z-20 w-72 rounded-md border border-line-100 bg-bg-50 p-2 shadow-xl">
-                    <div className="mb-2 flex gap-1">
-                      <input value={presetName} onChange={(e) => setPresetName(e.target.value)} placeholder="Save setup as…" className="h-7 min-w-0 flex-1 rounded border border-line-100 bg-input-100 px-2 text-[11px] text-text-100 outline-none focus:border-accent" />
-                      <button type="button" disabled={!presetName.trim()} onClick={() => { onPreset("save", undefined, presetName.trim()); setPresetName(""); }} className="h-7 rounded bg-accent px-2 text-[11px] font-medium text-white disabled:opacity-40">
-                        Save
-                      </button>
-                    </div>
-                    {!presets.length ? <p className="px-1 py-2 text-[11px] text-text-300">No preset yet. A preset keeps everything except the image.</p> : null}
-                    {presets.map((p) => (
-                      <div key={p.id} className="flex items-center gap-1 rounded px-1 py-1 text-[11px] hover:bg-hover-100">
-                        <span className="min-w-0 flex-1 truncate text-text-100">{p.name}</span>
-                        <button type="button" onClick={() => { onPreset("load", p); setPresetOpen(false); }} className="rounded border border-line-100 px-1.5 py-0.5 text-text-200 hover:text-text-100">
-                          Load
-                        </button>
-                        <button type="button" onClick={() => { onPreset("quick", p); setPresetOpen(false); }} className="rounded bg-accent px-1.5 py-0.5 text-white">
-                          Quick launch
-                        </button>
-                        <button type="button" onClick={() => onPreset("delete", p)} className="flex h-5 w-5 items-center justify-center text-text-300 hover:text-decrease" aria-label="Delete preset">
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              ) : null}
-            </div>
+            <button type="button" onClick={() => setGlobalOpen(true)} className="inline-flex h-5 items-center gap-1 rounded border border-line-100 bg-bg-50 px-1.5 text-[10px] font-medium text-text-200 hover:bg-white/[0.04]">
+              Presets
+            </button>
           </div>
         ) : (
           <span className="text-[10px] text-text-300">{live?.restored ? "restored after restart" : live?.status}</span>
@@ -195,61 +178,66 @@ export function TasksPanel({
       }
     >
       <div className="flex h-full min-h-0 flex-col overflow-hidden">
-        {!readOnly ? (
-          <div className="flex h-8 shrink-0 items-center justify-end gap-3 border-b border-line-50 px-3 text-[11px]">
-            <div className="flex items-center gap-0.5">
-              {quick.map((p, i) => (
-                <button key={i} type="button" onClick={() => set("devBuySol", p)} className={cx("rounded px-1.5 py-0.5 font-medium", form.devBuySol === p ? "bg-accent-muted text-accent" : "text-text-300 hover:text-text-100")} title={`Dev buy ${p} SOL`}>
-                  P{i + 1}
-                </button>
-              ))}
-            </div>
-            <label className="flex items-center gap-1 uppercase text-text-300">
-              Slippage
-              <input type="number" min={0} max={100} value={form.slippageBps / 100} onChange={(e) => set("slippageBps", Math.round(Number(e.target.value) * 100))} className="h-5 w-12 rounded border border-transparent bg-input-100 px-1 text-right font-mono text-[11px] normal-case text-text-100 outline-none hover:border-line-200 focus:border-line-200" />
-              %
-            </label>
-            <label className="flex items-center gap-1 uppercase text-text-300">
-              Tip (SOL)
-              <input type="number" step="0.0001" min={0} value={form.tipSol} onChange={(e) => set("tipSol", e.target.value)} className="h-5 w-16 rounded border border-transparent bg-input-100 px-1 text-right font-mono text-[11px] normal-case text-text-100 outline-none hover:border-line-200 focus:border-line-200" />
-            </label>
+        <div className="flex h-8 shrink-0 items-center justify-end gap-3 border-b border-line-50 px-3 text-[11px]">
+          <button type="button" onClick={() => setPresetsOpen(true)} className="flex h-5 w-5 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-text-100" aria-label="Trading preset settings" title="Trading preset settings">
+            <Settings2 className="h-3.5 w-3.5" />
+          </button>
+          <div className="flex items-center gap-0.5">
+            {([0, 1, 2] as const).map((i) => (
+              <button key={i} type="button" onClick={() => setPresetIndex(i)} className={cx("rounded px-1.5 py-0.5 font-medium", presetIndex === i ? "bg-accent-muted text-accent" : "text-text-300 hover:text-text-100")} title={`Preset P${i + 1}: slippage ${trading[i].slippagePercent}% · tip ${trading[i].tipSol} SOL`}>
+                P{i + 1}
+              </button>
+            ))}
           </div>
-        ) : null}
+          <span className="uppercase text-text-300">
+            Slippage <span className="font-mono normal-case text-text-100">{tp.slippagePercent}%</span>
+          </span>
+          <span className="uppercase text-text-300">
+            Tip (SOL) <span className="font-mono normal-case text-text-100">{tp.tipSol}</span>
+          </span>
+          <button type="button" onClick={() => setDetails((d) => !d)} className="flex h-5 w-5 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-text-100" aria-label={details ? "Hide details" : "Show details"} title={details ? "Hide details" : "Show details"}>
+            <ChevronDown className={cx("h-3.5 w-3.5 transition-transform", details ? "rotate-180" : "")} />
+          </button>
+        </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {/* Dev task */}
           <div className="task-card">
             <div className="flex h-10 items-center gap-2 px-3">
-              <ChevronDown className="h-3.5 w-3.5 text-text-300" />
+              <button type="button" onClick={() => setDevOpen((o) => !o)} className="flex h-5 w-5 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-text-100" aria-label={devOpen ? "Collapse" : "Expand"}>
+                <ChevronDown className={cx("h-3.5 w-3.5 transition-transform", devOpen ? "" : "-rotate-90")} />
+              </button>
               <span className="text-sm font-medium text-text-100">Dev</span>
-              <span className="text-text-300" title="The developer wallet creates the token and makes the first buy">
+              <span className="text-text-300" title={`Buy Amount: ${form.devBuySol || "0"} SOL · Auto Sell: ${form.autoDevSellEnabled ? (form.autoDevSellMode === "ms" ? `${form.autoDevSellValue} ms` : `$${form.autoDevSellValue} MC`) : "Off"} · Auto Dump: ${form.sellOnExternalEnabled ? `${form.sellOnExternalThreshold} SOL` : "Off"}`}>
                 <Info className="h-3 w-3" />
               </span>
-              {dev ? <span className="text-xs text-text-300">{dev.label || short(dev.address)} · {sol(devBal)} SOL</span> : null}
-              <button type="button" disabled={!live || !onDump} onClick={onDump} className="ml-auto inline-flex h-6 items-center gap-1 rounded border border-decrease/40 px-2 text-[11px] font-medium text-decrease hover:bg-decrease/10 disabled:cursor-not-allowed disabled:opacity-40" title={live ? "Sell 100 % on every wallet of this launch" : "Available once the token is launched"}>
+              <button type="button" onClick={dumpAll} className="ml-auto inline-flex h-6 items-center gap-1 rounded border border-decrease/40 px-2 text-[11px] font-medium text-decrease hover:bg-decrease/10" title="Stop every task, then dump all tokens from all launch wallets">
                 <Trash2 className="h-3 w-3" /> Dump All
               </button>
             </div>
-            {!readOnly ? (
-              !dev ? (
+            {devOpen ? (
+              !dev && !live ? (
                 <p className="px-3 pb-3 text-xs text-text-300">Select a developer wallet for this launch to manage the dev task.</p>
               ) : (
-                <div className="flex flex-wrap items-end gap-3 border-t border-line-50 px-3 pb-3 pt-2">
-                  <label className="flex flex-col gap-0.5">
-                    <span className="text-[10px] uppercase tracking-wider text-text-300">Dev buy ({unit})</span>
-                    <input
-                      type="number"
-                      step={unit === "SOL" ? "0.01" : "0.1"}
-                      min={0}
-                      value={unit === "SOL" ? form.devBuySol : devPct.toFixed(2)}
-                      onChange={(e) => set("devBuySol", unit === "SOL" ? e.target.value : solForSupplyPct(Number(e.target.value) || 0).toFixed(4))}
-                      className="h-7 w-28 rounded border border-line-100 bg-input-100 px-2 font-mono text-xs text-text-100 outline-none focus:border-accent"
-                    />
-                  </label>
-                  <span className="pb-1.5 text-[11px] text-text-300">{unit === "SOL" ? `≈ ${devPct.toFixed(2)}% of supply` : `≈ ${sol(Number(form.devBuySol) || 0)} SOL`}</span>
-                  <label className="ml-auto flex items-center gap-1.5 pb-1 text-[11px] text-text-300">
-                    Cashback coin
-                    <BxSwitch checked={form.cashback} onChange={(v) => set("cashback", v)} />
-                  </label>
+                <div className="flex flex-wrap items-center gap-3 border-t border-line-50 px-3 py-2 text-xs">
+                  <span className="text-text-100">{dev?.label || short(live?.dev ?? form.devWallet)}</span>
+                  <span className="font-mono text-text-300">{short(live?.dev ?? form.devWallet, 4, 4)}</span>
+                  <span className="font-mono text-text-200">{sol(devBal)} SOL</span>
+                  {live ? (
+                    <>
+                      <span className="font-mono text-text-300">{devRow ? `${sol(devRow.amount, 0)} tokens · ${pct(devRow.supplyPct, 2)}` : "—"}</span>
+                      <span className="ml-auto flex items-center gap-1">
+                        {tp.sellPercents.map((p) => (
+                          <button key={p} type="button" disabled={sellBusy !== null || !devRow || !(Number(devRow.amount) > 0)} onClick={() => devSell(p)} className="h-6 rounded border border-decrease/40 px-1.5 text-[10px] font-medium text-decrease hover:bg-decrease/10 disabled:cursor-not-allowed disabled:opacity-40">
+                            Sell {p}%
+                          </button>
+                        ))}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="ml-auto text-text-300">
+                      Buy {form.devBuySol || "0"} SOL · Auto Sell {form.autoDevSellEnabled ? "On" : "Off"} · Auto Dump {form.sellOnExternalEnabled ? "On" : "Off"}
+                    </span>
+                  )}
                 </div>
               )
             ) : null}
@@ -257,72 +245,25 @@ export function TasksPanel({
           {readOnly && live ? (
             <div className="flex flex-col">
               {live.restored ? <p className="border-b border-line-50 bg-yellow-100/10 px-3 py-2 text-[11px] text-yellow-100">{live.restored.note}</p> : null}
-              {!live.tasks.length ? <p className="px-3 py-4 text-xs text-text-300">No task on this launch.</p> : null}
-              {live.tasks.map((t) => (
-                <LiveTaskRow key={t.id} launchId={launchId ?? live.id} t={t} />
+              {!live.tasks.length ? <p className="px-3 py-4 text-xs text-text-300">No tasks on this launch.</p> : null}
+              {liveTasks.map((t) => (
+                <LiveTaskCard key={t.id} launchId={launchId ?? live.id} mint={live.mint} t={t} wallets={wallets} controls={taskControls} />
               ))}
             </div>
           ) : (
             <>
               {form.tasks.map((t) => (
-                <TaskCard key={t.id} task={t} wallets={wallets} groups={groups} balances={balances} onChange={(nt) => set("tasks", form.tasks.map((x) => (x.id === t.id ? nt : x)))} onRemove={() => set("tasks", form.tasks.filter((x) => x.id !== t.id))} />
+                <TaskCard key={`${t.id}-${details}`} task={t} wallets={wallets} detailsOpen={details} onEdit={() => setDialog({ type: t.type, task: t })} onChange={(nt) => set("tasks", form.tasks.map((x) => (x.id === t.id ? nt : x)))} onRemove={() => set("tasks", form.tasks.filter((x) => x.id !== t.id))} />
               ))}
-              {!form.tasks.length ? <p className="px-3 py-4 text-xs text-text-300">No task yet — Add Task: Bundle buys inside the create bundle, Sniper right after it, Buy / Volume keep trading, Wash moves tokens to fresh wallets.</p> : null}
+              {!form.tasks.length ? <p className="px-3 py-4 text-xs text-text-300">No tasks yet.</p> : null}
             </>
           )}
         </div>
       </div>
+      {dialog ? <TaskDialog type={dialog.type} initial={dialog.task} form={form} wallets={wallets} groups={groups} balances={balances} unit={unit} onSubmit={submitTask} onClose={() => setDialog(null)} /> : null}
+      <GlobalPresetsDialog open={globalOpen} onClose={() => setGlobalOpen(false)} form={form} wallets={wallets} presets={presets} onPreset={onPreset} />
+      <TradingPresetsDialog open={presetsOpen} onClose={() => setPresetsOpen(false)} />
     </Panel>
-  );
-}
-
-function LiveTaskRow({ launchId, t }: { launchId: string; t: LaunchTaskState }) {
-  const [busy, setBusy] = useState(false);
-  const meta = TASK_META[t.type];
-  const act = async (action: "pause" | "resume" | "stop") => {
-    setBusy(true);
-    try {
-      await post<TaskActionResponse>(`/api/launch/${launchId}/tasks/${t.id}/${action}`, {});
-    } catch (e) {
-      toast(failureMessage(e), "err");
-    } finally {
-      setBusy(false);
-    }
-  };
-  const pct = t.total ? Math.round((t.done / t.total) * 100) : t.status === "done" ? 100 : 0;
-  const tone = t.status === "error" ? "bg-decrease" : t.status === "done" ? "bg-green-100" : t.status === "paused" || t.status === "stopped" ? "bg-yellow-100" : t.status === "running" ? "bg-accent" : "bg-text-300";
-  const pausable = PAUSABLE_TASKS.includes(t.type);
-  const activeNow = t.status === "running" || t.status === "paused" || t.status === "pending";
-  return (
-    <div className="task-card flex flex-col gap-1.5 px-3 py-2">
-      <div className="flex items-center gap-2 text-xs">
-        <span className={cx("h-2 w-2 rounded-full", tone, t.status === "running" ? "animate-pulse" : "")} />
-        <span className="font-medium text-text-100">{meta.label}</span>
-        <span className="text-text-300">{TASK_STATUS_WORD[t.status]}</span>
-        <span className="ml-auto font-mono text-[11px] text-text-300">
-          {t.done}/{t.total ?? "∞"} · {t.sent} sent{t.failed ? ` · ${t.failed} failed` : ""} · {t.wallets.length} wallets
-        </span>
-        {activeNow && pausable && t.status === "running" ? (
-          <button type="button" disabled={busy} onClick={() => act("pause")} className="inline-flex h-5 items-center gap-1 rounded border border-line-100 px-1.5 text-[10px] text-text-200 hover:text-text-100">
-            <Pause className="h-3 w-3" /> Pause
-          </button>
-        ) : null}
-        {(t.status === "paused" || t.resumable) ? (
-          <button type="button" disabled={busy} onClick={() => act("resume")} className="inline-flex h-5 items-center gap-1 rounded bg-accent px-1.5 text-[10px] text-white">
-            <Play className="h-3 w-3" /> Resume
-          </button>
-        ) : null}
-        {activeNow ? (
-          <button type="button" disabled={busy} onClick={() => act("stop")} className="inline-flex h-5 items-center gap-1 rounded border border-decrease/40 px-1.5 text-[10px] text-decrease hover:bg-decrease/10">
-            <Square className="h-3 w-3" /> Stop
-          </button>
-        ) : null}
-      </div>
-      <div className="h-1 w-full overflow-hidden rounded-full bg-line-50">
-        <div className={cx("h-full", tone)} style={{ width: `${pct}%` }} />
-      </div>
-      {t.error ? <p className="text-[11px] text-decrease">{t.error}</p> : null}
-    </div>
   );
 }
 
@@ -532,7 +473,7 @@ export function ActivityPanel({ mint, live }: { mint: string | null; live: Launc
 }
 
 /* ---------------------------------------------------------------- Right rail */
-export function RightRail({ canLaunch, onLaunch, onClaim, claimBusy, launched }: { canLaunch: boolean; onLaunch: () => void; onClaim?: () => void; claimBusy?: boolean; launched: boolean }) {
+export function RightRail({ canLaunch, onLaunch, onClaim, claimBusy, launched, launchTitle, launchLabel = "Launch", onStop }: { canLaunch: boolean; onLaunch: () => void; onClaim?: () => void; claimBusy?: boolean; launched: boolean; launchTitle?: string; /** "Start" for a CTO */ launchLabel?: string; /** CTO: stop every task */ onStop?: () => void }) {
   const btn = "group flex w-full flex-col items-center justify-center gap-1 rounded-md border border-line-100 bg-bg-50 px-1 py-2 text-center transition-colors hover:bg-white/[0.04] hover:text-text-100 disabled:cursor-not-allowed disabled:opacity-40";
   return (
     <aside className="flex min-h-0 shrink-0 flex-col border-l border-line-100 bg-bg-100" aria-label="Launch options" style={{ width: 72 }}>
@@ -540,10 +481,16 @@ export function RightRail({ canLaunch, onLaunch, onClaim, claimBusy, launched }:
         <span className="h-6" />
       </div>
       <div className="flex min-h-0 flex-1 flex-col px-2 py-3">
-        <button type="button" onClick={onLaunch} disabled={!canLaunch} className={btn} title={launched ? "Already launched" : canLaunch ? "Review and launch" : "Fill the token, dev wallet and unlock the vault first"}>
+        <button type="button" onClick={() => (canLaunch ? onLaunch() : launchTitle ? toast(launchTitle, "err") : null)} disabled={launched} className={cx(btn, !canLaunch && !launched ? "opacity-70" : "")} title={launched ? "Already launched" : canLaunch ? "Review and launch" : (launchTitle ?? "Open a draft first")}>
           <Rocket className="h-3.5 w-3.5 shrink-0 text-text-300 transition-colors group-hover:text-text-100" />
-          <span className="max-w-full text-center text-[10px] font-medium leading-tight text-text-200">Launch</span>
+          <span className="max-w-full text-center text-[10px] font-medium leading-tight text-text-200">{launchLabel}</span>
         </button>
+        {onStop ? (
+          <button type="button" onClick={onStop} className={cx(btn, "mt-2")} title="Stop every task of this CTO">
+            <Square className="h-3.5 w-3.5 shrink-0 text-decrease" />
+            <span className="max-w-full text-center text-[10px] font-medium leading-tight text-text-200">Stop</span>
+          </button>
+        ) : null}
         <div className="no-scrollbar mt-auto flex flex-col gap-2 overflow-y-auto pt-2">
           <button type="button" onClick={onClaim} disabled={!onClaim || claimBusy} className={btn} title={onClaim ? "Claim the pump.fun creator fees of this token" : "Available once the token is launched"}>
             <Gift className="h-3.5 w-3.5 shrink-0 text-text-300 transition-colors group-hover:text-text-100" />

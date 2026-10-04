@@ -1,8 +1,8 @@
 /**
- * Launch form model — Block X task model reproduced 1:1 (see BRIEF "Tâches de launch").
- * Saved as a draft in localStorage and as presets through /api/presets.
+ * Launch form model — Block X "Launch Token" modal + task model reproduced 1:1 (see design/blockx/BEHAVIOUR.md §4).
+ * A form is one draft; drafts are saved through src/components/launch/drafts.ts and task presets through /api/presets.
  */
-import { TASK_DEFAULTS, TASK_LIMITS, type LaunchTask, type LaunchTaskType, type TradeMode } from "@/lib/types";
+import { TASK_DEFAULTS, TASK_LIMITS, type LaunchExecuteRequest, type LaunchTask, type LaunchTaskType, type TradeMode } from "@/lib/types";
 
 export type FormTask = {
   id: string;
@@ -15,6 +15,11 @@ export type FormTask = {
   slippagePercent: number;
   tip: string;
   autoRetryCount: number;
+  /** sniper: retry switch (Block X "Retry On/Off"; off = autoRetryCount ignored) */
+  retry: boolean;
+  /** sniper: delay between wallet buys, seconds (0 = all instant) */
+  minDelaySec: number;
+  maxDelaySec: number;
   autoStart: boolean;
   /** buy/volume */
   minIntervalSec: number;
@@ -23,11 +28,23 @@ export type FormTask = {
   maxTradeAmount: string;
   tradeMode: TradeMode;
   buyRatioPercent: number;
-  maxTradesPerWallet: number;
-  maxDurationMinutes: number;
+  /** "" = unlimited (Block X leaves these empty) */
+  maxTradesPerWallet: string;
+  maxDurationMinutes: string;
+  /** "Stop on activity" / bundle "Sell all on external": net external SOL threshold */
+  stopOnActivity: boolean;
+  stopOnActivitySol: string;
+  /** wash: wash wallets per source wallet (1–3) and the pairing */
+  washPerSource: 1 | 2 | 3;
+  washPairs: Record<string, string[]>;
+  /** wash: delay between pairs, seconds */
+  washMinDelaySec: number;
+  washMaxDelaySec: number;
 };
 
 export type LaunchForm = {
+  /** draft id (server or local) */
+  id: string;
   name: string;
   symbol: string;
   description: string;
@@ -36,27 +53,39 @@ export type LaunchForm = {
   website: string;
   /** square PNG data URL, cropped client-side */
   imageDataUrl: string;
+  /** "pump" = a …pump address is searched at launch (Fetch mint address) */
   vanity: string;
+  /** imported mint keypair (base58 or JSON byte array) — signs the create tx instead of a generated mint */
+  mintSecret: string;
+  /** public key derived from mintSecret (display only) */
+  mintAddress: string;
+  /** "Fetch mint address": a …pump address reserved by POST /api/launch/mint, passed as LaunchPrepareRequest.mint */
+  reservedMint: string;
   devWallet: string;
   devBuySol: string;
   slippageBps: number;
   cashback: boolean;
   /** default tip (SOL) for new tasks — Block X "TIP (SOL)" field of the Tasks panel */
   tipSol: string;
+  /** trading preset selected in the Tasks panel (P1 · P2 · P3) */
+  presetIndex: 0 | 1 | 2;
   tasks: FormTask[];
+  /** Auto Dump: dump every launch wallet when net external volume reaches this SOL amount */
   sellOnExternalEnabled: boolean;
   sellOnExternalThreshold: string;
-  autoDumpEnabled: boolean;
-  autoDumpPercent: number;
-  autoDumpMcUsd: string;
-  autoDumpAfterSec: string;
+  /** Auto Dev Sell: sell 100 % of the dev wallet after N ms (MS) or at a market cap in USD (MC) */
+  autoDevSellEnabled: boolean;
+  autoDevSellMode: "ms" | "mc";
+  autoDevSellValue: string;
+  updatedAt: number;
 };
 
 let seq = 0;
 export const newId = () => `t${Date.now().toString(36)}${(seq++).toString(36)}`;
+export const newDraftId = () => `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 
 export function newTask(type: LaunchTaskType): FormTask {
-  const d = TASK_DEFAULTS[type] as Partial<FormTask>;
+  const d = TASK_DEFAULTS[type] as Partial<Record<keyof FormTask, unknown>>;
   return {
     id: newId(),
     type,
@@ -64,22 +93,32 @@ export function newTask(type: LaunchTaskType): FormTask {
     walletGroupIds: [],
     buyAmount: "0.1",
     walletBuyAmounts: {},
-    slippagePercent: d.slippagePercent ?? 20,
-    tip: d.tip ?? "0.001",
-    autoRetryCount: d.autoRetryCount ?? 0,
-    autoStart: d.autoStart ?? true,
-    minIntervalSec: d.minIntervalSec ?? 0,
-    maxIntervalSec: d.maxIntervalSec ?? 1,
-    minTradeAmount: d.minTradeAmount ?? "0.1",
-    maxTradeAmount: d.maxTradeAmount ?? "0.2",
-    tradeMode: d.tradeMode ?? (type === "volume" ? "both" : "buy"),
-    buyRatioPercent: d.buyRatioPercent ?? 50,
-    maxTradesPerWallet: 100,
-    maxDurationMinutes: 60,
+    slippagePercent: (d.slippagePercent as number | undefined) ?? (type === "bundle" || type === "sniper" ? 30 : 20),
+    tip: "0.0002",
+    autoRetryCount: 1,
+    retry: true,
+    minDelaySec: 0,
+    maxDelaySec: 0,
+    autoStart: type === "buy" || type === "volume" ? false : true,
+    minIntervalSec: 0,
+    maxIntervalSec: type === "buy" ? 0 : 1,
+    minTradeAmount: "0.1",
+    maxTradeAmount: "0.2",
+    tradeMode: (d.tradeMode as TradeMode | undefined) ?? (type === "volume" ? "both" : "buy"),
+    buyRatioPercent: 50,
+    maxTradesPerWallet: "",
+    maxDurationMinutes: "",
+    stopOnActivity: false,
+    stopOnActivitySol: "",
+    washPerSource: 1,
+    washPairs: {},
+    washMinDelaySec: 0,
+    washMaxDelaySec: 0,
   };
 }
 
 export const EMPTY_FORM: LaunchForm = {
+  id: "",
   name: "",
   symbol: "",
   description: "",
@@ -88,48 +127,87 @@ export const EMPTY_FORM: LaunchForm = {
   website: "",
   imageDataUrl: "",
   vanity: "",
+  mintSecret: "",
+  mintAddress: "",
+  reservedMint: "",
   devWallet: "",
-  devBuySol: "0.5",
+  devBuySol: "1",
   slippageBps: 3000,
   cashback: false,
-  tipSol: "0.001",
+  tipSol: "0.0002",
+  presetIndex: 0,
   tasks: [],
   sellOnExternalEnabled: false,
-  sellOnExternalThreshold: "5",
-  autoDumpEnabled: false,
-  autoDumpPercent: 100,
-  autoDumpMcUsd: "",
-  autoDumpAfterSec: "",
+  sellOnExternalThreshold: "0",
+  autoDevSellEnabled: false,
+  autoDevSellMode: "ms",
+  autoDevSellValue: "",
+  updatedAt: 0,
 };
 
-export const TASK_META: Record<LaunchTaskType, { label: string; short: string; blurb: string; icon: "bundle" | "sniper" | "buy" | "volume" | "wash"; color: string }> = {
-  bundle: { label: "Bundle", short: "Buy in the create bundle", blurb: "These wallets buy inside the same Jito bundle as the create, so nobody can trade before them. Jito accepts the create plus 4 buys.", icon: "bundle", color: "var(--accent)" },
-  sniper: { label: "Sniper", short: "Buy right after create", blurb: "These wallets send their buy the instant the create confirms, with optional retries. No wallet limit beyond 50.", icon: "sniper", color: "var(--warn)" },
-  buy: { label: "Buy", short: "Keep buying over time", blurb: "These wallets keep buying at random amounts and pauses after the launch. Pausable from the dashboard.", icon: "buy", color: "var(--up)" },
-  volume: { label: "Volume", short: "Buy and sell to print volume", blurb: "These wallets buy and sell at random amounts and pauses to print volume. Pausable from the dashboard.", icon: "volume", color: "var(--auto)" },
-  wash: { label: "Wash", short: "Move tokens to fresh wallets", blurb: "After the launch, every token these wallets hold is transferred to brand-new wallets added to your vault.", icon: "wash", color: "var(--text-2)" },
+export function newForm(devWallet = ""): LaunchForm {
+  return { ...EMPTY_FORM, id: newDraftId(), devWallet, updatedAt: Date.now() };
+}
+
+/** Accepts any older draft shape (localStorage of ui2, server drafts) and fills the gaps. */
+export function normalizeForm(d: Partial<LaunchForm> & Record<string, unknown>): LaunchForm {
+  const legacyAuto = d as { autoDumpEnabled?: boolean; autoDumpMcUsd?: string; autoDumpAfterSec?: string };
+  const auto: Partial<LaunchForm> = {};
+  if (legacyAuto.autoDumpEnabled !== undefined && d.autoDevSellEnabled === undefined) {
+    auto.autoDevSellEnabled = !!legacyAuto.autoDumpEnabled;
+    if (Number(legacyAuto.autoDumpMcUsd) > 0) {
+      auto.autoDevSellMode = "mc";
+      auto.autoDevSellValue = String(legacyAuto.autoDumpMcUsd);
+    } else if (Number(legacyAuto.autoDumpAfterSec) > 0) {
+      auto.autoDevSellMode = "ms";
+      auto.autoDevSellValue = String(Number(legacyAuto.autoDumpAfterSec) * 1000);
+    }
+  }
+  return {
+    ...EMPTY_FORM,
+    ...d,
+    ...auto,
+    id: d.id || newDraftId(),
+    tasks: (d.tasks ?? []).map((t) => ({ ...newTask(t.type), ...t })),
+  };
+}
+
+export const TASK_META: Record<LaunchTaskType, { label: string; title: string; short: string; blurb: string; icon: "bundle" | "sniper" | "buy" | "volume" | "wash"; color: string }> = {
+  bundle: { label: "Bundle", title: "Bundle Task", short: "Buy in the create bundle", blurb: "These wallets buy inside the same Jito bundle as the create, so nobody can trade before them. Jito accepts the create plus 4 buys.", icon: "bundle", color: "var(--accent)" },
+  sniper: { label: "Sniper", title: "Sniper Task", short: "Buy right after create", blurb: "These wallets send their buy the instant the create confirms, with optional retries.", icon: "sniper", color: "var(--yellow-100)" },
+  buy: { label: "Buy", title: "Buy Task", short: "Keep buying over time", blurb: "These wallets keep buying at random amounts and pauses after the launch. Start / Pause / Stop from the card.", icon: "buy", color: "var(--green-100)" },
+  volume: { label: "Volume", title: "Volume Task", short: "Buy and sell to print volume", blurb: "These wallets buy and sell at random amounts and pauses to print volume. Start / Pause / Stop from the card.", icon: "volume", color: "var(--blue-100)" },
+  wash: { label: "Wash", title: "Wash Task", short: "Sell to wash wallets", blurb: "Each source wallet sells its balance, the SOL goes to its wash wallets, they buy back. Multiple wash wallets split evenly.", icon: "wash", color: "var(--text-300)" },
 };
 
 /** Validation mirrors TASK_LIMITS; returns one message per problem (empty = ok). */
 export function validateTask(t: FormTask): string[] {
   const out: string[] = [];
   const wallets = t.walletIds.length + (t.walletGroupIds.length ? 1 : 0);
-  if (!wallets) out.push("Pick at least one wallet or group.");
+  if (t.type !== "wash" && !wallets) out.push("Pick at least one wallet or group.");
   if (t.walletIds.length > TASK_LIMITS.maxWalletsPerTask) out.push(`Max ${TASK_LIMITS.maxWalletsPerTask} wallets per task.`);
   if (t.type === "bundle" && t.walletIds.length > TASK_LIMITS.maxWalletsPerBundleTask) out.push(`A Jito bundle holds the create plus ${TASK_LIMITS.maxWalletsPerBundleTask} buys.`);
   if (t.slippagePercent < 0 || t.slippagePercent > TASK_LIMITS.maxSlippagePercent) out.push(`Slippage must be 0–${TASK_LIMITS.maxSlippagePercent} %.`);
   if (t.type === "bundle" || t.type === "sniper") {
-    if (!(Number(t.buyAmount) > 0)) out.push("Buy amount must be above 0.");
-    if (t.autoRetryCount > TASK_LIMITS.maxAutoRetryCount) out.push(`Max ${TASK_LIMITS.maxAutoRetryCount} retries.`);
+    if (!(Number(t.buyAmount) > 0) && !Object.values(t.walletBuyAmounts).some((v) => Number(v) > 0)) out.push("Buy amount must be above 0.");
+    if (t.retry && t.autoRetryCount > TASK_LIMITS.maxAutoRetryCount) out.push(`Max ${TASK_LIMITS.maxAutoRetryCount} retries.`);
+    if (t.minDelaySec > t.maxDelaySec) out.push("Min delay is above max delay.");
   }
   if (t.type === "buy" || t.type === "volume") {
     if (t.minIntervalSec > t.maxIntervalSec) out.push("Min interval is above max interval.");
     if (t.maxIntervalSec > TASK_LIMITS.maxIntervalSec) out.push("Interval too long.");
     if (Number(t.minTradeAmount) > Number(t.maxTradeAmount)) out.push("Min amount is above max amount.");
     if (!(Number(t.minTradeAmount) > 0)) out.push("Trade amount must be above 0.");
-    if (t.maxTradesPerWallet < 1 || t.maxTradesPerWallet > TASK_LIMITS.maxTradesPerWallet) out.push(`Trades per wallet: 1–${TASK_LIMITS.maxTradesPerWallet}.`);
-    if (t.maxDurationMinutes < 1 || t.maxDurationMinutes > TASK_LIMITS.maxDurationMinutes) out.push(`Duration: 1–${TASK_LIMITS.maxDurationMinutes} min.`);
+    if (t.maxTradesPerWallet !== "" && (Number(t.maxTradesPerWallet) < 1 || Number(t.maxTradesPerWallet) > TASK_LIMITS.maxTradesPerWallet)) out.push(`Trades per wallet: 1–${TASK_LIMITS.maxTradesPerWallet}.`);
+    if (t.maxDurationMinutes !== "" && (Number(t.maxDurationMinutes) < 1 || Number(t.maxDurationMinutes) > TASK_LIMITS.maxDurationMinutes)) out.push(`Duration: 1–${TASK_LIMITS.maxDurationMinutes} min.`);
   }
+  if (t.type === "wash") {
+    const sources = Object.keys(t.washPairs);
+    if (!sources.length) out.push("Mark at least one source wallet.");
+    if (sources.some((s) => !t.washPairs[s]?.length)) out.push("Every source needs a wash wallet.");
+    if (t.washMinDelaySec > t.washMaxDelaySec) out.push("Min delay is above max delay.");
+  }
+  if (t.stopOnActivity && !(Number(t.stopOnActivitySol) > 0)) out.push("Set the external volume threshold.");
   return out;
 }
 
@@ -139,34 +217,56 @@ export function validateForm(f: LaunchForm): string[] {
   if (!f.symbol.trim()) out.push("Symbol is required.");
   if (f.symbol.length > 10) out.push("Symbol: 10 characters max.");
   if (!f.imageDataUrl) out.push("Add an image.");
-  if (!f.devWallet) out.push("Pick the dev wallet.");
-  if (!(Number(f.devBuySol) >= 0)) out.push("Dev buy must be a number.");
+  if (!f.devWallet) out.push("Select a developer wallet first.");
+  if (!(Number(f.devBuySol) >= 0)) out.push("Buy amount must be a number.");
   for (const t of f.tasks) for (const m of validateTask(t)) out.push(`${TASK_META[t.type].label}: ${m}`);
-  if (f.sellOnExternalEnabled && !(Number(f.sellOnExternalThreshold) > 0)) out.push("External-volume threshold must be above 0.");
-  if (f.autoDumpEnabled && !(Number(f.autoDumpMcUsd) > 0) && !(Number(f.autoDumpAfterSec) > 0)) out.push("Auto-dump needs a market cap or a delay.");
+  if (f.sellOnExternalEnabled && !(Number(f.sellOnExternalThreshold) > 0)) out.push("Auto Dump: set the external volume threshold.");
+  if (f.autoDevSellEnabled && !(Number(f.autoDevSellValue) > 0)) out.push(f.autoDevSellMode === "ms" ? "Auto Dev Sell: set the delay in ms." : "Auto Dev Sell: set the market cap.");
   return out;
 }
 
-/** Form task → API task (only the fields the type uses). */
+/** Form task → API task (only the fields the type uses; contract in src/lib/types.ts). */
 export function toApiTask(t: FormTask): LaunchTask {
   const base = {
     id: t.id,
     walletIds: t.walletIds,
     walletGroupIds: t.walletGroupIds.length ? t.walletGroupIds : undefined,
   };
-  if (t.type === "bundle" || t.type === "sniper") {
+  if (t.type === "bundle") {
     return {
       ...base,
-      type: t.type,
+      type: "bundle",
       buyAmount: t.buyAmount,
       walletBuyAmounts: Object.keys(t.walletBuyAmounts).length ? t.walletBuyAmounts : undefined,
       slippagePercent: t.slippagePercent,
       tip: t.tip,
-      autoRetryCount: t.autoRetryCount,
-      autoStart: t.autoStart,
+      sellOnExternalEnabled: t.stopOnActivity || undefined,
+      sellOnExternalThreshold: t.stopOnActivity ? t.stopOnActivitySol : undefined,
+      autoStart: true,
     };
   }
-  if (t.type === "wash") return { ...base, type: "wash", autoStart: t.autoStart };
+  if (t.type === "sniper") {
+    return {
+      ...base,
+      type: "sniper",
+      buyAmount: t.buyAmount,
+      walletBuyAmounts: Object.keys(t.walletBuyAmounts).length ? t.walletBuyAmounts : undefined,
+      minDelaySec: t.minDelaySec,
+      maxDelaySec: t.maxDelaySec,
+      slippagePercent: t.slippagePercent,
+      tip: t.tip,
+      retry: t.retry,
+      maxRetries: t.retry ? t.autoRetryCount : 0,
+      autoRetryCount: t.retry ? t.autoRetryCount : 0,
+      stopOnActivityEnabled: t.stopOnActivity || undefined,
+      stopOnActivityThreshold: t.stopOnActivity ? t.stopOnActivitySol : undefined,
+      autoStart: true,
+    };
+  }
+  if (t.type === "wash") {
+    const pairs = Object.entries(t.washPairs).map(([source, wash]) => ({ source, wash }));
+    return { ...base, type: "wash", walletIds: pairs.map((p) => p.source), pairs, perSource: t.washPerSource, minDelaySec: t.washMinDelaySec, maxDelaySec: t.washMaxDelaySec, autoStart: t.autoStart };
+  }
   return {
     ...base,
     type: t.type,
@@ -176,55 +276,109 @@ export function toApiTask(t: FormTask): LaunchTask {
     maxTradeAmount: t.maxTradeAmount,
     slippagePercent: t.slippagePercent,
     tip: t.tip,
-    tradeMode: t.tradeMode,
+    tradeMode: t.type === "volume" ? t.tradeMode : "buy",
     buyRatioPercent: t.buyRatioPercent,
-    maxTradesPerWallet: t.maxTradesPerWallet,
-    maxDurationMinutes: t.maxDurationMinutes,
+    maxTradesPerWallet: t.maxTradesPerWallet !== "" ? Number(t.maxTradesPerWallet) : undefined,
+    maxDurationMinutes: t.maxDurationMinutes !== "" ? Number(t.maxDurationMinutes) : undefined,
     autoStart: t.autoStart,
+    stopOnActivityEnabled: t.stopOnActivity || undefined,
+    stopOnActivityThreshold: t.stopOnActivity ? t.stopOnActivitySol : undefined,
   };
 }
 
-const DRAFT_KEY = "trench.launch.draft";
-export function loadDraft(): LaunchForm | null {
-  try {
-    const raw = localStorage.getItem(DRAFT_KEY);
-    if (!raw) return null;
-    const d = JSON.parse(raw) as Partial<LaunchForm>;
-    return { ...EMPTY_FORM, ...d, tasks: (d.tasks ?? []).map((t) => ({ ...newTask(t.type), ...t })) };
-  } catch {
-    return null;
+/** API task → form task (CTO records keep LaunchTask[]; the dialogs edit FormTask). */
+export function fromApiTask(t: LaunchTask): FormTask {
+  const base = newTask(t.type);
+  const o = t as unknown as Record<string, unknown>;
+  const num = (k: string, d: number) => (typeof o[k] === "number" ? (o[k] as number) : d);
+  const str = (k: string, d: string) => (typeof o[k] === "string" ? (o[k] as string) : d);
+  const f: FormTask = {
+    ...base,
+    id: t.id ?? base.id,
+    walletIds: t.walletIds ?? [],
+    walletGroupIds: t.walletGroupIds ?? [],
+    buyAmount: str("buyAmount", base.buyAmount),
+    walletBuyAmounts: (o.walletBuyAmounts as Record<string, string> | undefined) ?? {},
+    slippagePercent: num("slippagePercent", base.slippagePercent),
+    tip: str("tip", base.tip),
+    autoStart: typeof o.autoStart === "boolean" ? (o.autoStart as boolean) : base.autoStart,
+  };
+  if (t.type === "sniper") {
+    f.minDelaySec = num("minDelaySec", 0);
+    f.maxDelaySec = num("maxDelaySec", 0);
+    f.retry = typeof o.retry === "boolean" ? (o.retry as boolean) : num("maxRetries", num("autoRetryCount", 0)) > 0;
+    f.autoRetryCount = num("maxRetries", num("autoRetryCount", 1));
+    f.stopOnActivity = !!o.stopOnActivityEnabled;
+    f.stopOnActivitySol = str("stopOnActivityThreshold", "");
+  } else if (t.type === "bundle") {
+    f.stopOnActivity = !!o.sellOnExternalEnabled;
+    f.stopOnActivitySol = str("sellOnExternalThreshold", "");
+  } else if (t.type === "buy" || t.type === "volume") {
+    f.minIntervalSec = num("minIntervalSec", base.minIntervalSec);
+    f.maxIntervalSec = num("maxIntervalSec", base.maxIntervalSec);
+    f.minTradeAmount = str("minTradeAmount", base.minTradeAmount);
+    f.maxTradeAmount = str("maxTradeAmount", base.maxTradeAmount);
+    f.tradeMode = (o.tradeMode as TradeMode | undefined) ?? base.tradeMode;
+    f.buyRatioPercent = num("buyRatioPercent", 50);
+    f.maxTradesPerWallet = typeof o.maxTradesPerWallet === "number" ? String(o.maxTradesPerWallet) : "";
+    f.maxDurationMinutes = typeof o.maxDurationMinutes === "number" ? String(o.maxDurationMinutes) : "";
+    f.stopOnActivity = !!o.stopOnActivityEnabled;
+    f.stopOnActivitySol = str("stopOnActivityThreshold", "");
+  } else if (t.type === "wash") {
+    const pairs = (o.pairs as { source: string; wash: string[] }[] | undefined) ?? [];
+    f.washPairs = Object.fromEntries(pairs.map((p) => [p.source, p.wash]));
+    f.washPerSource = (num("perSource", 1) as 1 | 2 | 3) || 1;
+    f.washMinDelaySec = num("minDelaySec", 0);
+    f.washMaxDelaySec = num("maxDelaySec", 0);
   }
-}
-export function saveDraft(f: LaunchForm) {
-  try {
-    localStorage.setItem(DRAFT_KEY, JSON.stringify(f));
-  } catch {
-    /* quota / private mode */
-  }
-}
-export function clearDraft() {
-  try {
-    localStorage.removeItem(DRAFT_KEY);
-  } catch {
-    /* ignore */
-  }
+  return f;
 }
 
-/** Presets never carry the image (too large) — keep everything else. */
+/** The POST /api/launch/execute body for a form whose mint came back from /api/launch/prepare. */
+export function toExecuteRequest(f: LaunchForm, mint: string): LaunchExecuteRequest {
+  const v = Number(f.autoDevSellValue) || 0;
+  return {
+    mint,
+    launchpad: "pumpfun",
+    devWallet: f.devWallet,
+    devBuySol: f.devBuySol || "0",
+    quote: "SOL",
+    tasks: f.tasks.map(toApiTask),
+    sellOnExternalEnabled: f.sellOnExternalEnabled || undefined,
+    sellOnExternalThreshold: f.sellOnExternalEnabled ? f.sellOnExternalThreshold : undefined,
+    autoDevSell: f.autoDevSellEnabled && v > 0 ? { mode: f.autoDevSellMode, value: v } : undefined,
+    slippageBps: f.slippageBps,
+    cashback: f.cashback || undefined,
+    draftId: f.id || undefined,
+  };
+}
+
+/** Global Task Presets keep the whole snapshot except the image (Quick Launch replays it); "Load preset" takes only the tasks. */
 export function presetData(f: LaunchForm): Record<string, unknown> {
-  const { imageDataUrl: _img, ...rest } = f;
+  const { imageDataUrl: _img, id: _id, mintSecret: _secret, mintAddress: _addr, reservedMint: _res, ...rest } = f;
+  void _res;
   void _img;
+  void _id;
+  void _secret;
+  void _addr;
   return rest;
 }
+/** "Load replaces only the tasks on this launch. Launchpad, quote, buy amount, wallet, and fees stay as they are." */
 export function fromPreset(data: Record<string, unknown>, current: LaunchForm): LaunchForm {
   const d = data as Partial<LaunchForm>;
-  return { ...EMPTY_FORM, ...d, imageDataUrl: current.imageDataUrl, tasks: (d.tasks ?? []).map((t) => ({ ...newTask(t.type), ...t, id: newId() })) };
+  return { ...current, tasks: (d.tasks ?? []).map((t) => ({ ...newTask(t.type), ...t, id: newId() })) };
+}
+/** Quick Launch: the saved snapshot on a fresh draft (image and dev wallet from the current form). */
+export function fromPresetSnapshot(data: Record<string, unknown>, current: LaunchForm): LaunchForm {
+  const d = data as Partial<LaunchForm>;
+  return normalizeForm({ ...d, id: current.id, imageDataUrl: current.imageDataUrl, devWallet: d.devWallet || current.devWallet, tasks: (d.tasks ?? []).map((t) => ({ ...newTask(t.type), ...t, id: newId() })) });
 }
 
-/* ------------------------------------------------------------- readability helpers (ui2) */
+/* ------------------------------------------------------------- readability helpers */
 
 /** Wallet addresses a task touches (explicit + expanded groups), de-duplicated. */
 export function taskWallets(t: FormTask, wallets: { address: string; group: string | null; archived: boolean }[]): string[] {
+  if (t.type === "wash") return Object.keys(t.washPairs);
   const viaGroup = wallets.filter((w) => !w.archived && t.walletGroupIds.includes(w.group ?? "")).map((w) => w.address);
   return Array.from(new Set([...t.walletIds, ...viaGroup]));
 }
@@ -243,16 +397,19 @@ export function taskSentence(t: FormTask, wallets: { address: string; group: str
   if (t.type === "bundle") {
     const total = addrs.reduce((s, a) => s + taskBuyFor(t, a), 0);
     const same = addrs.every((a) => taskBuyFor(t, a) === taskBuyFor(t, addrs[0]));
-    return `${w} buy ${same ? `${t.buyAmount} SOL each` : `${total} SOL in total`} inside the create transaction via Jito, tip ${t.tip} SOL, slippage ${t.slippagePercent} %.`;
+    return `${w} buy ${same ? `${t.buyAmount} SOL each` : `${total} SOL in total`} inside the create bundle, tip ${t.tip} SOL, slippage ${t.slippagePercent} %.`;
   }
   if (t.type === "sniper") {
     const same = addrs.every((a) => taskBuyFor(t, a) === taskBuyFor(t, addrs[0]));
     const total = addrs.reduce((s, a) => s + taskBuyFor(t, a), 0);
-    return `${w} buy ${same ? `${t.buyAmount} SOL each` : `${total} SOL in total`} the moment the create confirms${t.autoRetryCount ? `, up to ${t.autoRetryCount} retr${t.autoRetryCount > 1 ? "ies" : "y"}` : ""}, slippage ${t.slippagePercent} %.`;
+    return `${w} buy ${same ? `${t.buyAmount} SOL each` : `${total} SOL in total`} the moment the create confirms${t.retry && t.autoRetryCount ? `, up to ${t.autoRetryCount} retr${t.autoRetryCount > 1 ? "ies" : "y"}` : ""}, slippage ${t.slippagePercent} %.`;
   }
-  if (t.type === "wash") return `Every token held by ${w} is moved to fresh wallets after the launch.`;
-  const verb = t.tradeMode === "both" ? `buy and sell (${t.buyRatioPercent} % buys)` : t.tradeMode === "sell" ? "sell" : "buy";
-  return `${w} ${verb} ${t.minTradeAmount}–${t.maxTradeAmount} SOL every ${t.minIntervalSec}–${t.maxIntervalSec} s, up to ${t.maxTradesPerWallet} trades each, for ${t.maxDurationMinutes} min at most.`;
+  if (t.type === "wash") {
+    const pairs = Object.values(t.washPairs).reduce((s, p) => s + p.length, 0);
+    return `${n} source wallet${n !== 1 ? "s" : ""} sell to ${pairs} wash wallet${pairs !== 1 ? "s" : ""}${t.washMaxDelaySec ? `, ${t.washMinDelaySec}–${t.washMaxDelaySec} s between pairs` : ""}.`;
+  }
+  const verb = t.tradeMode === "both" ? "buy and sell" : t.tradeMode === "sell" ? "sell" : "buy";
+  return `${w} ${verb} ${t.minTradeAmount}–${t.maxTradeAmount} SOL every ${t.minIntervalSec}–${t.maxIntervalSec} s${t.maxTradesPerWallet ? `, up to ${t.maxTradesPerWallet} trades each` : ""}${t.maxDurationMinutes ? `, for ${t.maxDurationMinutes} min` : ""}.`;
 }
 
 /** Rough on-chain costs (SOL) so the summary can compare needed vs available. The server re-checks before sending. */
@@ -283,13 +440,17 @@ export function launchNeeds(f: LaunchForm, wallets: { address: string; label: st
 }
 
 /* ------------------------------------------------------------- pump.fun curve math (dev buy ⇄ % of supply) */
-/** Fresh-curve constants (mainnet); the server exposes the per-cluster values on GET /api/settings.pump. */
+/** Fresh-curve constants (mainnet); the server exposes the per-cluster values on GET /api/settings.pump and the
+ *  exact figures on GET /api/launch/calc — this local copy only fills the hint while that call is in flight. */
 export const CURVE = { virtualSol: 30, virtualTokens: 1_073_000_000, supply: 1_000_000_000 };
-/** Tokens received for `sol` on a fresh curve (constant product, pump.fun fee ignored). */
+/** pump.fun protocol fee taken on the SOL side of a buy (1.25 % — Block X shows 1 SOL → 3.42 %, 2 SOL → 6.63 %) */
+export const PUMP_FEE = 0.0125;
+/** Tokens received for `sol` on a fresh curve (constant product, fee netted first). */
 export function tokensForSol(sol: number, c = CURVE): number {
   if (!(sol > 0)) return 0;
+  const net = sol * (1 - PUMP_FEE);
   const k = c.virtualSol * c.virtualTokens;
-  return c.virtualTokens - k / (c.virtualSol + sol);
+  return c.virtualTokens - k / (c.virtualSol + net);
 }
 export function supplyPctForSol(sol: number, c = CURVE): number {
   return (tokensForSol(sol, c) / c.supply) * 100;
@@ -298,5 +459,20 @@ export function supplyPctForSol(sol: number, c = CURVE): number {
 export function solForSupplyPct(pct: number, c = CURVE): number {
   const tokens = Math.min(c.virtualTokens - 1, (Math.max(0, pct) / 100) * c.supply);
   const k = c.virtualSol * c.virtualTokens;
-  return k / (c.virtualTokens - tokens) - c.virtualSol;
+  return (k / (c.virtualTokens - tokens) - c.virtualSol) / (1 - PUMP_FEE);
+}
+/** Sequential buys on a fresh curve (dev first, then bundle wallets in order): % of supply each one gets. */
+export function sequentialSupplyPct(sols: number[], c = CURVE): { pct: number; tokens: number }[] {
+  let vSol = c.virtualSol;
+  let vTok = c.virtualTokens;
+  const k = vSol * vTok;
+  return sols.map((s) => {
+    if (!(s > 0)) return { pct: 0, tokens: 0 };
+    const net = s * (1 - PUMP_FEE);
+    const nextTok = k / (vSol + net);
+    const got = vTok - nextTok;
+    vSol += net;
+    vTok = nextTok;
+    return { pct: (got / c.supply) * 100, tokens: got };
+  });
 }
