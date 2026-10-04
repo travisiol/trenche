@@ -431,7 +431,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   if (ad || ext > 0) {
     try {
       const wallets = ad?.wallets?.length ? ad.wallets : run.record.wallets;
-      armAutodump(mint, { percent: ad?.percent ?? 100, mcUsd: ad?.mcUsd, afterSec: ad?.afterSec, bundle: ad?.bundle, wallets, externalVolumeSol: ext > 0 ? ext : undefined }, wallets, (reason, jobId) => {
+      armAutodump(mint, { percent: ad?.percent ?? 100, mcUsd: ad?.mcUsd, afterSec: ad?.afterSec ?? ad?.delaySec, bundle: ad?.bundle, wallets, externalVolumeSol: ext > 0 ? ext : undefined }, wallets, (reason, jobId) => {
         if (run.state.sellOnExternal && /external/.test(reason)) run.state.sellOnExternal.fired = true;
         step(run, "autodump", true, `Auto-dump fired: ${reason} (job ${jobId})`);
       });

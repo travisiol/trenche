@@ -39,8 +39,21 @@ function registry(): Map<string, DumpWatch> {
 
 export function autodumpStatus(mint: string): AutoDumpStatus {
   const w = registry().get(mint);
-  if (!w) return { mint, armed: false, config: null, armedAt: null, lastMcUsd: null, firedAt: null, jobId: null };
-  return { mint, armed: w.timer !== null, config: w.config, armedAt: w.armedAt, lastMcUsd: w.lastMcUsd, firedAt: w.firedAt, jobId: w.jobId };
+  if (!w) return { mint, armed: false, percent: null, mcUsd: null, delaySec: null, firesAt: null, config: null, armedAt: null, lastMcUsd: null, firedAt: null, jobId: null };
+  const delaySec = w.config.afterSec ?? null;
+  return {
+    mint,
+    armed: w.timer !== null,
+    percent: w.config.percent,
+    mcUsd: w.config.mcUsd ?? null,
+    delaySec,
+    firesAt: delaySec ? w.armedAt + delaySec * 1000 : null,
+    config: w.config,
+    armedAt: w.armedAt,
+    lastMcUsd: w.lastMcUsd,
+    firedAt: w.firedAt,
+    jobId: w.jobId,
+  };
 }
 
 export function autodumpGet(mint: string): DumpWatch | undefined {
@@ -56,7 +69,8 @@ function ownVolumeSince(mint: string, since: number): number {
 
 export function armAutodump(mint: string, config: AutoDumpConfig & { externalVolumeSol?: number }, wallets: string[], onFire?: DumpWatch["onFire"]): AutoDumpStatus {
   const st = store();
-  if (!config.mcUsd && !config.afterSec && !config.externalVolumeSol) throw new HttpError(400, "Auto-dump needs at least one trigger: mcUsd, afterSec or externalVolumeSol.");
+  if (config.delaySec && !config.afterSec) config = { ...config, afterSec: config.delaySec };
+  if (!config.mcUsd && !config.afterSec && !config.externalVolumeSol) throw new HttpError(400, "Auto-dump needs at least one trigger: mcUsd, delaySec (afterSec) or externalVolumeSol.");
   const percent = Math.max(1, Math.min(100, Math.round(Number(config.percent) || 100)));
   const ws = vaultWallets(wallets);
   if (ws.length === 0) throw new HttpError(400, "Auto-dump needs at least one wallet.");

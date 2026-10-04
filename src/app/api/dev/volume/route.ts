@@ -8,15 +8,18 @@ export const dynamic = "force-dynamic";
 
 function status(mint: string): VolumeStatus {
   const loop = loopGet(`vol:${mint}`);
-  if (!loop) return { mint, running: false, jobId: null, round: 0, rounds: 0, config: null };
+  if (!loop) return { mint, running: false, jobId: null, round: 0, rounds: 0, lastTx: null, log: [], config: null };
   const c = loop.cfg;
+  const rounds = Math.ceil(c.totalTrades / c.wallets.length);
   return {
     mint,
     running: loop.status === "running" || loop.status === "paused",
     jobId: loop.job.id,
     round: Math.ceil(loop.done / c.wallets.length),
-    rounds: Math.ceil(c.totalTrades / c.wallets.length),
-    config: { wallets: c.wallets, minSol: String(Number(c.minLamports) / 1e9), maxSol: String(Number(c.maxLamports) / 1e9), minDelayMs: c.minDelayMs, maxDelayMs: c.maxDelayMs, rounds: Math.ceil(c.totalTrades / c.wallets.length), slippageBps: c.slippageBps, cuPrice: c.cuPrice },
+    rounds,
+    lastTx: [...loop.steps].reverse().find((s) => s.ok && s.signature)?.signature ?? null,
+    log: loop.steps.slice(-50),
+    config: { wallets: c.wallets, minSol: String(Number(c.minLamports) / 1e9), maxSol: String(Number(c.maxLamports) / 1e9), minDelayMs: c.minDelayMs, maxDelayMs: c.maxDelayMs, minDelaySec: c.minDelayMs / 1000, maxDelaySec: c.maxDelayMs / 1000, rounds, mode: c.tradeMode, buyRatioPercent: c.buyRatioPercent, slippageBps: c.slippageBps, cuPrice: c.cuPrice },
   };
 }
 
@@ -35,10 +38,11 @@ export const POST = route(async (req: Request) => {
       loop.stop();
       logActivity(store(), { kind: "volume", ok: true, message: `Volume bot stopped on ${mint.slice(0, 6)}…`, mint });
     }
-    return json(status(mint));
+    return json({ ok: true, ...status(mint) });
   }
   if (body.action !== "start") throw new HttpError(400, "action must be start or stop.");
-  const wallets = body.group ? groupWallets(String(body.group)) : requireAddresses(body.wallets, "wallets");
+  const groupId = body.groupId ?? body.group;
+  const wallets = groupId ? groupWallets(String(groupId)) : requireAddresses(body.wallets, "wallets");
   if (wallets.length === 0) throw new HttpError(400, "The group has no active wallet.");
   let loop;
   try {

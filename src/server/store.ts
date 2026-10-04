@@ -197,7 +197,7 @@ export function publicSettings(s: StoredSettings): Settings {
     tipSol: s.tipSol,
     presets: s.presets,
     keybinds: s.keybinds,
-    theme: "light",
+    theme: "dark",
   };
 }
 

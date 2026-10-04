@@ -15,12 +15,14 @@ export const GET = route(async (_req: Request, ctx: { params: Promise<{ mint: st
   const conn = readConn();
   const found = await fetchCurve(conn, new PublicKey(m));
   const creator = found?.curve.creator.toBase58() ?? st.launches.find((l) => l.mint === m)?.dev ?? null;
-  const res: CreatorFeesResponse = { mint: m, creator, isMine: false, vault: null, claimableSol: null, cashbackSol: null, ammPendingSol: null };
+  const claimed = st.activity.filter((a) => a.kind === "fees" && a.ok && a.data && typeof a.data.totalSol === "string" && (a.mint === m || (creator && a.wallets?.includes(creator)))).reduce((s, a) => s + Number(a.data!.totalSol), 0);
+  const res: CreatorFeesResponse = { mint: m, wallet: creator, creator, isMine: false, vault: null, pendingSol: null, claimedSol: (Math.round(claimed * 1e9) / 1e9).toString(), claimableSol: null, cashbackSol: null, ammPendingSol: null };
   if (creator) {
     res.isMine = st.sol.wallets.some((w) => w.address === creator);
     const [f] = await readPumpCreatorFees(conn, [{ label: labelOf(creator), address: creator }]);
     if (f) {
       res.vault = f.vault;
+      res.pendingSol = solString(f.claimable + f.cashback);
       res.claimableSol = solString(f.claimable);
       res.cashbackSol = solString(f.cashback);
       res.ammPendingSol = solString(f.ammPending);

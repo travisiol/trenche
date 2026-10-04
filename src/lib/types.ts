@@ -145,7 +145,7 @@ export type Settings = {
   /** quick-buy presets P1..P3 in SOL (decimal strings) */
   presets: [string, string, string];
   keybinds: { quickBuy: [string, string, string]; close: string };
-  theme: "light";
+  theme: "dark";
 };
 /** POST /api/settings — partial; `pumpportalKey: ""` clears the key, omit to keep */
 export type SettingsUpdateRequest = Partial<
@@ -401,21 +401,31 @@ export type AutoDumpConfig = {
   percent: number;
   /** sell when market cap ≥ this USD value */
   mcUsd?: number;
-  /** sell after this many seconds (counted from arming) */
+  /** sell after this many seconds (counted from arming) — `delaySec` is an accepted alias */
   afterSec?: number;
+  delaySec?: number;
   /** wallets to dump; omitted = every wallet that bought in this launch */
   wallets?: string[];
   bundle?: boolean;
 };
 export type VolumeConfig = {
-  /** wallets, or a group id (group takes precedence when both given) */
+  /** wallets, or a group id (`groupId` / `group`; the group takes precedence when both given) */
   wallets?: string[];
+  groupId?: string;
   group?: string;
   minSol: string;
   maxSol: string;
-  minDelayMs: number;
-  maxDelayMs: number;
+  /** delay between trades — give either seconds or milliseconds */
+  minDelaySec?: number;
+  maxDelaySec?: number;
+  minDelayMs?: number;
+  maxDelayMs?: number;
+  /** each round = one trade per wallet */
   rounds: number;
+  /** default "both" */
+  mode?: TradeMode;
+  /** % of buys when mode = "both", default 50 */
+  buyRatioPercent?: number;
   slippageBps?: number;
   cuPrice?: number;
 };
@@ -623,25 +633,25 @@ export type LaunchRecord = {
 /** GET /api/dev/launches */
 export type LaunchesResponse = { launches: LaunchRecord[] };
 
-/** GET /api/dev/fees/[mint] */
+/** GET /api/dev/fees/[mint] — creator fees accrue per CREATOR vault, not per mint */
 export type CreatorFeesResponse = {
   mint: string;
+  /** the creator wallet (= `creator`) */
+  wallet: string | null;
   creator: string | null;
   /** true when the creator is one of the vault wallets */
   isMine: boolean;
   vault: string | null;
+  /** claimable + cashback, SOL decimal string (null when unreadable) */
+  pendingSol: string | null;
+  /** SOL claimed through this app for this creator (activity journal) */
+  claimedSol: string;
   claimableSol: string | null;
   cashbackSol: string | null;
   ammPendingSol: string | null;
 };
-export type FeesClaimRequest = { mint?: string; wallets?: string[]; cuPrice?: number };
-export type FeesClaimResponse = {
-  claimed: { address: string; label: string; sol: string }[];
-  totalSol: string;
-  signatures: string[];
-  confirmed: number;
-  error: string | null;
-};
+/** POST /api/dev/fees/claim → { jobId } (job.extra: totalSol, signatures) */
+export type FeesClaimRequest = { mint?: string; wallet?: string; wallets?: string[]; cuPrice?: number };
 export type DumpRequest = {
   mint: string;
   /** omitted = every vault wallet */
@@ -660,6 +670,10 @@ export type VolumeStatus = {
   jobId: string | null;
   round: number;
   rounds: number;
+  /** last confirmed signature */
+  lastTx: string | null;
+  /** last 50 trades of the bot */
+  log: JobStep[];
   config: VolumeConfig | null;
 };
 export type AutoDumpArmRequest = AutoDumpConfig & { action: "arm"; mint: string };
@@ -667,6 +681,11 @@ export type AutoDumpDisarmRequest = { action: "disarm"; mint: string };
 export type AutoDumpStatus = {
   mint: string;
   armed: boolean;
+  percent: number | null;
+  mcUsd: number | null;
+  delaySec: number | null;
+  /** epoch ms when the delay trigger fires (null without a delay) */
+  firesAt: number | null;
   config: AutoDumpConfig | null;
   armedAt: number | null;
   /** last market cap USD observed by the watcher */
@@ -718,9 +737,14 @@ export type DashboardResponse = {
 
 /* -------------------------------------------------------------- positions */
 
-export type WalletPosition = {
-  address: string;
+/** one row per (wallet, mint) holding or with trade history */
+export type PositionRow = {
+  wallet: string;
   label: string;
+  mint: string;
+  symbol: string | null;
+  name: string | null;
+  image: string | null;
   /** tokens (decimal string, 6 decimals applied) */
   amount: string;
   valueSol: string;
@@ -729,24 +753,12 @@ export type WalletPosition = {
   pnlSol: string;
   supplyPct: number | null;
   isDev: boolean;
-};
-export type Position = {
-  mint: string;
-  symbol: string | null;
-  name: string | null;
-  image: string | null;
-  amount: string;
-  valueSol: string;
-  costSol: string;
-  pnlSol: string;
-  supplyPct: number | null;
   onCurve: boolean;
   progress: number | null;
   marketCapSol: number | null;
-  wallets: WalletPosition[];
 };
-/** GET /api/positions?wallets=a,b&mints=m1,m2 → Position[] (brief shape, plus per-wallet detail) */
-export type PositionsResponse = Position[];
+/** GET /api/positions?wallets=a,b&mints=m1,m2 → PositionRow[] (defaults: every vault wallet × launched+tracked mints) */
+export type PositionsResponse = PositionRow[];
 
 /* --------------------------------------------------------------- activity */
 

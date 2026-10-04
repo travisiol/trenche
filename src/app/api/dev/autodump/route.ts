@@ -22,7 +22,7 @@ export const POST = route(async (req: Request) => {
   const config = {
     percent: intIn(body.percent, 1, 100, 100, "percent"),
     mcUsd: body.mcUsd !== undefined ? numIn(body.mcUsd, 1, 1e12, 0, "mcUsd") : undefined,
-    afterSec: body.afterSec !== undefined ? intIn(body.afterSec, 1, 86400 * 7, 0, "afterSec") : undefined,
+    afterSec: body.afterSec !== undefined ? intIn(body.afterSec, 1, 86400 * 7, 0, "afterSec") : body.delaySec !== undefined ? intIn(body.delaySec, 1, 86400 * 7, 0, "delaySec") : undefined,
     bundle: !!body.bundle,
     wallets,
   };

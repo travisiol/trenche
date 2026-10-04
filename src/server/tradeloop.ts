@@ -208,6 +208,9 @@ export function volumeLoopFromConfig(mint: string, cfg: VolumeConfig, wallets: s
   const maxL = lamportsOf(cfg.maxSol ?? cfg.minSol, "maxSol");
   if (maxL < minL) throw new Error("maxSol must be ≥ minSol.");
   const rounds = Math.max(1, Math.min(TASK_LIMITS.maxTradesPerWallet, Math.round(Number(cfg.rounds) || 1)));
+  const minDelay = cfg.minDelayMs !== undefined ? Number(cfg.minDelayMs) : Number(cfg.minDelaySec ?? 0) * 1000;
+  const maxDelay = cfg.maxDelayMs !== undefined ? Number(cfg.maxDelayMs) : Number(cfg.maxDelaySec ?? 0) * 1000;
+  const mode: TradeMode = cfg.mode === "buy" || cfg.mode === "sell" ? cfg.mode : "both";
   const loop = new TradeLoop({
     id,
     taskId: id,
@@ -216,10 +219,10 @@ export function volumeLoopFromConfig(mint: string, cfg: VolumeConfig, wallets: s
     wallets,
     minLamports: minL,
     maxLamports: maxL,
-    minDelayMs: Math.max(0, Math.min(TASK_LIMITS.maxIntervalSec * 1000, Number(cfg.minDelayMs) || 0)),
-    maxDelayMs: Math.max(0, Math.min(TASK_LIMITS.maxIntervalSec * 1000, Number(cfg.maxDelayMs) || 0)),
-    tradeMode: "both",
-    buyRatioPercent: 50,
+    minDelayMs: Math.max(0, Math.min(TASK_LIMITS.maxIntervalSec * 1000, minDelay || 0)),
+    maxDelayMs: Math.max(0, Math.min(TASK_LIMITS.maxIntervalSec * 1000, maxDelay || 0)),
+    tradeMode: mode,
+    buyRatioPercent: Math.max(0, Math.min(100, Number(cfg.buyRatioPercent ?? 50))),
     totalTrades: rounds * wallets.length,
     maxDurationMs: null,
     slippageBps: cfg.slippageBps ?? st.settings.slippageBps,
