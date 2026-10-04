@@ -482,6 +482,7 @@ export default function PortfolioPage() {
       </div>
 
       <CreateModal
+        key={`create-${modal === "create" ? "open" : "closed"}-${tab}-${curGroup?.id ?? ""}`}
         open={modal === "create"}
         onClose={() => setModal(null)}
         groups={groups}
