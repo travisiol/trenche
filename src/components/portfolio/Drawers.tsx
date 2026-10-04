@@ -374,7 +374,7 @@ export function ReverseDisperseDrawer({ onClose, wallets, groups, scopeLabel, sc
     setBusy(true);
     setErr(null);
     try {
-      const r = await post<JobCreated>("/api/fund/consolidate", { sources: picked.map((w) => w.address), to, viaRelay: viaRelay || undefined, delayMinutes: Number(delay) || 0 });
+      const r = await post<JobCreated>("/api/fund/consolidate", { sources: picked.map((w) => w.address), to, viaRelay: viaRelay || undefined, delayMinutes: Number(delay) || 0, kind: "reverse" });
       setJobId(r.jobId);
       toast(`Reverse disperse started on ${picked.length} wallet${picked.length !== 1 ? "s" : ""}`, "info");
     } catch (e) {

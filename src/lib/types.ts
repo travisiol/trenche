@@ -182,6 +182,8 @@ export type FundConsolidateRequest = {
   /** each source empties itself through its own fresh relay wallet (2 signatures per source) */
   viaRelay?: boolean;
   delayMinutes?: number;
+  /** "reverse" labels the job "Reverse Disperse" in Activity (same sweep) */
+  kind?: "consolidate" | "reverse";
 };
 /** Saved Disperse presets (Preset select / Save as / Update / Delete in the drawer): GET/POST /api/fund/disperse/presets */
 export type DispersePreset = { id: string; name: string; totalSol: string; variationPct: number; delayMinutes: number; viaRelay: boolean; createdAt: number };

@@ -135,12 +135,13 @@ export function disperse(from: string, to: string[], minLam: bigint, maxLam: big
 }
 
 /** many vault wallets → one destination (any address), each sends its whole balance minus fee */
-export function consolidate(from: string[], to: string, viaRelay = false, delayMs = 0): Job {
+/** `title` names the job in Activity ("Consolidate" from the transfer view, "Reverse Disperse" from the privacy drawer) */
+export function consolidate(from: string[], to: string, viaRelay = false, delayMs = 0, title = "Consolidate"): Job {
   requireUnlocked();
   const st = store();
   const sources = vaultWallets(from).filter((w) => w.address !== to);
   if (sources.length === 0) throw new HttpError(400, "No source wallet (the destination cannot be a source).");
-  const job = jobNew("consolidate", viaRelay ? sources.length * 2 : sources.length, `Consolidate ${sources.length} wallet(s) → ${to.slice(0, 6)}…${viaRelay ? " via relays" : ""}${delayMs ? ` · ${Math.round(delayMs / 60000)} min between wallets` : ""}`);
+  const job = jobNew("consolidate", viaRelay ? sources.length * 2 : sources.length, `${title} ${sources.length} wallet(s) → ${to.slice(0, 6)}…${viaRelay ? " via relays" : ""}${delayMs ? ` · ${Math.round(delayMs / 60000)} min between wallets` : ""}`);
   job.extra = { to, sources: sources.map((s) => s.address), viaRelay, delayMinutes: delayMs / 60000 };
   jobRun(job, async (j) => {
     if (delayMs > 0 && !viaRelay) {
@@ -165,7 +166,13 @@ export function consolidate(from: string[], to: string, viaRelay = false, delayM
       let sent = 0;
       const relays: string[] = [];
       const errors: string[] = [];
-      for (const w of sources) {
+      for (let i = 0; i < sources.length; i++) {
+        const w = sources[i];
+        // the delay between wallets applies here too (cooperative stop between wallets)
+        if (i > 0 && delayMs > 0 && !(await pause(j, delayMs))) {
+          jobNote(j, `Stopped before wallet ${i + 1}/${sources.length}; ${sent} already swept.`);
+          break;
+        }
         const bal = await getSolBalance(conn, w.address).catch(() => null);
         if (bal === null) { errors.push(`${w.label}: RPC unreachable`); jobPush(j, false, { phase: "hop1", address: w.address, error: "RPC unreachable: balance could not be read" }); jobPush(j, false, { phase: "hop2", address: w.address, error: "skipped" }); continue; }
         const lamports = bal - TX_FEE_MARGIN - RELAY_FEE;

@@ -15,7 +15,7 @@ export const POST = route(async (req: Request) => {
     from = groupWallets(String(body.groupId));
     if (from.length === 0) throw new HttpError(400, "The group has no active wallet.");
   } else from = requireAddresses(body.from ?? body.sources, "sources");
-  const job = consolidate(from, to, body.viaRelay === true, Math.round(numIn(body.delayMinutes, 0, 1440, 0, "delayMinutes") * 60_000));
+  const job = consolidate(from, to, body.viaRelay === true, Math.round(numIn(body.delayMinutes, 0, 1440, 0, "delayMinutes") * 60_000), body.kind === "reverse" ? "Reverse Disperse" : "Consolidate");
   const res: JobCreated = { jobId: job.id };
   return json(res);
 });
