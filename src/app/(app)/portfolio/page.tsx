@@ -570,7 +570,6 @@ function WalletRow({ w, groups, active, checked, onCheck, balance, tokens, vol, 
                   <Pencil className="h-2.5 w-2.5 opacity-0 group-hover/name:opacity-100" />
                 </button>
               )}
-              {active ? <span className="rounded bg-accent px-1 text-[10px] font-semibold uppercase text-white">Active</span> : null}
               {group ? <span className="rounded border border-line-100 px-1 text-[10px] text-text-300">{group}</span> : null}
               {w.archived ? <span className="rounded border border-line-100 px-1 text-[10px] text-text-300">archived</span> : null}
             </div>
@@ -585,11 +584,7 @@ function WalletRow({ w, groups, active, checked, onCheck, balance, tokens, vol, 
       <td className="px-2 py-2 font-mono tabular-nums text-text-100">{sol(balance)}</td>
       <td className="px-2 py-2 text-right">
         <div className="flex items-center justify-end gap-1">
-          {!active ? (
-            <button type="button" onClick={() => post("/api/wallets/active", { address: w.address }).then(() => walletsRes.refresh()).catch((e) => toast(failureMessage(e), "err"))} className="rounded border border-line-100 px-1.5 py-0.5 text-[10px] text-text-300 transition-colors hover:border-line-200 hover:text-text-100" title="Use as the active wallet (default developer wallet)">
-              Set active
-            </button>
-          ) : null}
+
           <button type="button" onClick={() => post("/api/wallets/update", { address: w.address, archived: !w.archived }).then(() => walletsRes.refresh()).catch((e) => toast(failureMessage(e), "err"))} className="flex h-6 w-6 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-text-100" title={w.archived ? "Unarchive" : "Archive"}>
             <Archive className="h-3 w-3" />
           </button>

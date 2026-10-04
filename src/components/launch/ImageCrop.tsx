@@ -1,7 +1,8 @@
 "use client";
 /** Square image picker: drop/upload or paste a URL, pan + zoom, exports a 512×512 PNG data URL. */
 import { useEffect, useRef, useState } from "react";
-import { Button, Modal, Input, InlineError, cx } from "../ui";
+import { Button, Input, InlineError, cx } from "../ui";
+import { BxModal } from "../bx/ui";
 
 const OUT = 512;
 
@@ -124,7 +125,8 @@ export function CropModal({ src, onClose, onDone }: { src: string; onClose: () =
   };
 
   return (
-    <Modal open onClose={onClose} title="Crop image" width={400}>
+    <BxModal open onClose={onClose} title="Crop image" width={400}>
+      <div className="flex flex-col gap-3 p-4">
       <InlineError>{err}</InlineError>
       <div className="flex flex-col items-center gap-3">
         <canvas
@@ -156,7 +158,8 @@ export function CropModal({ src, onClose, onDone }: { src: string; onClose: () =
           Use image
         </Button>
       </div>
-    </Modal>
+          </div>
+    </BxModal>
   );
 }
 
