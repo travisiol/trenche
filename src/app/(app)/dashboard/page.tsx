@@ -1,165 +1,281 @@
 "use client";
+/** Block X /sol/dashboard: welcome row, New on chain · Portfolio PnL + calendar · Latest launches · Active tasks · Rewards. */
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
-import { Icon3D } from "@/components/Icon3D";
-import { Icon } from "@/components/icons";
-import { ApiError, Button, Capsule, Card, Empty, Input, KV, Loading, Page, PageHeader, Progress, Segmented, StatCard, TokenImage, cx } from "@/components/ui";
-import { DevRoom } from "@/components/dev/DevRoom";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { Activity, BookOpen, ChartLine, Columns3, Gift, Rocket } from "lucide-react";
+import { BxCard, BxSeg, PadAvatar, cx } from "@/components/bx/ui";
+import { DOCS_URL } from "@/components/bx/Shell";
+import { PnlCalendar, dailyPnl } from "@/components/bx/PnlCalendar";
 import { TaskRowCompact } from "@/components/dev/TaskRowCompact";
 import { useGet } from "@/lib/api";
-import { useSolPrice } from "@/lib/store";
-import { age, isMint, signedSol, sol, usd } from "@/lib/format";
-import type { DashboardResponse } from "@/lib/types";
+import { useSolPrice, useWallets } from "@/lib/store";
+import { groupPositions } from "@/lib/positions";
+import { age, usd } from "@/lib/format";
+import type { ActivityResponse, CreatorFeesResponse, DashboardResponse, FeedSnapshot, PositionsResponse } from "@/lib/types";
 
-type Period = "24h" | "7d" | "30d" | "all";
+type Win = "1D" | "7D" | "30D" | "All";
+const WIN_KEY: Record<Win, "24h" | "7d" | "30d" | "all"> = { "1D": "24h", "7D": "7d", "30D": "30d", All: "all" };
+
+function money(sol: number, solUsd: number | null, unit: "USD" | "SOL", signed = false) {
+  const sign = signed && sol > 0 ? "+" : "";
+  if (unit === "USD" && solUsd) return `${sign}${usd(sol * solUsd, 1)}`;
+  const abs = Math.abs(sol);
+  return `${sign}${sol < 0 ? "-" : ""}${abs.toFixed(abs < 1 ? 3 : 2)} SOL`;
+}
 
 export default function DashboardPage() {
+  const router = useRouter();
+  const dash = useGet<DashboardResponse>("/api/dashboard", 5000);
+  const feed = useGet<FeedSnapshot>("/api/feed", 4000);
+  const positions = useGet<PositionsResponse>("/api/positions", 10000);
+  const activity = useGet<ActivityResponse>("/api/activity?limit=500", 10000);
+  const price = useSolPrice();
+  const wallets = useWallets();
+  const [win, setWin] = useState<Win>("30D");
+  const [unit, setUnit] = useState<"USD" | "SOL">("USD");
+  const d = dash.data;
+  const solUsd = d?.solPrice ?? price.data?.usd ?? null;
+  const pnl = d?.pnl[WIN_KEY[win]];
+  const realised = pnl ? Number(pnl.realisedSol) : 0;
+  const volume = pnl ? Number(pnl.buysSol) + Number(pnl.sellsSol) : 0;
+  const grouped = groupPositions(positions.data);
+  const unrealised = grouped.reduce((n, p) => n + Number(p.pnlSol), 0);
+  const holdings = grouped.filter((p) => Number(p.amount) > 0).reduce((n, p) => n + Number(p.valueSol), 0);
+  const total = realised + unrealised;
+  const basis = pnl ? Number(pnl.buysSol) : 0;
+  const pct = basis > 0 ? (total / basis) * 100 : 0;
+  const newOnChain = (feed.data?.columns.new ?? []).slice(0, 8);
+  const launches = d?.recentLaunches ?? [];
+  const pnlByMint = new Map(grouped.map((p) => [p.mint, Number(p.pnlSol)]));
+  const days = dailyPnl(activity.data?.items ?? []);
+  const walletCount = (wallets.data?.wallets ?? []).filter((w) => !w.archived).length;
+
   return (
-    <Suspense fallback={null}>
-      <Dashboard />
-    </Suspense>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-bg-100">
+      <div className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-y-contain lg:overflow-hidden">
+        <div className="mx-auto flex w-full max-w-[1680px] flex-col gap-4 px-4 pb-8 pt-4 sm:px-6 lg:h-full lg:min-h-0 lg:pb-4 xl:px-8">
+          <section className="hidden shrink-0 items-center justify-between gap-3 lg:flex">
+            <div className="min-w-0">
+              <h1 className="truncate text-xl font-semibold tracking-[-0.02em] text-text-100">Welcome back</h1>
+              <p className="mt-0.5 text-[13px] text-text-300">Solana overview — launches, portfolio PnL and the live feed.</p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <a href={DOCS_URL} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-1.5 rounded-md border border-line-100 bg-bg-50 px-3.5 text-[13px] font-medium text-text-200 transition-colors hover:border-accent/35 hover:text-text-100">
+                <BookOpen className="h-4 w-4" />
+                Platform guide
+              </a>
+              <button type="button" onClick={() => router.push("/launch?new=1")} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-4 text-[13px] font-medium text-white transition-colors hover:bg-accent-hover">
+                <Rocket className="h-4 w-4" />
+                New launch
+              </button>
+            </div>
+          </section>
+
+          <section className="grid grid-cols-1 items-stretch gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)_minmax(0,1fr)] lg:grid-rows-[minmax(0,1.05fr)_minmax(0,1fr)] lg:overflow-hidden">
+            {/* New on chain */}
+            <BxCard
+              className="hidden min-h-[360px] lg:order-none lg:col-start-1 lg:row-start-1 lg:block lg:min-h-0"
+              title="New on chain"
+              icon={<Columns3 className="h-4 w-4 text-accent" />}
+              right={
+                <Link href="/trenches" className="text-[13px] font-medium text-accent transition-colors hover:text-accent-hover">
+                  Trenches
+                </Link>
+              }
+            >
+              <ul className="flex min-h-0 flex-1 flex-col gap-0.5 px-3 pb-3 max-lg:overflow-visible lg:overflow-y-auto">
+                {newOnChain.map((c) => (
+                  <li key={c.mint}>
+                    <Link href={`/trade/${c.mint}`} title={c.mint} className="group/peek flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-white/[0.04]">
+                      <PadAvatar src={c.image ?? c.imageCdn} alt={c.symbol ?? "?"} size={32} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[14px] font-medium tracking-[-0.02em] text-text-100 transition-colors group-hover/peek:text-accent">{c.symbol ?? c.mint.slice(0, 6)}</span>
+                        <span className="block truncate text-[12px] text-text-300">{c.name}</span>
+                      </span>
+                      <span className="flex shrink-0 flex-col items-end gap-0.5">
+                        <span className="text-[12px] font-medium tabular-nums text-accent">{age(c.createdAt)}</span>
+                        <span className="text-[12px] tabular-nums text-text-200">{c.marketCapUsd !== null ? usd(c.marketCapUsd) : "—"}</span>
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+                {!newOnChain.length ? <li className="px-2 py-6 text-center text-[13px] text-text-300">{feed.error ? "Feed unreachable." : feed.loading ? "Waiting for the feed…" : "Nothing new yet — open Trenches to start the feed."}</li> : null}
+              </ul>
+            </BxCard>
+
+            {/* Latest launches */}
+            <BxCard
+              className="order-2 flex min-h-[360px] lg:order-none lg:col-start-3 lg:row-start-1 lg:min-h-0"
+              title="Latest launches"
+              icon={<Rocket className="h-4 w-4 text-accent" />}
+              right={
+                <>
+                  <UnitToggle unit={unit} onChange={setUnit} />
+                  <Link href="/launch" className="text-[13px] font-medium text-accent transition-colors hover:text-accent-hover">
+                    All
+                  </Link>
+                </>
+              }
+            >
+              <ul className="flex min-h-0 flex-1 flex-col gap-0.5 px-3 pb-3 max-lg:overflow-visible lg:overflow-y-auto">
+                <li>
+                  <button type="button" onClick={() => router.push("/launch?new=1")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-white/[0.04]">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-dashed border-line-100 bg-bg-100 text-accent">
+                      <Rocket className="h-3.5 w-3.5" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[14px] font-medium tracking-[-0.02em] text-text-100">New launch</span>
+                      <span className="block truncate text-[12px] text-text-300">Create a token on this chain</span>
+                    </span>
+                    <span className="inline-flex shrink-0 items-center gap-1 text-[13px] font-medium tabular-nums text-text-300">{money(0, solUsd, unit)}</span>
+                  </button>
+                </li>
+                {launches.map((l) => {
+                  const p = pnlByMint.get(l.mint);
+                  return (
+                    <li key={l.mint}>
+                      <Link href={`/launch?open=${l.mint}`} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-white/[0.04]">
+                        <PadAvatar src={l.image} alt={l.symbol} size={32} />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[14px] font-medium tracking-[-0.02em] text-text-100">{l.symbol}</span>
+                          <span className="block truncate text-[12px] text-text-300">{l.name}</span>
+                        </span>
+                        <span className={cx("inline-flex shrink-0 items-center gap-1 text-[13px] font-medium tabular-nums", p === undefined ? "text-text-300" : p > 0 ? "text-increase" : p < 0 ? "text-decrease" : "text-text-300")}>{p === undefined ? "—" : money(p, solUsd, unit, true)}</span>
+                      </Link>
+                    </li>
+                  );
+                })}
+                {Array.from({ length: Math.max(0, 5 - launches.length) }).map((_, i) => (
+                  <li key={`ph${i}`} className="pointer-events-none">
+                    <div className="flex items-center gap-2.5 rounded-md px-2.5 py-1.5 opacity-40">
+                      <span className="h-8 w-8 shrink-0 rounded-md border border-line-100 bg-bg-100" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[14px] font-medium tracking-[-0.02em] text-text-300">$TOKEN</span>
+                        <span className="block truncate text-[12px] text-text-300">Name</span>
+                      </span>
+                      <span className="inline-flex shrink-0 items-center gap-1 text-[13px] font-medium tabular-nums text-text-300">{money(0, solUsd, unit)}</span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </BxCard>
+
+            {/* Portfolio PnL */}
+            <div className="order-1 min-w-0 lg:order-none lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:min-h-0">
+              <div className="flex min-h-[520px] flex-col overflow-hidden rounded-lg border border-line-100 bg-bg-50 lg:h-full lg:min-h-0">
+                <div className="flex h-full min-h-0 flex-col overflow-hidden">
+                  <div className="flex h-[52px] shrink-0 items-center justify-between gap-3 px-5 xl:h-[56px]">
+                    <div className="flex items-center gap-2">
+                      <ChartLine className="h-4 w-4 text-accent" />
+                      <h2 className="text-[16px] font-medium tracking-[-0.02em] text-text-100">Portfolio PnL</h2>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <UnitToggle unit={unit} onChange={setUnit} />
+                      <BxSeg value={win} onChange={setWin} options={(["1D", "7D", "30D", "All"] as Win[]).map((w) => ({ value: w, label: w }))} />
+                    </div>
+                  </div>
+                  <div className="shrink-0 border-b border-line-50 px-6 pb-4 pt-1">
+                    <p className="text-[14px] text-text-300">Total PnL</p>
+                    <p className={cx("mt-0.5 text-[28px] font-medium tracking-[-0.03em] tabular-nums xl:text-[32px]", total > 0 ? "text-increase" : total < 0 ? "text-decrease" : "text-text-100")}>
+                      <span className="inline-flex items-center gap-1.5">{money(total, solUsd, unit)}</span> ({pct >= 0 ? "+" : ""}
+                      {pct.toFixed(1)}%)
+                    </p>
+                    <div className="mt-3 grid grid-cols-2 gap-x-5 gap-y-2 xl:mt-4 xl:gap-y-3">
+                      {[
+                        [`${win} Realized Profit`, money(realised, solUsd, unit)],
+                        ["Unrealized", money(unrealised, solUsd, unit)],
+                        [`${win} Total Volume`, money(volume, solUsd, unit)],
+                        ["Holdings", money(holdings, solUsd, unit)],
+                      ].map(([k, v]) => (
+                        <div key={k} className="min-w-0">
+                          <p className="truncate text-[13px] text-text-300">{k}</p>
+                          <p className="mt-0.5 inline-flex max-w-full items-center gap-1 truncate text-[15px] font-medium tabular-nums text-text-100">
+                            <span className="truncate">{v}</span>
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="mt-auto flex min-h-0 flex-1 flex-col border-t border-line-50">
+                    <PnlCalendar days={days} solUsd={solUsd} unit={unit} />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Active tasks (Block X shows the KOL signal here — no X API, so the running tasks take the slot) */}
+            <BxCard className="hidden min-h-[360px] lg:order-none lg:col-start-1 lg:row-start-2 lg:block lg:min-h-0" title="Active tasks" icon={<Activity className="h-4 w-4 text-accent" />} right={<span className="text-[13px] font-medium tabular-nums text-text-300">{d ? d.activeTasks.length : "—"}</span>}>
+              <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-4 pb-4">
+                {d?.activeTasks.length ? d.activeTasks.map((t) => <TaskRowCompact key={`${t.launchId}-${t.task.id}`} launchId={t.launchId} t={t.task} symbol={t.symbol} />) : <p className="px-1 py-6 text-center text-[13px] text-text-300">No task running. Buy, volume and sniper tasks from your launches show up here with pause and stop.</p>}
+              </div>
+            </BxCard>
+
+            {/* Rewards */}
+            <BxCard className="order-3 flex min-h-[320px] lg:order-none lg:col-start-3 lg:row-start-2 lg:min-h-0" title="Rewards" icon={<Gift className="h-4 w-4 text-accent" />}>
+              <RewardsSummary mints={launches.map((l) => l.mint)} walletCount={walletCount} />
+            </BxCard>
+          </section>
+        </div>
+      </div>
+    </div>
   );
 }
 
-function Dashboard() {
-  const params = useSearchParams();
-  const router = useRouter();
-  const mint = params.get("mint");
-  const dash = useGet<DashboardResponse>("/api/dashboard", 5000);
-  const price = useSolPrice();
-  const [open, setOpen] = useState("");
-  const [period, setPeriod] = useState<Period>("24h");
-  const d = dash.data;
-  const solUsd = d?.solPrice ?? price.data?.usd ?? null;
-  const launches = d?.recentLaunches ?? [];
-  const selected = mint ?? launches[0]?.mint ?? null;
-  const go = (m: string) => router.replace(`/dashboard?mint=${m}`);
-  const win = d?.pnl[period];
-  const winSol = win ? Number(win.realisedSol) : null;
-  const total = d?.totalSol !== null && d?.totalSol !== undefined ? Number(d.totalSol) : null;
-
+function UnitToggle({ unit, onChange }: { unit: "USD" | "SOL"; onChange: (u: "USD" | "SOL") => void }) {
   return (
-    <Page>
-      <PageHeader
-        icon={<Icon3D name="dashboard" size={40} glow />}
-        title="Dashboard"
-        description="Your balances, realised PnL and the dev room of every token you launched from here."
-        actions={
-          <>
-            <form
-              className="flex gap-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (isMint(open)) {
-                  go(open.trim());
-                  setOpen("");
-                }
-              }}
-            >
-              <Input value={open} onChange={(e) => setOpen(e.target.value)} placeholder="Open any mint address…" mono className="w-64 text-[13px]" aria-label="Mint address" />
-              <Button type="submit" disabled={!isMint(open)} icon="arrowRight">
-                Open
-              </Button>
-            </form>
-            <Link href="/launch">
-              <Button variant="primary" icon="rocket">
-                Launch a token
-              </Button>
-            </Link>
-          </>
-        }
-      />
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <StatCard label="Total balance" value={total !== null ? `${sol(total)} SOL` : "—"} sub={total !== null && solUsd ? `${usd(total * solUsd, 2)} at ${usd(solUsd, 2)} per SOL` : "Sum of every active wallet"} />
-        <StatCard
-          label="Realised PnL"
-          value={winSol === null ? "—" : `${signedSol(winSol)} SOL`}
-          tone={winSol !== null && winSol > 0 ? "up" : winSol !== null && winSol < 0 ? "down" : undefined}
-          sub={win ? `${win.trades} trades · bought ${sol(win.buysSol)} · sold ${sol(win.sellsSol)} SOL` : "Sells minus buys, from this app's journal"}
-          right={<Segmented size="xs" value={period} onChange={setPeriod} options={(["24h", "7d", "30d", "all"] as Period[]).map((p) => ({ value: p, label: p }))} />}
-        />
-        <StatCard label="Active tasks" value={d ? d.activeTasks.length : "—"} sub="Buy, volume and sniper tasks still running" />
-        <StatCard label="Launches" value={d ? launches.length : "—"} sub="Tokens created from this app" />
-      </div>
-      {dash.error ? <ApiError error={dash.error} retry={dash.refresh} compact /> : null}
-
-      <div className="flex-1 grid grid-cols-1 xl:grid-cols-[380px_1fr] gap-4 min-h-0">
-        <div className="flex flex-col gap-4 min-h-0">
-          <Card title="My launches" description="Tokens created from this app, with their live market cap." icon={<Icon3D name="launch" size={24} />} flush bodyClassName="p-3 gap-2 overflow-y-auto max-h-[60vh]">
-            {dash.loading && !d ? (
-              <Loading />
-            ) : !launches.length ? (
-              <Empty
-                icon={<Icon3D name="launch" size={48} />}
-                title="No launch yet"
-                compact
-                action={
-                  <Link href="/launch">
-                    <Button size="sm" variant="primary" icon="rocket">
-                      Launch a token
-                    </Button>
-                  </Link>
-                }
-              >
-                Your tokens will appear here. To work on a token launched elsewhere, paste its mint above.
-              </Empty>
-            ) : (
-              launches.map((l) => (
-                <button key={l.mint} onClick={() => go(l.mint)} className={cx("card text-left p-3 flex items-center gap-3", selected === l.mint ? "!border-accent bg-accent-soft" : "")}>
-                  <TokenImage src={l.image} alt={l.symbol} size={40} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="font-semibold">{l.symbol}</span>
-                      <span className="text-text-3 truncate">{l.name}</span>
-                      <span className="ml-auto hint mono shrink-0">{age(l.at)}</span>
-                    </div>
-                    <div className="flex items-center gap-4 mt-1.5">
-                      <KV label="Market cap" value={l.marketCapUsd !== null ? usd(l.marketCapUsd) : l.marketCapSol !== null ? `${sol(l.marketCapSol)} SOL` : "—"} />
-                      <KV label="Bonded" value={l.complete ? "Migrated" : l.progress !== null ? `${l.progress.toFixed(0)} %` : "—"} tone={l.complete ? "up" : undefined} />
-                      <KV label="Buys" value={`${l.buysConfirmed}/${l.buysTotal}`} />
-                      {!l.createConfirmed ? <Capsule tone={l.createError ? "down" : "warn"}>{l.createError ? "Create failed" : "Create pending"}</Capsule> : null}
-                    </div>
-                    {l.progress !== null && !l.complete ? <Progress value={l.progress} className="mt-2" /> : null}
-                  </div>
-                </button>
-              ))
-            )}
-          </Card>
-
-          {d?.activeTasks.length ? (
-            <Card title="Active tasks" description="Running across all your launches. Pause or stop them here." icon={<Icon3D name="volume" size={24} />} flush bodyClassName="p-3 gap-2">
-              {d.activeTasks.map((t) => (
-                <TaskRowCompact key={`${t.launchId}-${t.task.id}`} launchId={t.launchId} t={t.task} symbol={t.symbol} />
-              ))}
-            </Card>
-          ) : null}
-        </div>
-
-        <Card
-          glow
-          title="Dev room"
-          description="Everything about one token: your positions, sells, creator fees, the volume bot and auto-dump."
-          icon={<Icon3D name="dashboard" size={24} />}
-          actions={
-            selected ? (
-              <Link href={`/trade/${selected}`} className="inline-flex items-center gap-1.5 text-sm text-accent hover:underline">
-                <Icon name="chart" size={15} /> Trade page
-              </Link>
-            ) : null
-          }
-          bodyClassName="min-h-0 overflow-y-auto"
-        >
-          {selected ? (
-            <DevRoom key={selected} mint={selected} activeTasks={d?.activeTasks} />
-          ) : (
-            <Empty icon={<Icon3D name="dashboard" size={56} />} title="Pick a token">
-              Select one of your launches on the left, or paste a mint address at the top, to see its curve, every wallet&apos;s position, creator fees, the volume bot and auto-dump.
-            </Empty>
-          )}
-        </Card>
-      </div>
-    </Page>
+    <button type="button" onClick={() => onChange(unit === "USD" ? "SOL" : "USD")} className="group/pnl-unit inline-flex h-4 flex-row items-center justify-center gap-1 rounded px-1.5 pl-2 transition-colors duration-150 hover:cursor-pointer hover:bg-white/[0.04]" aria-label={unit === "USD" ? "Display position in SOL" : "Display position in USD"} title={unit === "USD" ? "Show SOL" : "Show USD"}>
+      <span className="text-xs font-normal leading-4 text-text-300 transition-colors duration-150 group-hover/pnl-unit:text-text-200">PnL</span>
+      <span className="text-[10px] font-medium text-text-300">{unit}</span>
+    </button>
   );
+}
+
+/** Sum of claimable pump.fun creator fees across the launches (one read per mint). */
+function RewardsSummary({ mints, walletCount }: { mints: string[]; walletCount: number }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-5 pb-6">
+      <div className="flex flex-wrap items-center justify-center gap-2.5">
+        <div className="flex h-12 items-center gap-2.5 rounded-lg border border-line-100 bg-bg-100 px-4">
+          {/* eslint-disable-next-line @next/next/no-img-element -- static asset */}
+          <img src="/solana.svg" alt="" className="h-6 w-6" />
+          <span className="text-[13px] font-medium text-text-200">SOL fees</span>
+        </div>
+        <div className="flex h-12 items-center gap-2.5 rounded-lg border border-line-100 bg-bg-100 px-4">
+          <span className="text-lg font-medium tabular-nums text-text-100">
+            <PendingFees mints={mints} />
+          </span>
+          <span className="text-[13px] font-medium text-text-200">SOL pending</span>
+        </div>
+      </div>
+      <p className="text-center text-[13px] leading-relaxed text-text-300">{!walletCount ? "Add a developer wallet to claim pad fees." : !mints.length ? "Launch a token to start earning pad fees." : "Creator fees of your launches, claimable on the Rewards page."}</p>
+      <div className="flex w-full max-w-[320px] items-center gap-2">
+        <Link href="/portfolio" className="inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-1 rounded-md border border-line-100 bg-bg-100 text-[13px] font-medium text-text-200 transition-colors hover:border-accent/35 hover:text-text-100">
+          Portfolio
+        </Link>
+        <Link href="/rewards" className="inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-1 rounded-md border border-line-100 bg-bg-100 text-[13px] font-medium text-text-200 transition-colors hover:border-accent/35 hover:text-text-100">
+          Rewards
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+function PendingFees({ mints }: { mints: string[] }) {
+  // one hook per mint would break the rules of hooks on a changing list → read the first 10 through a stable key list
+  const keys = mints.slice(0, 10);
+  return (
+    <span className="tabular-nums transition-opacity duration-200">
+      <FeesSum keys={keys} />
+    </span>
+  );
+}
+function FeesSum({ keys }: { keys: string[] }) {
+  const a = useGet<CreatorFeesResponse>(keys[0] ? `/api/dev/fees/${keys[0]}` : null, 15000);
+  const b = useGet<CreatorFeesResponse>(keys[1] ? `/api/dev/fees/${keys[1]}` : null, 15000);
+  const c = useGet<CreatorFeesResponse>(keys[2] ? `/api/dev/fees/${keys[2]}` : null, 15000);
+  const dd = useGet<CreatorFeesResponse>(keys[3] ? `/api/dev/fees/${keys[3]}` : null, 15000);
+  const e = useGet<CreatorFeesResponse>(keys[4] ? `/api/dev/fees/${keys[4]}` : null, 15000);
+  const sum = [a, b, c, dd, e].reduce((n, r) => n + (r.data?.isMine ? Number(r.data.claimableSol ?? 0) : 0), 0);
+  return <>{sum.toFixed(3)}</>;
 }
