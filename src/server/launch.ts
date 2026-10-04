@@ -114,7 +114,7 @@ export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<Laun
 /* ------------------------------------------------------------------ runtime */
 
 /** `activitySol` = "Stop on activity" / "Sell all on external" threshold in SOL (null = off) */
-type NormTask =
+export type NormTask =
   | { id: string; type: "bundle"; wallets: string[]; amounts: Map<string, bigint>; slippageBps: number; tipLamports: bigint; autoRetryCount: number; autoStart: boolean; activitySol: number | null }
   | { id: string; type: "sniper"; wallets: string[]; amounts: Map<string, bigint>; slippageBps: number; tipLamports: bigint; autoRetryCount: number; minDelayMs: number; maxDelayMs: number; autoStart: boolean; activitySol: number | null }
   | { id: string; type: "buy" | "volume"; wallets: string[]; loopCfg: Omit<ConstructorParameters<typeof TradeLoop>[0], "id" | "taskId" | "mint" | "label" | "onChange" | "type"> & { type: "buy" | "volume" }; autoStart: boolean; activitySol: number | null }
