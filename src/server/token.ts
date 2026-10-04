@@ -2,7 +2,7 @@
 import { PublicKey } from "@solana/web3.js";
 import { curveTradeHistory } from "@/engine/solana/pump/positions.js";
 import { TOKEN_2022_PROGRAM, associatedTokenAddress, bondingCurvePda, tokenProgramFor } from "@/engine/solana/pump/pdas.js";
-import type { Candle, CandleTf, TokenCandlesResponse, TokenHolder, TokenHoldersResponse, TokenInfo, TokenTrade, TokenTradesResponse } from "@/lib/types";
+import type { Candle, CandleTf, StatsWindow, TokenCandlesResponse, TokenHolder, TokenHoldersResponse, TokenInfo, TokenStatsResponse, TokenTrade, TokenTradesResponse, WindowStats } from "@/lib/types";
 import { HttpError } from "./api";
 import { fetchCurve, readConn, toCurveState, tokenProgramOf } from "./engine";
 import { feedCard, feedSolUsd } from "./feed";
@@ -68,6 +68,56 @@ export async function tokenCandles(mint: string, tf: CandleTf): Promise<TokenCan
   }
   return { mint, tf, candles, trades: sorted.length };
 }
+
+const WINDOWS: Record<StatsWindow, number> = { "5m": 300, "1h": 3600, "6h": 6 * 3600, "24h": 24 * 3600 };
+
+/** Block X window stats (5m / 1h / 6h / 24h: volume, buys/sells, price change) from the last 600 curve trades */
+export async function tokenStats(mint: string): Promise<TokenStatsResponse> {
+  const rows = await curveTradeHistory(readConn(), mint, { max: 600 });
+  const sorted = rows.filter((t) => t.blockTime > 0).sort((a, b) => a.blockTime - b.blockTime || a.block - b.block);
+  const now = Math.floor(Date.now() / 1000);
+  const oldest = sorted[0]?.blockTime ?? now;
+  const last = sorted[sorted.length - 1];
+  const lastPrice = last ? Number(last.priceEth) : null;
+  const windows = {} as Record<StatsWindow, WindowStats>;
+  for (const [name, sec] of Object.entries(WINDOWS) as [StatsWindow, number][]) {
+    const start = now - sec;
+    const inWin = sorted.filter((t) => t.blockTime >= start);
+    let buysSol = 0,
+      sellsSol = 0,
+      buys = 0,
+      sells = 0;
+    for (const t of inWin) {
+      const v = Number(t.quoteEth) || 0;
+      if (t.side === "buy") {
+        buysSol += v;
+        buys++;
+      } else {
+        sellsSol += v;
+        sells++;
+      }
+    }
+    // price change: last trade vs the last trade BEFORE the window (or the first inside it when history starts inside)
+    const before = [...sorted].reverse().find((t) => t.blockTime < start);
+    const base = before ?? inWin[0];
+    const basePrice = base ? Number(base.priceEth) : 0;
+    const priceChangePct = lastPrice !== null && basePrice > 0 && inWin.length > 0 ? ((lastPrice - basePrice) / basePrice) * 100 : null;
+    const partial = sorted.length >= 600 && oldest > start;
+    windows[name] = {
+      volumeSol: round(buysSol + sellsSol),
+      buysSol: round(buysSol),
+      sellsSol: round(sellsSol),
+      netSol: round(buysSol - sellsSol),
+      buys,
+      sells,
+      priceChangePct: priceChangePct === null ? null : Math.round(priceChangePct * 100) / 100,
+      coverageSec: Math.max(0, Math.min(sec, now - Math.max(oldest, start))),
+      partial,
+    };
+  }
+  return { mint, at: Date.now(), lastPriceSol: lastPrice, tradesRead: sorted.length, windows };
+}
+const round = (n: number) => Math.round(n * 1e6) / 1e6;
 
 export async function tokenHolders(mint: string): Promise<TokenHoldersResponse> {
   const conn = readConn();
