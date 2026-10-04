@@ -16,7 +16,7 @@ export function ImagePicker({ value, onChange }: { value: string; onChange: (dat
     r.readAsDataURL(file);
   };
   return (
-    <div className="flex items-start gap-4">
+    <div className="flex flex-col gap-3">
       <button
         type="button"
         onClick={() => fileRef.current?.click()}
@@ -31,7 +31,7 @@ export function ImagePicker({ value, onChange }: { value: string; onChange: (dat
           const f = e.dataTransfer.files?.[0];
           if (f) read(f);
         }}
-        className={cx("relative w-[132px] h-[132px] rounded-xl border overflow-hidden shrink-0 flex items-center justify-center text-text-3 transition-colors", dragOver ? "border-accent bg-accent-soft" : value ? "border-line" : "border-dashed border-line-hover hover:border-accent bg-bg")}
+        className={cx("relative w-full aspect-square max-w-[200px] rounded-xl border overflow-hidden shrink-0 flex items-center justify-center text-text-3 transition-colors", dragOver ? "border-accent bg-accent-soft" : value ? "border-line" : "border-dashed border-line-hover hover:border-accent bg-bg")}
         aria-label="Token image"
       >
         {value ? (
@@ -40,14 +40,13 @@ export function ImagePicker({ value, onChange }: { value: string; onChange: (dat
         ) : (
           <div className="text-center px-3">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="mx-auto mb-1.5"><rect x="3" y="3" width="18" height="18" rx="3" /><circle cx="9" cy="9" r="2" /><path d="m21 15-5-5L5 21" /></svg>
-            <div className="text-[11px]">Drop or click</div>
+            <div className="text-[13px]">Drop or click</div>
           </div>
         )}
       </button>
       <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => e.target.files?.[0] && read(e.target.files[0])} />
-      <div className="flex flex-col gap-2 text-xs text-text-3 pt-1">
-        <p>Square, cropped on this machine, 512 px. PNG, JPG, GIF or WEBP, under 4 MB after crop.</p>
-        <div className="flex gap-2">
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button size="sm" onClick={() => fileRef.current?.click()}>
             {value ? "Replace" : "Upload"}
           </Button>
@@ -144,7 +143,7 @@ function CropModal({ src, onClose, onDone }: { src: string; onClose: () => void;
           onPointerUp={() => (drag.current = null)}
           onWheel={(e) => setZoom((z) => Math.min(5, Math.max(1, z - e.deltaY / 600)))}
         />
-        <label className="flex items-center gap-3 w-full text-xs text-text-3">
+        <label className="flex items-center gap-3 w-full text-sm text-text-2">
           Zoom
           <input type="range" min={1} max={5} step={0.01} value={zoom} onChange={(e) => setZoom(Number(e.target.value))} className="flex-1 accent-accent" />
         </label>
@@ -179,8 +178,9 @@ export function UrlInput({ onLoad }: { onLoad: (dataUrl: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   return (
-    <div className="flex gap-2 items-start">
-      <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://… image URL" className="text-xs" />
+    <div className="flex flex-col gap-2">
+      <div className="flex gap-2">
+      <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Image URL" className="text-[13px]" aria-label="Image URL" />
       <Button
         size="md"
         busy={busy}
@@ -200,7 +200,8 @@ export function UrlInput({ onLoad }: { onLoad: (dataUrl: string) => void }) {
       >
         Fetch
       </Button>
-      {err ? <span className="text-[11px] text-down">{err}</span> : null}
+      </div>
+      {err ? <span className="text-[13px] text-down">{err}</span> : null}
     </div>
   );
 }

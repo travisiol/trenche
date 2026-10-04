@@ -11,8 +11,10 @@ import { PAUSABLE_TASKS } from "@/lib/types";
 import { api, failureMessage, post, useSSE } from "@/lib/api";
 import { pumpfunUrl, short, solscanTx, time } from "@/lib/format";
 import { Icon3D } from "../Icon3D";
-import { Button, Copy, Dot, Progress, Spinner, cx, toast } from "../ui";
+import { Icon } from "../icons";
+import { Button, Capsule, Copy, Dot, Progress, Section, Spinner, StepItem, StepList, cx, toast } from "../ui";
 import { TASK_META } from "./model";
+import { TASK_STATUS_WORD } from "../dev/TaskRowCompact";
 
 export function useLaunchState(id: string | null) {
   const [state, setState] = useState<LaunchState | null>(null);
@@ -46,81 +48,98 @@ export function useLaunchState(id: string | null) {
   return { state, error: err, viaPolling: sseDead };
 }
 
-const STATUS_TONE: Record<LaunchState["status"], "accent" | "up" | "down" | "warn"> = { preparing: "accent", sending: "accent", live: "up", failed: "down", done: "up" };
+const STATUS: Record<LaunchState["status"], { tone: "accent" | "up" | "down"; word: string }> = {
+  preparing: { tone: "accent", word: "Preparing" },
+  sending: { tone: "accent", word: "Sending" },
+  live: { tone: "up", word: "Live" },
+  failed: { tone: "down", word: "Failed" },
+  done: { tone: "up", word: "Done" },
+};
 
 export function LaunchLive({ id, onReset }: { id: string; onReset?: () => void }) {
   const { state, error, viaPolling } = useLaunchState(id);
   if (!state) {
     return (
-      <div className="flex items-center gap-2 text-xs text-text-3 p-4">
+      <div className="flex items-center gap-2 text-sm text-text-3 p-4">
         <Spinner size={14} /> {error ?? "Connecting to the launch stream…"}
       </div>
     );
   }
   const running = state.status === "preparing" || state.status === "sending";
+  const st = STATUS[state.status];
   return (
-    <div className="flex flex-col gap-4 fade-in">
-      <div className="flex items-center gap-3">
-        <Icon3D name="launch" size={36} glow />
+    <div className="flex flex-col gap-6 fade-in">
+      <div className="flex flex-wrap items-center gap-4">
+        <Icon3D name="launch" size={44} glow />
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold">{state.name}</span>
-            <span className="text-text-3">{state.symbol}</span>
-            <span className={cx("capsule", STATUS_TONE[state.status] === "up" ? "text-up border-up/30" : STATUS_TONE[state.status] === "down" ? "text-down border-down/30" : "text-accent border-accent/30")}>
-              <Dot tone={STATUS_TONE[state.status]} pulse={running || state.status === "live"} /> {state.status}
-            </span>
-            {viaPolling ? <span className="text-[10px] text-text-3">polling</span> : null}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-lg font-semibold">{state.name}</span>
+            <span className="text-text-2 mono">{state.symbol}</span>
+            <Capsule tone={st.tone}>
+              <Dot tone={st.tone} pulse={running || state.status === "live"} /> {st.word}
+            </Capsule>
+            {viaPolling ? <span className="hint">(polling)</span> : null}
           </div>
-          <div className="flex items-center gap-3 text-[11px] mt-0.5">
+          <div className="flex items-center gap-4 text-[13px] mt-1 flex-wrap">
             <Copy text={state.mint}>{short(state.mint, 6, 6)}</Copy>
-            <a href={pumpfunUrl(state.mint)} target="_blank" rel="noreferrer" className="text-accent hover:underline">
-              pump.fun
+            <a href={pumpfunUrl(state.mint)} target="_blank" rel="noreferrer" className="text-accent hover:underline inline-flex items-center gap-1">
+              pump.fun <Icon name="external" size={12} />
             </a>
             <Link href={`/trade/${state.mint}`} className="text-accent hover:underline">
-              Trade
+              Trade page
             </Link>
             <Link href={`/dashboard?mint=${state.mint}`} className="text-accent hover:underline">
               Dev room
             </Link>
             {state.createSignature ? (
               <a href={solscanTx(state.createSignature)} target="_blank" rel="noreferrer" className="mono text-text-2 hover:text-accent">
-                create {short(state.createSignature)} {state.createConfirmed ? "✓" : state.createConfirmed === false ? "✗" : "…"}
+                create {short(state.createSignature)} {state.createConfirmed ? "confirmed" : state.createConfirmed === false ? "failed" : "pending…"}
               </a>
             ) : null}
           </div>
         </div>
         {onReset && !running ? (
-          <Button size="sm" variant="ghost" onClick={onReset}>
+          <Button variant="outline" onClick={onReset} icon="rocket">
             New launch
           </Button>
         ) : null}
       </div>
-      {state.error ? <div className="text-xs text-down bg-down-soft border border-down/20 rounded-lg px-3 py-2">{state.error}</div> : null}
+      {state.error ? <div className="text-sm text-down bg-down-soft border border-down/20 rounded-lg px-3 py-2.5">{state.error}</div> : null}
 
       {state.tasks.length ? (
-        <div className="flex flex-col gap-2">
-          {state.tasks.map((t) => (
-            <TaskRow key={t.id} launchId={state.id} t={t} />
-          ))}
-        </div>
+        <Section title="Tasks" description="Each task reports its own progress. Buy and Volume can be paused.">
+          <div className="flex flex-col gap-2">
+            {state.tasks.map((t) => (
+              <TaskRow key={t.id} launchId={state.id} t={t} />
+            ))}
+          </div>
+        </Section>
       ) : null}
 
-      {state.sellOnExternal ? (
-        <div className="flex items-center gap-2 text-[11px] text-text-2">
-          <Icon3D name="autodump" size={16} />
-          Sell on external volume: {state.sellOnExternal.externalVolumeSol.toFixed(3)} / {state.sellOnExternal.threshold} SOL {state.sellOnExternal.fired ? "— fired" : ""}
-        </div>
-      ) : null}
-      {state.autoDump?.armed ? (
-        <div className="flex items-center gap-2 text-[11px] text-auto">
-          <Icon3D name="autodump" size={16} />
-          Auto-dump armed{state.autoDump.config?.mcUsd ? ` at $${state.autoDump.config.mcUsd}` : ""}
-          {state.autoDump.config?.afterSec ? ` after ${state.autoDump.config.afterSec}s` : ""}
-          {state.autoDump.firedAt ? " — fired" : ""}
-        </div>
+      {state.sellOnExternal || state.autoDump?.armed ? (
+        <Section title="Automatic sells" description="Armed on the server; they fire without you.">
+          <div className="flex flex-col gap-2 text-sm">
+            {state.sellOnExternal ? (
+              <div className="flex items-center gap-2 text-text-2">
+                <Icon3D name="sniper" size={18} />
+                Sell on external volume: {state.sellOnExternal.externalVolumeSol.toFixed(3)} of {state.sellOnExternal.threshold} SOL seen{state.sellOnExternal.fired ? <span className="text-up"> — fired</span> : ""}
+              </div>
+            ) : null}
+            {state.autoDump?.armed ? (
+              <div className="flex items-center gap-2 text-auto">
+                <Icon3D name="autodump" size={18} />
+                Auto-dump armed{state.autoDump.config?.mcUsd ? ` at $${state.autoDump.config.mcUsd}` : ""}
+                {state.autoDump.config?.afterSec ? ` after ${state.autoDump.config.afterSec} s` : ""}
+                {state.autoDump.firedAt ? " — fired" : ""}
+              </div>
+            ) : null}
+          </div>
+        </Section>
       ) : null}
 
-      <StepLog steps={state.steps} />
+      <Section title="Steps" description="Every action in order, with its signature on Solscan.">
+        <StepLog steps={state.steps} />
+      </Section>
     </div>
   );
 }
@@ -142,56 +161,65 @@ function TaskRow({ launchId, t }: { launchId: string; t: LaunchTaskState }) {
   const tone = t.status === "error" ? "down" : t.status === "done" ? "up" : t.status === "paused" ? "warn" : t.status === "running" ? "accent" : "muted";
   const pausable = PAUSABLE_TASKS.includes(t.type);
   return (
-    <div className="card p-3 flex flex-col gap-2">
-      <div className="flex items-center gap-2 text-xs">
-        <Icon3D name={meta.icon} size={20} />
+    <div className="card p-4 flex flex-col gap-2.5">
+      <div className="flex items-center gap-2 text-sm flex-wrap">
+        <Icon3D name={meta.icon} size={22} />
         <span className="font-medium">{meta.label}</span>
         <Dot tone={tone} pulse={t.status === "running"} />
-        <span className="text-text-3">{t.status}</span>
-        <span className="mono text-text-3 ml-auto">
-          {t.done}/{t.total ?? "∞"} · {t.sent} sent{t.failed ? ` · ${t.failed} failed` : ""} · {t.wallets.length} wallets
+        <span className="text-text-2">{TASK_STATUS_WORD[t.status]}</span>
+        <span className="mono text-[13px] text-text-3 ml-auto">
+          {t.done}/{t.total ?? "∞"} done · {t.sent} sent{t.failed ? ` · ${t.failed} failed` : ""} · {t.wallets.length} wallet{t.wallets.length !== 1 ? "s" : ""}
         </span>
         {t.status === "running" || t.status === "paused" || t.status === "pending" ? (
-          <span className="flex gap-1">
+          <span className="flex gap-1.5">
             {pausable && t.status === "running" ? (
-              <Button size="xs" busy={busy} onClick={() => act("pause")}>
+              <Button size="xs" busy={busy} onClick={() => act("pause")} icon="pause">
                 Pause
               </Button>
             ) : null}
             {pausable && t.status === "paused" ? (
-              <Button size="xs" variant="primary" busy={busy} onClick={() => act("resume")}>
+              <Button size="xs" variant="primary" busy={busy} onClick={() => act("resume")} icon="play">
                 Resume
               </Button>
             ) : null}
-            <Button size="xs" variant="danger" busy={busy} onClick={() => act("stop")}>
+            <Button size="xs" variant="danger" busy={busy} onClick={() => act("stop")} icon="stop">
               Stop
             </Button>
           </span>
         ) : null}
       </div>
       <Progress value={pctDone} color={meta.color} />
-      {t.error ? <div className="text-[11px] text-down">{t.error}</div> : null}
-      {t.nextAt > 0 && t.status === "running" ? <div className="text-[10px] text-text-3">next at {time(t.nextAt)}</div> : null}
+      {t.error ? <div className="text-sm text-down">{t.error}</div> : null}
+      {t.nextAt > 0 && t.status === "running" ? <div className="hint">Next trade at {time(t.nextAt)}</div> : null}
     </div>
   );
 }
 
 export function StepLog({ steps }: { steps: LaunchStep[] }) {
   return (
-    <ul className="flex flex-col gap-0.5 max-h-72 overflow-y-auto rounded-lg border border-line bg-bg p-1.5 mono text-[11px]">
-      {!steps.length ? <li className="text-text-3 p-1">Waiting for the first step…</li> : null}
-      {steps.map((s, i) => (
-        <li key={i} className={cx("flex items-center gap-2 px-1.5 py-0.5 rounded", s.ok ? "" : "bg-down-soft/50")}>
-          <span className="text-text-3">{time(s.at)}</span>
-          <span className={cx("w-14 shrink-0", s.ok ? "text-accent" : "text-down")}>{s.phase}</span>
-          <span className={cx("truncate", s.ok ? "text-text-2" : "text-down")}>{s.message}</span>
-          {s.signature ? (
-            <a href={solscanTx(s.signature)} target="_blank" rel="noreferrer" className="ml-auto text-accent hover:underline shrink-0">
-              {short(s.signature)}
-            </a>
-          ) : null}
-        </li>
-      ))}
-    </ul>
+    <div className="rounded-lg border border-line bg-bg px-3 max-h-80 overflow-y-auto">
+      {!steps.length ? <p className="hint py-3">Waiting for the first step…</p> : null}
+      <StepList>
+        {steps.map((s, i) => (
+          <StepItem
+            key={i}
+            ok={s.ok}
+            right={
+              <>
+                {s.signature ? (
+                  <a href={solscanTx(s.signature)} target="_blank" rel="noreferrer" className="mono text-accent hover:underline">
+                    {short(s.signature)} ↗
+                  </a>
+                ) : null}
+                <span className="mono text-text-3">{time(s.at)}</span>
+              </>
+            }
+          >
+            <span className={cx("mono text-[13px] mr-2", s.ok ? "text-accent" : "text-down")}>{s.phase}</span>
+            <span className={s.ok ? "" : "text-down"}>{s.message}</span>
+          </StepItem>
+        ))}
+      </StepList>
+    </div>
   );
 }

@@ -99,12 +99,12 @@ export const EMPTY_FORM: LaunchForm = {
   autoDumpAfterSec: "",
 };
 
-export const TASK_META: Record<LaunchTaskType, { label: string; blurb: string; icon: "bundle" | "sniper" | "buy" | "volume" | "wash"; color: string }> = {
-  bundle: { label: "Bundle", blurb: "Buys inside the same Jito bundle as the create. Max 4 wallets.", icon: "bundle", color: "var(--accent)" },
-  sniper: { label: "Sniper", blurb: "Buys the instant the create confirms, with retries.", icon: "sniper", color: "var(--warn)" },
-  buy: { label: "Buy", blurb: "Periodic buys from the wallets. Pausable.", icon: "buy", color: "var(--up)" },
-  volume: { label: "Volume", blurb: "Periodic buys and sells to print volume. Pausable.", icon: "volume", color: "var(--auto)" },
-  wash: { label: "Wash", blurb: "Moves every token of the wallets to fresh wallets.", icon: "wash", color: "var(--text-2)" },
+export const TASK_META: Record<LaunchTaskType, { label: string; short: string; blurb: string; icon: "bundle" | "sniper" | "buy" | "volume" | "wash"; color: string }> = {
+  bundle: { label: "Bundle", short: "Buy in the create bundle", blurb: "These wallets buy inside the same Jito bundle as the create, so nobody can trade before them. Jito accepts the create plus 4 buys.", icon: "bundle", color: "var(--accent)" },
+  sniper: { label: "Sniper", short: "Buy right after create", blurb: "These wallets send their buy the instant the create confirms, with optional retries. No wallet limit beyond 50.", icon: "sniper", color: "var(--warn)" },
+  buy: { label: "Buy", short: "Keep buying over time", blurb: "These wallets keep buying at random amounts and pauses after the launch. Pausable from the dashboard.", icon: "buy", color: "var(--up)" },
+  volume: { label: "Volume", short: "Buy and sell to print volume", blurb: "These wallets buy and sell at random amounts and pauses to print volume. Pausable from the dashboard.", icon: "volume", color: "var(--auto)" },
+  wash: { label: "Wash", short: "Move tokens to fresh wallets", blurb: "After the launch, every token these wallets hold is transferred to brand-new wallets added to your vault.", icon: "wash", color: "var(--text-2)" },
 };
 
 /** Validation mirrors TASK_LIMITS; returns one message per problem (empty = ok). */
@@ -216,4 +216,65 @@ export function presetData(f: LaunchForm): Record<string, unknown> {
 export function fromPreset(data: Record<string, unknown>, current: LaunchForm): LaunchForm {
   const d = data as Partial<LaunchForm>;
   return { ...EMPTY_FORM, ...d, imageDataUrl: current.imageDataUrl, tasks: (d.tasks ?? []).map((t) => ({ ...newTask(t.type), ...t, id: newId() })) };
+}
+
+/* ------------------------------------------------------------- readability helpers (ui2) */
+
+/** Wallet addresses a task touches (explicit + expanded groups), de-duplicated. */
+export function taskWallets(t: FormTask, wallets: { address: string; group: string | null; archived: boolean }[]): string[] {
+  const viaGroup = wallets.filter((w) => !w.archived && t.walletGroupIds.includes(w.group ?? "")).map((w) => w.address);
+  return Array.from(new Set([...t.walletIds, ...viaGroup]));
+}
+
+/** SOL a bundle/sniper wallet buys with (per-wallet override or task default). */
+export function taskBuyFor(t: FormTask, address: string): number {
+  return Number(t.walletBuyAmounts[address] ?? t.buyAmount ?? 0) || 0;
+}
+
+/** One plain-language sentence describing what the task will do. */
+export function taskSentence(t: FormTask, wallets: { address: string; group: string | null; archived: boolean }[]): string {
+  const addrs = taskWallets(t, wallets);
+  const n = addrs.length;
+  const w = `${n} wallet${n !== 1 ? "s" : ""}`;
+  if (!n) return "No wallet picked yet.";
+  if (t.type === "bundle") {
+    const total = addrs.reduce((s, a) => s + taskBuyFor(t, a), 0);
+    const same = addrs.every((a) => taskBuyFor(t, a) === taskBuyFor(t, addrs[0]));
+    return `${w} buy ${same ? `${t.buyAmount} SOL each` : `${total} SOL in total`} inside the create transaction via Jito, tip ${t.tip} SOL, slippage ${t.slippagePercent} %.`;
+  }
+  if (t.type === "sniper") {
+    const same = addrs.every((a) => taskBuyFor(t, a) === taskBuyFor(t, addrs[0]));
+    const total = addrs.reduce((s, a) => s + taskBuyFor(t, a), 0);
+    return `${w} buy ${same ? `${t.buyAmount} SOL each` : `${total} SOL in total`} the moment the create confirms${t.autoRetryCount ? `, up to ${t.autoRetryCount} retr${t.autoRetryCount > 1 ? "ies" : "y"}` : ""}, slippage ${t.slippagePercent} %.`;
+  }
+  if (t.type === "wash") return `Every token held by ${w} is moved to fresh wallets after the launch.`;
+  const verb = t.tradeMode === "both" ? `buy and sell (${t.buyRatioPercent} % buys)` : t.tradeMode === "sell" ? "sell" : "buy";
+  return `${w} ${verb} ${t.minTradeAmount}–${t.maxTradeAmount} SOL every ${t.minIntervalSec}–${t.maxIntervalSec} s, up to ${t.maxTradesPerWallet} trades each, for ${t.maxDurationMinutes} min at most.`;
+}
+
+/** Rough on-chain costs (SOL) so the summary can compare needed vs available. The server re-checks before sending. */
+export const COST = { create: 0.02, perBuy: 0.01 } as const;
+
+export type NeedRow = { address: string; label: string; role: string; needed: number; available: number };
+
+/** Per-wallet SOL needed for this launch (dev create + dev buy + task buys), with balances for comparison. */
+export function launchNeeds(f: LaunchForm, wallets: { address: string; label: string; group: string | null; archived: boolean; sol: string | null }[], balances: Record<string, string | null> | null): NeedRow[] {
+  const rows = new Map<string, NeedRow>();
+  const add = (address: string, role: string, sol: number) => {
+    const w = wallets.find((x) => x.address === address);
+    const r = rows.get(address) ?? { address, label: w?.label || address, role, needed: 0, available: Number(balances?.[address] ?? w?.sol ?? 0) || 0 };
+    r.needed += sol;
+    if (!r.role.includes(role)) r.role = r.role ? `${r.role} + ${role}` : role;
+    rows.set(address, r);
+  };
+  const hasBundle = f.tasks.some((t) => t.type === "bundle");
+  if (f.devWallet) add(f.devWallet, "dev", COST.create + (Number(f.devBuySol) || 0) + (hasBundle ? Number(f.tasks.find((t) => t.type === "bundle")?.tip ?? 0) || 0 : 0));
+  for (const t of f.tasks) {
+    for (const a of taskWallets(t, wallets)) {
+      if (t.type === "bundle" || t.type === "sniper") add(a, t.type, taskBuyFor(t, a) + COST.perBuy);
+      else if (t.type === "buy" || t.type === "volume") add(a, t.type, (Number(t.maxTradeAmount) || 0) + COST.perBuy);
+      else add(a, "wash", COST.perBuy);
+    }
+  }
+  return [...rows.values()];
 }
