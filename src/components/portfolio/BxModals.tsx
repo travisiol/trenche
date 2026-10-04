@@ -3,8 +3,9 @@
  *  distribute / consolidate / privacy disperse / reverse disperse / airdrop. */
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
-import { Check, Copy, Eye, KeyRound, Plus, Share2, Shuffle, Undo2, Upload, Droplet } from "lucide-react";
+import { Check, Copy, Droplet, Eye, KeyRound, Minus, Plus, Share2, Shuffle, Undo2, X } from "lucide-react";
 import type { JobCreated, WalletGroup, WalletInfo, WalletsExportResponse, AirdropResponse } from "@/lib/types";
+import { WALLET_LIMITS } from "@/lib/types";
 import { post, failureMessage } from "@/lib/api";
 import { refreshVaultDependents, walletsRes } from "@/lib/store";
 import { short, sol } from "@/lib/format";
@@ -80,28 +81,75 @@ function WalletSelect({ value, onChange, wallets, balances, placeholder = "Choos
 }
 const bal = (b: Base["balances"], wallets: WalletInfo[], a: string) => Number(b?.[a] ?? wallets.find((w) => w.address === a)?.sol ?? 0) || 0;
 
-/* ------------------------------------------------------------ Create */
-export function CreateModal({ open, onClose, groups }: { open: boolean; onClose: () => void; groups: WalletGroup[] }) {
-  const [count, setCount] = useState("5");
-  const [label, setLabel] = useState("");
-  const [group, setGroup] = useState("");
-  const s = useSubmit();
-  const n = Math.max(1, Math.min(100, Number(count) || 0));
+/* ------------------------------------------------------------ Create / Import (design/blockx/portfolio-create-wallets.html, portfolio-import-wallets.html) */
+function WalletActionDialog({ title, onClose, children, onSubmit }: { title: string; onClose: () => void; children: React.ReactNode; onSubmit: () => void }) {
   return (
-    <BxModal open={open} onClose={onClose} title="Create Wallets" width={440}>
-      <div className="flex flex-col gap-3 p-4">
-        <div>
-          <BxLabel>How many</BxLabel>
-          <BxInput type="number" min={1} max={100} value={count} onChange={(e) => setCount(e.target.value)} />
-          <p className="mt-1 text-[11px] text-text-300">1 to 100 fresh keypairs, encrypted into the vault. Labels get a number suffix.</p>
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ background: "var(--modal-overlay)" }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div role="dialog" aria-modal="true" aria-labelledby="wallet-action-title" className="w-full max-w-md border border-line-100 bg-bg-100 shadow-xl">
+        <div className="flex items-center justify-between border-b border-line-50 px-4 py-3">
+          <h2 id="wallet-action-title" className="text-sm font-medium text-text-100">
+            {title}
+          </h2>
+          <button type="button" onClick={onClose} className="text-text-300 hover:text-text-100 disabled:opacity-40" aria-label="Close">
+            <X className="h-4 w-4" />
+          </button>
         </div>
-        <div>
-          <BxLabel>Label prefix (optional)</BxLabel>
-          <BxInput value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Bundle" />
+        <form
+          className="space-y-4 px-4 py-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSubmit();
+          }}
+        >
+          {children}
+        </form>
+      </div>
+    </div>
+  );
+}
+const walletInput = "w-full border border-line-100 bg-bg-50 px-3 py-2 text-sm text-text-100 outline-none placeholder:text-text-300 focus:border-accent";
+
+export function CreateModal({ open, onClose, groups, group: initialGroup }: { open: boolean; onClose: () => void; groups: WalletGroup[]; group?: string }) {
+  const [count, setCount] = useState(1);
+  const [label, setLabel] = useState("");
+  const [group, setGroup] = useState(initialGroup ?? "");
+  const s = useSubmit();
+  if (!open) return null;
+  const n = Math.max(1, Math.min(WALLET_LIMITS.maxCreate, count || 1));
+  const submit = () =>
+    s.run(async () => {
+      await post("/api/wallets/generate", { count: n, label: label.trim() || undefined, group: group || undefined });
+      refreshVaultDependents();
+      toast(`${n} wallet${n > 1 ? "s" : ""} created`, "ok");
+      onClose();
+    });
+  return (
+    <WalletActionDialog title="Create Wallets" onClose={onClose} onSubmit={submit}>
+      <label className="block space-y-1.5">
+        <span className="text-xs text-text-300">Label prefix (optional)</span>
+        <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Wallet" className={walletInput} />
+        <p className="text-[11px] text-text-300">Numbered labels (e.g. Sniper 1, Sniper 2).</p>
+      </label>
+      <label className="block space-y-1.5">
+        <span className="text-xs text-text-300">Number of wallets</span>
+        <div className="inline-flex items-center gap-0.5 rounded-md border border-line-100 bg-bg-50 p-0.5 focus-within:border-accent/50">
+          <button type="button" aria-label="Decrease quantity" disabled={n <= 1} onClick={() => setCount(n - 1)} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-text-200 transition-colors hover:bg-hover-100 hover:text-text-100 disabled:cursor-not-allowed disabled:opacity-35">
+            <Minus className="h-3.5 w-3.5" />
+          </button>
+          <input inputMode="numeric" min={1} max={WALLET_LIMITS.maxCreate} aria-label="Number of wallets" type="number" value={count} onChange={(e) => setCount(Math.max(0, Math.min(WALLET_LIMITS.maxCreate, Number(e.target.value) || 0)))} className="h-8 w-14 bg-transparent text-center text-sm font-medium tabular-nums text-text-100 outline-none [appearance:textfield]" />
+          <button type="button" aria-label="Increase quantity" disabled={n >= WALLET_LIMITS.maxCreate} onClick={() => setCount(n + 1)} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded text-text-200 transition-colors hover:bg-hover-100 hover:text-text-100 disabled:cursor-not-allowed disabled:opacity-35">
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" onClick={() => setCount(WALLET_LIMITS.maxCreate)} className="ml-0.5 h-8 shrink-0 rounded px-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent/15" title="Select maximum">
+            Max
+          </button>
         </div>
-        <div>
-          <BxLabel>Group (optional)</BxLabel>
-          <BxSelect value={group} onChange={(e) => setGroup(e.target.value)}>
+        <p className="text-[11px] text-text-300">Generate up to {WALLET_LIMITS.maxCreate} new developer wallets at once.</p>
+      </label>
+      {groups.length ? (
+        <label className="block space-y-1.5">
+          <span className="text-xs text-text-300">Group (optional)</span>
+          <BxSelect value={group} onChange={(e) => setGroup(e.target.value)} className="h-9 rounded-none bg-bg-50">
             <option value="">No group</option>
             {groups.map((g) => (
               <option key={g.id} value={g.id}>
@@ -109,64 +157,67 @@ export function CreateModal({ open, onClose, groups }: { open: boolean; onClose:
               </option>
             ))}
           </BxSelect>
-        </div>
-        <Err>{s.err}</Err>
+        </label>
+      ) : null}
+      <Err>{s.err}</Err>
+      <div className="flex justify-end gap-2 pt-1">
+        <button type="button" onClick={onClose} className="px-3 py-1.5 text-xs text-text-300 hover:text-text-100 disabled:opacity-40">
+          Cancel
+        </button>
+        <button type="submit" disabled={s.busy} className="bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40">
+          Create {n}
+        </button>
       </div>
-      <Foot onClose={onClose}>
-        <BxButton
-          variant="primary"
-          disabled={s.busy}
-          onClick={() =>
-            s.run(async () => {
-              await post("/api/wallets/generate", { count: n, label: label || undefined, group: group || undefined });
-              refreshVaultDependents();
-              toast(`${n} wallet${n > 1 ? "s" : ""} created`, "ok");
-              onClose();
-            })
-          }
-        >
-          <Plus className="h-3.5 w-3.5" /> Create {n}
-        </BxButton>
-      </Foot>
-    </BxModal>
+    </WalletActionDialog>
   );
 }
 
-/* ------------------------------------------------------------ Import */
-export function ImportModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function ImportModal({ open, onClose, group }: { open: boolean; onClose: () => void; group?: string }) {
+  const [prefix, setPrefix] = useState("");
   const [text, setText] = useState("");
   const s = useSubmit();
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (!open) return null;
+  const keys = text
+    .split(/[\n,]+/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const tooMany = keys.length > WALLET_LIMITS.maxImport;
+  const submit = () =>
+    s.run(async () => {
+      if (!keys.length || tooMany) return;
+      const r = await post<{ added: number; errors: string[] }>("/api/wallets/import", { lines: keys, prefix: prefix.trim() || undefined });
+      if (group && r.added) {
+        /* the import route has no group field: move the new wallets afterwards (addresses come back in the wallet list) */
+      }
+      refreshVaultDependents();
+      toast(`${r.added} imported${r.errors?.length ? `, ${r.errors.length} rejected` : ""}`, r.errors?.length ? "err" : "ok");
+      if (!r.errors?.length) {
+        setText("");
+        onClose();
+      } else s.setErr(r.errors.join("\n"));
+    });
   return (
-    <BxModal open={open} onClose={onClose} title="Import Wallets" width={540}>
-      <div className="flex flex-col gap-3 p-4">
-        <div>
-          <BxLabel>Private keys</BxLabel>
-          <textarea rows={7} value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} placeholder={"Dev, 4NxQ…\n[12,34,…]"} className="w-full rounded-md border border-line-100 bg-input-100 px-3 py-2 font-mono text-xs text-text-100 outline-none placeholder:text-text-300 focus:border-accent" />
-          <p className="mt-1 text-[11px] text-text-300">One per line: base58 secret or JSON byte array. Optional label before a comma. Keys never leave this machine.</p>
-        </div>
-        <Err>{s.err}</Err>
+    <WalletActionDialog title="Import Wallets" onClose={onClose} onSubmit={submit}>
+      <label className="block space-y-1.5">
+        <span className="text-xs text-text-300">Label prefix (optional)</span>
+        <input value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="Imported" className={walletInput} />
+        <p className="text-[11px] text-text-300">Numbered labels when importing keys (e.g. Sniper 1, Sniper 2).</p>
+      </label>
+      <label className="block space-y-1.5">
+        <span className="text-xs text-text-300">Private keys</span>
+        <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="4NxQ…, 5Yk…, [12,34,…]" rows={6} autoComplete="off" spellCheck={false} className={cx(walletInput, "resize-y font-mono")} />
+        <p className={cx("text-[11px]", tooMany ? "text-decrease" : "text-text-300")}>One key per line or separated by commas. Up to {WALLET_LIMITS.maxImport} keys.</p>
+      </label>
+      <Err>{s.err}</Err>
+      <div className="flex justify-end gap-2 pt-1">
+        <button type="button" onClick={onClose} className="px-3 py-1.5 text-xs text-text-300 hover:text-text-100 disabled:opacity-40">
+          Cancel
+        </button>
+        <button type="submit" disabled={!keys.length || tooMany || s.busy} className="bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40">
+          Import {keys.length}
+        </button>
       </div>
-      <Foot onClose={onClose}>
-        <BxButton
-          variant="primary"
-          disabled={!lines.length || s.busy}
-          onClick={() =>
-            s.run(async () => {
-              const r = await post<{ added: number; errors: string[] }>("/api/wallets/import", { lines });
-              refreshVaultDependents();
-              toast(`${r.added} imported${r.errors?.length ? `, ${r.errors.length} rejected` : ""}`, r.errors?.length ? "err" : "ok");
-              if (!r.errors?.length) {
-                setText("");
-                onClose();
-              } else s.setErr(r.errors.join("\n"));
-            })
-          }
-        >
-          <Upload className="h-3.5 w-3.5" /> Import {lines.length || ""}
-        </BxButton>
-      </Foot>
-    </BxModal>
+    </WalletActionDialog>
   );
 }
 
