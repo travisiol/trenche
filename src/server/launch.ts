@@ -203,7 +203,7 @@ export function launchStateOf(run: LaunchRun): LaunchState {
 
 export function subscribeLaunch(id: string, fn: (ev: LaunchStreamEvent) => void): () => void {
   const run = registry().get(id);
-  if (!run) throw new HttpError(404, "Unknown launch (launches live in memory; the server may have restarted).");
+  if (!run) throw new HttpError(404, "Unknown launch (launch runs are kept in runtime.json; this id is not one of them).");
   run.subs.add(fn);
   fn({ type: "state", data: launchStateOf(run) });
   return () => run.subs.delete(fn);
@@ -344,7 +344,7 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   const st = store();
   const mint = String(req.mint ?? "").trim();
   const pending = pendings().get(mint);
-  if (!pending) throw new HttpError(404, "Unknown mint: call /api/launch/prepare first (the mint keypair lives in server memory).");
+  if (!pending) throw new HttpError(404, "Unknown mint: call /api/launch/prepare first (pending mints are kept in runtime.json, 50 max).");
   if (registry().has(mint)) throw new HttpError(409, "This mint was already launched.");
   if (req.launchpad && req.launchpad !== "pumpfun") throw new HttpError(400, "launchpad must be \"pumpfun\".");
   if (req.quote && req.quote !== "SOL") throw new HttpError(400, "quote must be \"SOL\".");

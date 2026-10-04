@@ -110,3 +110,55 @@ if (phase === "funds") {
   await runJob("consolidate 4 → dev-1", "POST", "/api/fund/consolidate", { from: [d2, d3, d4, d5], to: dev1 });
   log("\nbalances after:", JSON.stringify(await api("GET", "/api/balances")));
 }
+
+if (phase === "launch") {
+  const dev1 = labelled("dev-1");
+  const [d2, d3, d4, d5] = ["dev-2", "dev-3", "dev-4", "dev-5"].map(labelled);
+  const bal = await api("GET", "/api/balances");
+  log("balances:", JSON.stringify(bal));
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+  const prep = await api("POST", "/api/launch/prepare", { name: "Trench Devnet", symbol: "TDEV", description: "devnet e2e", imageDataUrl: png });
+  log("prepare →", prep.status, prep.mint ?? prep.error);
+  const mint = prep.mint;
+  log("\n== launch: dev buy 0.05 + bundle task (d2,d3 — sequential on devnet) + sniper (d4) + buy task (d5, 2 trades) + auto-dump after 150 s");
+  const ex = await api("POST", "/api/launch/execute", {
+    mint, launchpad: "pumpfun", devWallet: dev1, devBuySol: "0.05", quote: "SOL",
+    tasks: [
+      { id: "bundle", type: "bundle", walletIds: [d2, d3], buyAmount: "0.03", slippagePercent: 30 },
+      { id: "snipe", type: "sniper", walletIds: [d4], buyAmount: "0.02", slippagePercent: 30, autoRetryCount: 1 },
+      { id: "buyloop", type: "buy", walletIds: [d5], minTradeAmount: "0.01", maxTradeAmount: "0.015", minIntervalSec: 1, maxIntervalSec: 3, maxTradesPerWallet: 2, slippagePercent: 30 },
+    ],
+    autoDump: { percent: 100, afterSec: 150, wallets: [d4] },
+  });
+  log("execute →", ex.status, ex.error ?? `job ${ex.jobId} tasks ${JSON.stringify(ex.tasks)}`);
+  if (!ex.jobId) process.exit(1);
+  printJob(await waitJob(ex.jobId));
+  await sleep(8000);
+  const ls = await api("GET", `/api/launch/${mint}`);
+  log("launch state:", ls.status, "create", ls.createSignature, "\n tasks:", ls.tasks.map((t) => `${t.id}:${t.status} ${t.sent}/${t.total} ${t.steps.filter((s) => s.signature).map((s) => s.signature).join(",")}`).join("\n        "));
+  const tok = await api("GET", `/api/token/${mint}`);
+  log("curve:", tok.curve?.progress, "% · MC", tok.curve?.marketCapSol, "SOL · creator", tok.curve?.creator);
+  await runJob("trade buy 0.01 SOL from dev-2", "POST", "/api/trade/buy", { mint, wallets: [d2], sol: "0.01", slippageBps: 3000 });
+  await runJob("trade sell 50 % from dev-2", "POST", "/api/trade/sell", { mint, wallets: [d2], percent: 50, slippageBps: 3000 });
+  await runJob("volume bot: 3 rounds on dev-3, 0.005–0.01 SOL, buy/sell", "POST", "/api/dev/volume", { action: "start", mint, wallets: [d3], minSol: "0.005", maxSol: "0.01", minDelaySec: 1, maxDelaySec: 2, rounds: 3, mode: "both", buyRatioPercent: 50, slippageBps: 3000 }).then(async (r) => {
+    if (r.jobId) printJob(await waitJob(r.jobId));
+  });
+  const pos = await api("GET", `/api/positions?wallets=${[dev1, d2, d3, d4, d5].join(",")}`);
+  log("positions:", JSON.stringify(pos).slice(0, 600));
+  await runJob("wash: SPL-transfer dev-5's tokens to a fresh wallet", "POST", "/api/dev/wash", { mint, wallets: [d5] });
+  const fees = await api("GET", `/api/dev/fees/${mint}`);
+  log("creator fees:", JSON.stringify(fees));
+  await runJob("claim creator fees", "POST", "/api/dev/fees/claim", { mint });
+  log("\n== waiting for the auto-dump (150 s after launch) on dev-4…");
+  for (let i = 0; i < 40; i++) {
+    const ad = await api("GET", `/api/dev/autodump?mint=${mint}`);
+    if (ad.firedAt) {
+      log("auto-dump fired:", ad.jobId);
+      printJob(await waitJob(ad.jobId));
+      break;
+    }
+    await sleep(5000);
+  }
+  await runJob("dump 100 % from every wallet", "POST", "/api/dev/dump", { mint, wallets: [dev1, d2, d3, d5], percent: 100, slippageBps: 3000 });
+  log("\nLAUNCH PHASE DONE · mint", mint);
+}

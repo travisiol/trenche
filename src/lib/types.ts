@@ -685,6 +685,8 @@ export type CreatorFeesResponse = {
   ammPendingSol: string | null;
 };
 /** POST /api/dev/fees/claim → { jobId } (job.extra: totalSol, signatures) */
+/** POST /api/dev/wash — SPL-transfer every token of `wallets` (default all vault wallets) to fresh vault wallets */
+export type WashRequest = { mint: string; wallets?: string[]; cuPrice?: number };
 export type FeesClaimRequest = { mint?: string; wallet?: string; wallets?: string[]; cuPrice?: number };
 export type DumpRequest = {
   mint: string;

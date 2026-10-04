@@ -84,7 +84,7 @@ export class TradeLoop {
   /** serializable snapshot (bigints as strings) for runtime.json */
   snapshot(): SavedLoop {
     const { onChange: _o, ...c } = this.cfg;
-    return { cfg: { ...c, minLamports: c.minLamports.toString(), maxLamports: c.maxLamports.toString(), tipLamports: c.tipLamports.toString() }, status: this.status, done: this.done, sent: this.sent, failed: this.failed, error: this.error, startedAt: this.startedAt, endedAt: this.endedAt, steps: this.steps.slice(-100) };
+    return { cfg: { ...c, minLamports: c.minLamports.toString(), maxLamports: c.maxLamports.toString(), tipLamports: c.tipLamports.toString() }, jobId: this.job.id, status: this.status, done: this.done, sent: this.sent, failed: this.failed, error: this.error, startedAt: this.startedAt, endedAt: this.endedAt, steps: this.steps.slice(-100) };
   }
 
   /** rebuild a loop from its snapshot as "stopped, resumable" (or keep its final status when it had ended) */
@@ -104,6 +104,13 @@ export class TradeLoop {
     if (loop.resumable) {
       loop.steps.push({ ok: true, at: Date.now(), note: RESTORE_NOTE });
       loop.endedAt = Date.now();
+    }
+    // keep the pre-restart job (restored from jobs.json) instead of a duplicate
+    const st = store();
+    const old = saved.jobId ? st.jobs.get(saved.jobId) : undefined;
+    if (old) {
+      st.jobs.delete(loop.job.id);
+      loop.job = old;
     }
     loop.job.status = "stopped";
     loop.job.error = loop.resumable ? RESTORE_NOTE : null;
@@ -154,11 +161,11 @@ export class TradeLoop {
       this.stopped = true;
       this.paused = false;
       this.job.stop = true;
-      if (this.status === "pending") {
-        this.status = "stopped";
-        this.endedAt = Date.now();
-        this.emit();
-      }
+      // the run loop notices within 250 ms; report "stopped" right away (no trade starts after this point)
+      this.status = "stopped";
+      this.nextAt = 0;
+      this.endedAt = Date.now();
+      this.emit();
     }
   }
 
@@ -226,6 +233,7 @@ export class TradeLoop {
     }
     this.status = this.error ? "error" : this.stopped ? "stopped" : "done";
     this.endedAt = Date.now();
+    this.running = null;
     this.nextAt = 0;
     this.emit();
     void st;
@@ -234,6 +242,7 @@ export class TradeLoop {
 
 export type SavedLoop = {
   cfg: Omit<LoopConfig, "onChange" | "minLamports" | "maxLamports" | "tipLamports"> & { minLamports: string; maxLamports: string; tipLamports: string };
+  jobId?: string;
   status: LaunchTaskState["status"];
   done: number;
   sent: number;
