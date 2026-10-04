@@ -1,11 +1,15 @@
-/* Auto-dump watcher: module-level setInterval (2 s) per mint. Sells X % of the listed wallets when
+/* Auto-dump / external-volume watchers: module-level setInterval (2 s) per WATCH. A watch is keyed (default: the
+ * mint) so several can run on one mint — the launch's Auto Dump, the dev's Auto Dev Sell, a bundle task's
+ * "Sell all on external", a sniper/buy/volume task's "Stop on activity". Curve reads are shared per mint.
+ * A watch fires when
  *   - market cap ≥ mcUsd, or
  *   - afterSec elapsed since arming, or
- *   - external volume ≥ externalVolumeSol (Block X "sellOnExternal"):
+ *   - external volume ≥ externalVolumeSol (Block X "sellOnExternal" / "Stop on activity"):
  *     external = |Δ realSolReserves| accumulated by this watcher − SOL traded by this app's own wallets
  *     on the mint since arming (from the activity journal). An approximation: trades inside one
  *     2 s window are netted, and third-party volume equal to ours would cancel out.
- * Only armed by an explicit API call or a launch request that carried `autoDump`/`sellOnExternal`. */
+ * action "sell" (default) dumps `percent` of the wallets in a job; action "notify" only calls onFire (used by
+ * tasks to cancel themselves). Only armed by an explicit API call or a launch request. */
 import { PublicKey } from "@solana/web3.js";
 import type { AutoDumpConfig, AutoDumpStatus } from "@/lib/types";
 import { HttpError } from "./api";
@@ -15,9 +19,12 @@ import { registerRuntimeProducer, RESTORE_NOTE, restoreSection, saveRuntimeSoon 
 import { solPrice, solPriceCached } from "./price";
 import { logActivity, store } from "./store";
 
+export type WatchConfig = AutoDumpConfig & { externalVolumeSol?: number; action?: "sell" | "notify"; label?: string };
+
 export type DumpWatch = {
+  key: string;
   mint: string;
-  config: AutoDumpConfig & { externalVolumeSol?: number };
+  config: WatchConfig;
   wallets: string[];
   armedAt: number;
   lastMcUsd: number | null;
@@ -31,28 +38,33 @@ export type DumpWatch = {
   busy: boolean;
   /** restored from runtime.json after a restart: disarmed until POST {action:"resume"} */
   resumable?: boolean;
-  onFire?: (reason: string, jobId: string) => void;
+  onFire?: (reason: string, jobId: string | null) => void;
 };
 
-type SavedWatch = Pick<DumpWatch, "mint" | "config" | "wallets" | "armedAt" | "lastMcUsd" | "firedAt" | "firedReason" | "jobId"> & { armed: boolean };
+type SavedWatch = Pick<DumpWatch, "key" | "mint" | "config" | "wallets" | "armedAt" | "lastMcUsd" | "firedAt" | "firedReason" | "jobId"> & { armed: boolean };
 
 function registry(): Map<string, DumpWatch> {
   const rt = store().runtime;
   if (!rt.autodump) {
     const map = new Map<string, DumpWatch>();
     rt.autodump = map;
-    registerRuntimeProducer("autodumps", () => [...map.values()].map((w): SavedWatch => ({ mint: w.mint, config: w.config, wallets: w.wallets, armedAt: w.armedAt, lastMcUsd: w.lastMcUsd, firedAt: w.firedAt, firedReason: w.firedReason, jobId: w.jobId, armed: w.timer !== null })));
+    registerRuntimeProducer("autodumps", () => [...map.values()].map((w): SavedWatch => ({ key: w.key, mint: w.mint, config: w.config, wallets: w.wallets, armedAt: w.armedAt, lastMcUsd: w.lastMcUsd, firedAt: w.firedAt, firedReason: w.firedReason, jobId: w.jobId, armed: w.timer !== null })));
     for (const sv of restoreSection<SavedWatch[]>("autodumps") ?? []) {
       if (!sv?.mint || !sv.config) continue;
-      map.set(sv.mint, { mint: sv.mint, config: sv.config, wallets: sv.wallets ?? [], armedAt: sv.armedAt, lastMcUsd: sv.lastMcUsd ?? null, lastRealSol: null, curveVolumeSol: 0, externalVolumeSol: 0, firedAt: sv.firedAt ?? null, firedReason: sv.firedReason ?? null, jobId: sv.jobId ?? null, timer: null, busy: false, resumable: sv.armed && !sv.firedAt });
+      const key = sv.key ?? sv.mint;
+      // a "notify" watch belongs to a task callback that no longer exists after a restart: kept for its history only
+      const resumable = sv.armed && !sv.firedAt && sv.config.action !== "notify";
+      map.set(key, { key, mint: sv.mint, config: sv.config, wallets: sv.wallets ?? [], armedAt: sv.armedAt, lastMcUsd: sv.lastMcUsd ?? null, lastRealSol: null, curveVolumeSol: 0, externalVolumeSol: 0, firedAt: sv.firedAt ?? null, firedReason: sv.firedReason ?? null, jobId: sv.jobId ?? null, timer: null, busy: false, resumable });
     }
   }
   return rt.autodump as Map<string, DumpWatch>;
 }
 
-export function autodumpStatus(mint: string): AutoDumpStatus {
-  const w = registry().get(mint);
-  if (!w) return { mint, armed: false, percent: null, mcUsd: null, delaySec: null, firesAt: null, config: null, armedAt: null, lastMcUsd: null, firedAt: null, jobId: null };
+/** status of the watch `key` (a mint for the plain auto-dump, `<mint>#<taskId>` for task watchers) */
+export function autodumpStatus(key: string): AutoDumpStatus {
+  const w = registry().get(key);
+  const mint = w?.mint ?? key.split("#")[0];
+  if (!w) return { mint, armed: false, percent: null, mcUsd: null, delaySec: null, firesAt: null, config: null, armedAt: null, lastMcUsd: null, firedAt: null, jobId: null, externalVolumeSol: null };
   const delaySec = w.config.afterSec ?? null;
   return {
     mint,
@@ -67,11 +79,12 @@ export function autodumpStatus(mint: string): AutoDumpStatus {
     lastMcUsd: w.lastMcUsd,
     firedAt: w.firedAt,
     jobId: w.jobId,
+    externalVolumeSol: w.config.externalVolumeSol ? Math.round(w.externalVolumeSol * 1e6) / 1e6 : null,
   };
 }
 
-export function autodumpGet(mint: string): DumpWatch | undefined {
-  return registry().get(mint);
+export function autodumpGet(key: string): DumpWatch | undefined {
+  return registry().get(key);
 }
 
 /** SOL this app's wallets traded on `mint` since `since` (buys + sells, from the journal) */
@@ -81,17 +94,20 @@ function ownVolumeSince(mint: string, since: number): number {
     .reduce((s, a) => s + (a.data!.solTotal as number), 0);
 }
 
-export function armAutodump(mint: string, config: AutoDumpConfig & { externalVolumeSol?: number }, wallets: string[], onFire?: DumpWatch["onFire"]): AutoDumpStatus {
+/** arm a watch; `key` defaults to the mint (the launch/BRIEF auto-dump). Re-arming a key replaces it. */
+export function armAutodump(mint: string, config: WatchConfig, wallets: string[], onFire?: DumpWatch["onFire"], key: string = mint): AutoDumpStatus {
   const st = store();
   if (config.delaySec && !config.afterSec) config = { ...config, afterSec: config.delaySec };
   if (!config.mcUsd && !config.afterSec && !config.externalVolumeSol) throw new HttpError(400, "Auto-dump needs at least one trigger: mcUsd, delaySec (afterSec) or externalVolumeSol.");
   const percent = Math.max(1, Math.min(100, Math.round(Number(config.percent) || 100)));
-  const ws = vaultWallets(wallets);
-  if (ws.length === 0) throw new HttpError(400, "Auto-dump needs at least one wallet.");
-  disarmAutodump(mint);
+  const action = config.action === "notify" ? "notify" : "sell";
+  const ws = action === "sell" ? vaultWallets(wallets) : wallets.map((address) => ({ address }));
+  if (action === "sell" && ws.length === 0) throw new HttpError(400, "Auto-dump needs at least one wallet.");
+  disarmAutodump(key, true);
   const w: DumpWatch = {
+    key,
     mint,
-    config: { ...config, percent, wallets: ws.map((x) => x.address) },
+    config: { ...config, action, percent, wallets: ws.map((x) => x.address) },
     wallets: ws.map((x) => x.address),
     armedAt: Date.now(),
     lastMcUsd: null,
@@ -106,41 +122,63 @@ export function armAutodump(mint: string, config: AutoDumpConfig & { externalVol
     onFire,
   };
   w.timer = setInterval(() => void tick(w), 2000);
-  registry().set(mint, w);
+  registry().set(key, w);
   saveRuntimeSoon();
-  logActivity(st, { kind: "autodump", ok: true, message: `Auto-dump armed on ${mint.slice(0, 6)}…: ${percent}%${config.mcUsd ? ` at MC ≥ $${config.mcUsd}` : ""}${config.afterSec ? ` after ${config.afterSec}s` : ""}${config.externalVolumeSol ? ` when external volume ≥ ${config.externalVolumeSol} SOL` : ""}`, mint, wallets: w.wallets });
+  const what = config.label ?? (action === "notify" ? "Activity watch" : "Auto-dump");
+  logActivity(st, { kind: "autodump", ok: true, message: `${what} armed on ${mint.slice(0, 6)}…: ${action === "sell" ? `${percent}%` : "notify"}${config.mcUsd ? ` at MC ≥ $${config.mcUsd}` : ""}${config.afterSec ? ` after ${config.afterSec}s` : ""}${config.externalVolumeSol ? ` when external volume ≥ ${config.externalVolumeSol} SOL` : ""}`, mint, wallets: w.wallets });
   void tick(w);
-  return autodumpStatus(mint);
+  return autodumpStatus(key);
 }
 
-export function disarmAutodump(mint: string): AutoDumpStatus {
-  const w = registry().get(mint);
+export function disarmAutodump(key: string, quiet = false): AutoDumpStatus {
+  const w = registry().get(key);
   if (w?.timer) {
     clearInterval(w.timer);
     w.timer = null;
-    logActivity(store(), { kind: "autodump", ok: true, message: `Auto-dump disarmed on ${mint.slice(0, 6)}…`, mint });
+    if (!quiet) logActivity(store(), { kind: "autodump", ok: true, message: `${w.config.label ?? "Auto-dump"} disarmed on ${w.mint.slice(0, 6)}…`, mint: w.mint });
   }
   if (w?.resumable) w.resumable = false;
   saveRuntimeSoon();
-  return autodumpStatus(mint);
+  return autodumpStatus(key);
+}
+
+/** every watch on a mint whose key starts with `<mint>#` (task watchers) — disarmed when the launch stops */
+export function disarmTaskWatches(mint: string): void {
+  for (const w of registry().values()) if (w.mint === mint && w.key !== mint && w.timer) disarmAutodump(w.key, true);
 }
 
 /** re-arm a watcher restored after a restart with its saved config (the delay trigger restarts from now) */
-export function resumeAutodump(mint: string): AutoDumpStatus {
-  const w = registry().get(mint);
+export function resumeAutodump(key: string): AutoDumpStatus {
+  const w = registry().get(key);
   if (!w || !w.resumable) throw new HttpError(409, "Nothing to resume: this auto-dump was not restored from a restart (arm it instead).");
   const { wallets: _w, ...config } = w.config;
-  return armAutodump(mint, config, w.wallets);
+  void _w;
+  return armAutodump(w.mint, config, w.wallets, undefined, key);
 }
 
 export const AUTODUMP_RESTORE_NOTE = RESTORE_NOTE;
+
+/* one curve read per mint per 1.5 s, shared by every watch on that mint */
+type CurveRead = Awaited<ReturnType<typeof fetchCurve>>;
+function curveCache(): Map<string, { at: number; p: Promise<CurveRead> }> {
+  const rt = store().runtime;
+  if (!rt.autodumpCurves) rt.autodumpCurves = new Map();
+  return rt.autodumpCurves as Map<string, { at: number; p: Promise<CurveRead> }>;
+}
+function readCurveShared(mint: string): Promise<CurveRead> {
+  const c = curveCache();
+  const have = c.get(mint);
+  if (have && Date.now() - have.at < 1500) return have.p;
+  const p = fetchCurve(readConn(), new PublicKey(mint)).catch(() => null);
+  c.set(mint, { at: Date.now(), p });
+  return p;
+}
 
 async function tick(w: DumpWatch): Promise<void> {
   if (w.busy || w.timer === null) return;
   w.busy = true;
   try {
-    const conn = readConn();
-    const found = await fetchCurve(conn, new PublicKey(w.mint)).catch(() => null);
+    const found = await readCurveShared(w.mint);
     if (found) {
       const m = curveMetrics(found.curve);
       const usd = solPriceCached() ?? (await solPrice())?.usd ?? null;
@@ -156,6 +194,7 @@ async function tick(w: DumpWatch): Promise<void> {
         return;
       }
     }
+    if (w.timer === null) return;
     const c = w.config;
     let reason: string | null = null;
     if (c.mcUsd && w.lastMcUsd !== null && w.lastMcUsd >= c.mcUsd) reason = `market cap $${Math.round(w.lastMcUsd)} ≥ $${c.mcUsd}`;
@@ -174,14 +213,16 @@ function fire(w: DumpWatch, reason: string): void {
   w.firedReason = reason;
   saveRuntimeSoon();
   const st = store();
-  if (/migrated/.test(reason)) {
-    logActivity(st, { kind: "autodump", ok: false, message: `Auto-dump on ${w.mint.slice(0, 6)}… cancelled: ${reason}`, mint: w.mint });
+  const what = w.config.label ?? (w.config.action === "notify" ? "Activity watch" : "Auto-dump");
+  if (/migrated/.test(reason) || w.config.action === "notify") {
+    logActivity(st, { kind: "autodump", ok: w.config.action === "notify", message: `${what} on ${w.mint.slice(0, 6)}… ${w.config.action === "notify" ? "fired" : "cancelled"}: ${reason}`, mint: w.mint });
+    w.onFire?.(reason, null);
     return;
   }
-  const job = jobNew("autodump", w.wallets.length, `Auto-dump ${w.config.percent}% · ${w.mint.slice(0, 6)}… (${reason})`);
-  job.extra = { mint: w.mint, reason, percent: w.config.percent };
+  const job = jobNew("autodump", w.wallets.length, `${what} ${w.config.percent}% · ${w.mint.slice(0, 6)}… (${reason})`);
+  job.extra = { mint: w.mint, reason, percent: w.config.percent, key: w.key };
   w.jobId = job.id;
-  logActivity(st, { kind: "autodump", ok: true, message: `Auto-dump fired on ${w.mint.slice(0, 6)}…: ${reason}`, mint: w.mint, wallets: w.wallets, jobId: job.id });
+  logActivity(st, { kind: "autodump", ok: true, message: `${what} fired on ${w.mint.slice(0, 6)}…: ${reason}`, mint: w.mint, wallets: w.wallets, jobId: job.id });
   const bundle = !!w.config.bundle;
   jobRun(job, async (j) => {
     await sellWithWallets({ mint: w.mint, wallets: w.wallets, percent: w.config.percent, slippageBps: st.settings.slippageBps, cuPrice: st.settings.cuPrice, tipLamports: bundle ? tipLamportsFor(st.settings.tipSol) : tipLamportsFor(undefined), bundle, job: j, kind: "autodump" });

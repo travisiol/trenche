@@ -40,3 +40,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 public/icons/*.png
+
+# second dev server build dir (TRENCH_DIST_DIR)
+.next-test/

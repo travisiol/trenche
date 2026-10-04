@@ -533,8 +533,10 @@ export type TradeBuyRequest = {
   percentOfBalance?: number;
   slippageBps?: number;
   cuPrice?: number;
-  /** > 0 sends through a Jito bundle with this tip (SOL) */
+  /** tip in SOL (default: the preset's, else Settings.tipSol); added as a Jito tip transfer to every trade tx */
   tipSol?: string;
+  /** send through Jito bundles of 5 txs (default Settings.jitoEnabled; needs a tip > 0) */
+  bundle?: boolean;
   spreadPct?: number;
   delaySec?: number;
 };
@@ -549,6 +551,7 @@ export type TradeSellRequest = {
   slippageBps?: number;
   cuPrice?: number;
   tipSol?: string;
+  bundle?: boolean;
 };
 /** POST /api/trade/buy|sell → the job plus the resolved per-wallet plan (what the job will send) */
 export type TradeCreated = JobCreated & { plan: { address: string; sol?: string; percent?: number }[]; slippageBps: number; tipSol: string; spreadPct: number; delaySec: number };
@@ -967,8 +970,22 @@ export type CreatorFeesResponse = {
   ammPendingSol: string | null;
 };
 /** POST /api/dev/fees/claim → { jobId } (job.extra: totalSol, signatures) */
-/** POST /api/dev/wash — SPL-transfer every token of `wallets` (default all vault wallets) to fresh vault wallets */
-export type WashRequest = { mint: string; wallets?: string[]; cuPrice?: number };
+/** POST /api/dev/wash — Block X wash outside a launch (CTO / any mint): explicit `pairs`, or `wallets` (sources,
+ *  default: every vault wallet holding the token) auto-paired `perSource` × from `autoPairFrom` ("any" | "fresh" |
+ *  group id; default "fresh"); random delay between pairs in seconds. Each source's tokens go to its wash wallets
+ *  in random slices (one tx each). */
+export type WashRequest = {
+  mint: string;
+  wallets?: string[];
+  pairs?: WashPair[];
+  perSource?: 1 | 2 | 3;
+  autoPairFrom?: "any" | "fresh" | string;
+  minDelaySec?: number;
+  maxDelaySec?: number;
+  cuPrice?: number;
+};
+/** POST /api/dev/wash → the job plus the resolved pairs */
+export type WashResponse = JobCreated & { pairs: WashPair[] };
 export type FeesClaimRequest = { mint?: string; wallet?: string; wallets?: string[]; cuPrice?: number };
 export type DumpRequest = {
   mint: string;
@@ -1017,7 +1034,10 @@ export type AutoDumpStatus = {
   /** last market cap USD observed by the watcher */
   lastMcUsd: number | null;
   firedAt: number | null;
+  /** the dump job once fired (null for a "notify" watch: Stop on activity cancels a task, sells nothing) */
   jobId: string | null;
+  /** net external volume seen so far (SOL) when the watch has an external-volume trigger */
+  externalVolumeSol: number | null;
 };
 
 /* --------------------------------------------------------------- trending */
