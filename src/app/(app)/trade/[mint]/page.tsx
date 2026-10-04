@@ -45,9 +45,11 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
   }, [mint, t]);
 
   const progress = t?.complete ? 100 : (c?.progress ?? 0);
-  const mcUsd = c ? (c.marketCapUsd ?? (solUsd ? c.marketCapSol * solUsd : null)) : null;
-  const priceUsd = c && solUsd ? c.priceSol * solUsd : null;
-  const liqSol = c ? Number(c.realSolReserves) / 1e9 : null;
+  // a migrated curve holds no reserves: price / MC / liquidity live on the PumpSwap pool, which this server does not read
+  const onCurve = !!c && !c.complete;
+  const mcUsd = onCurve ? (c.marketCapUsd ?? (solUsd ? c.marketCapSol * solUsd : null)) : null;
+  const priceUsd = onCurve && solUsd ? c.priceSol * solUsd : null;
+  const liqSol = onCurve ? Number(c.realSolReserves) / 1e9 : null;
   const chartCandles = (candles.data?.candles ?? []).map((k) => (mode === "MC" && solUsd ? { ...k, open: k.open * supply * solUsd, high: k.high * supply * solUsd, low: k.low * supply * solUsd, close: k.close * supply * solUsd } : k));
   const r = 23;
   const circ = 2 * Math.PI * r;

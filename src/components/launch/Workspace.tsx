@@ -360,7 +360,8 @@ export function TokenInfoPanel({ form, token, mint, onEdit }: { form: LaunchForm
               </div>
               <div className="flex items-center gap-2">
                 <p className="text-xs text-text-300">Market Cap</p>
-                <p className="text-sm font-semibold leading-none tabular-nums text-text-100">{c ? (c.marketCapUsd !== null ? usd(c.marketCapUsd) : price.data ? usd(c.marketCapSol * price.data.usd) : `${sol(c.marketCapSol)} SOL`) : "—"}</p>
+                {/* a migrated curve holds no reserves: its market cap lives on the PumpSwap pool, which this server does not read */}
+                <p className="text-sm font-semibold leading-none tabular-nums text-text-100" title={c?.complete ? "Migrated to PumpSwap — market cap is not read from the pool" : undefined}>{!c ? "—" : c.complete ? "—" : c.marketCapUsd !== null ? usd(c.marketCapUsd) : price.data ? usd(c.marketCapSol * price.data.usd) : `${sol(c.marketCapSol)} SOL`}</p>
               </div>
             </div>
           </div>
@@ -481,7 +482,7 @@ export function RightRail({ canLaunch, onLaunch, onClaim, claimBusy, launched, l
         <span className="h-6" />
       </div>
       <div className="flex min-h-0 flex-1 flex-col px-2 py-3">
-        <button type="button" onClick={() => (canLaunch ? onLaunch() : launchTitle ? toast(launchTitle, "err") : null)} disabled={launched} className={cx(btn, !canLaunch && !launched ? "opacity-70" : "")} title={launched ? "Already launched" : canLaunch ? "Review and launch" : (launchTitle ?? "Open a draft first")}>
+        <button type="button" onClick={() => (canLaunch ? onLaunch() : launchTitle ? toast(launchTitle, "err") : null)} disabled={launched} className={cx(btn, !canLaunch && !launched ? "opacity-70" : "")} title={launched ? "Already launched" : canLaunch ? (launchLabel === "Launch" ? "Review and launch" : (launchTitle ?? "Run the tasks now")) : (launchTitle ?? "Open a draft first")}>
           <Rocket className="h-3.5 w-3.5 shrink-0 text-text-300 transition-colors group-hover:text-text-100" />
           <span className="max-w-full text-center text-[10px] font-medium leading-tight text-text-200">{launchLabel}</span>
         </button>

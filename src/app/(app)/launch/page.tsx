@@ -123,15 +123,26 @@ function LaunchScreen() {
     openDraft(f, withModal);
   };
 
-  // ?new=1 / ?quick=<presetId> once, after presets are known for quick
+  // ?new=1 / ?quick=<presetId> / ?draft=<id> / ?cto=<id> (search dialog rows) once, after presets / CTOs are known
   useEffect(() => {
     if (bootDone.current) return;
     const quick = params.get("quick");
+    const draftId = params.get("draft");
+    const ctoId = params.get("cto");
     if (quick && !presetsQ.data) return;
+    if (ctoId && !ctos.data) return;
     const t = setTimeout(() => {
       bootDone.current = true;
       if (params.get("new")) newLaunch(true);
-      else if (quick) {
+      else if (draftId) {
+        const d = drafts.find((x) => x.id === draftId);
+        if (d) openDraft(d.parsed, false);
+        else toast("Draft not found", "err");
+      } else if (ctoId) {
+        const c = ctos.data?.ctos.find((x) => x.id === ctoId);
+        if (c) openCto(c);
+        else toast("CTO not found", "err");
+      } else if (quick) {
         const p = presetsQ.data?.presets.find((x) => x.id === quick);
         if (!p) return toast("Preset not found — save one from the Tasks panel first", "err");
         const f = fromPresetSnapshot(p.data, newForm(active));
@@ -142,7 +153,7 @@ function LaunchScreen() {
     }, 0);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- boot only
-  }, [params, presetsQ.data]);
+  }, [params, presetsQ.data, ctos.data]);
 
   // autosave the draft while typing (debounced); ✕ / Escape / Save flush it immediately
   const onFormChange = (f: LaunchForm) => {
