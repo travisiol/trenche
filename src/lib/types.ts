@@ -1171,6 +1171,49 @@ export type DashboardResponse = {
   solPrice: number | null;
 };
 
+/* -------------------------------------------------------------- share PnL */
+
+export type PnlSharePeriod = "1d" | "7d" | "30d" | "all";
+/** GET /api/pnl/share?period=1d|7d|30d|all — the figures of the "Share PnL" card (PNG / WebM drawn in the browser).
+ *  Every number comes from this app's activity journal (buy/sell entries: `data.side`, `data.solTotal`, and
+ *  `data.solUsd` = SOL price at trade time, journaled since this endpoint exists) + the current positions. */
+export type PnlShareResponse = {
+  period: PnlSharePeriod;
+  /** epoch ms of the window (`from` = the first journaled trade for "all", or `to` when the journal is empty) */
+  from: number;
+  to: number;
+  /** sells − buys over the window (SOL, decimal string) */
+  realisedSol: string;
+  /** Σ sell SOL × price − Σ buy SOL × price, price at trade time when the entry has it, else the current SOL price;
+   *  null when no price is known at all */
+  realisedUsd: string | null;
+  /** true when at least one trade in the window was valued at the CURRENT SOL price (its entry carries no price) */
+  usdAtCurrentPrice: boolean;
+  /** open positions' PnL (value − cost + realised) of every vault wallet on launched + tracked mints;
+   *  null when the positions could not be read (locked vault, RPC) */
+  unrealisedSol: string | null;
+  unrealisedUsd: string | null;
+  /** journaled buy/sell entries in the window (a multi-wallet buy is ONE entry) */
+  trades: number;
+  /** mints whose realised SOL over the window is > 0 / < 0 */
+  wins: number;
+  losses: number;
+  /** best per-mint realised SOL over the window, null without any trade */
+  bestTradeSol: string | null;
+  bestTradeMint: string | null;
+  bestTradeSymbol: string | null;
+  /** buys + sells (SOL) */
+  volumeSol: string;
+  buysSol: string;
+  sellsSol: string;
+  /** confirmed launches in the window */
+  launches: number;
+  /** active (non-archived) vault wallets */
+  wallets: number;
+  /** current SOL/USD, null when unknown */
+  solPrice: number | null;
+};
+
 /* -------------------------------------------------------------- positions */
 
 /** one row per (wallet, mint) holding or with trade history */

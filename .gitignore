@@ -46,4 +46,5 @@ public/icons/*.png
 .next-qa/
 .next-qa-build/
 .next-claim/
+.next-share/
 .next-rpc/

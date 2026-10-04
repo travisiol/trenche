@@ -13,6 +13,7 @@ import { toast } from "@/components/ui";
 import { cx } from "@/components/bx/ui";
 import { BxJob } from "@/components/bx/Job";
 import { PnlCalendar, dailyPnl } from "@/components/bx/PnlCalendar";
+import { SharePnlButton } from "@/components/bx/SharePnl";
 import { AirdropModal, CreateModal, ExportModal, ImportModal, MoveModal, SendModal, type ModalKind } from "@/components/portfolio/BxModals";
 import { DepositDrawer, DisperseDrawer, ReverseDisperseDrawer, type DrawerKind } from "@/components/portfolio/Drawers";
 import { DRAG_MIME, TransferView, type TransferKind } from "@/components/portfolio/TransferView";
@@ -411,11 +412,14 @@ export default function PortfolioPage() {
                   ))}
                 </div>
               </div>
-              <button type="button" onClick={() => { setCalendar((c) => !c); setTransfer(null); }} className={cx("flex shrink-0 items-center gap-1 text-xs hover:text-text-100", calendar ? "text-accent" : "text-text-300")}>
-                <Calendar className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">PNL Calendar</span>
-                <span className="sm:hidden">PNL</span>
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button type="button" onClick={() => { setCalendar((c) => !c); setTransfer(null); }} className={cx("flex shrink-0 items-center gap-1 text-xs hover:text-text-100", calendar ? "text-accent" : "text-text-300")}>
+                  <Calendar className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">PNL Calendar</span>
+                  <span className="sm:hidden">PNL</span>
+                </button>
+                <SharePnlButton period={win} label className="h-6 text-xs" />
+              </div>
             </div>
             {transfer ? (
               <TransferView key={transfer} kind={transfer} wallets={live} balances={bal} onClose={() => setTransfer(null)} onDone={() => jobs.refresh()} />

@@ -7,6 +7,7 @@ import { Activity, BookOpen, ChartLine, Gift, Rocket } from "lucide-react";
 import { BxCard, BxSeg, PadAvatar, cx } from "@/components/bx/ui";
 import { DOCS_URL } from "@/components/bx/Shell";
 import { PnlCalendar, dailyPnl } from "@/components/bx/PnlCalendar";
+import { SharePnlButton } from "@/components/bx/SharePnl";
 import { useDrafts } from "@/components/launch/drafts";
 import { TaskRowCompact } from "@/components/dev/TaskRowCompact";
 import { failureMessage, useGet } from "@/lib/api";
@@ -163,6 +164,7 @@ export default function DashboardPage() {
                     <div className="flex items-center gap-1">
                       <UnitToggle unit={unit} onChange={setUnit} />
                       <BxSeg value={win} onChange={setWin} options={(["1D", "7D", "30D", "All"] as Win[]).map((w) => ({ value: w, label: w }))} />
+                      <SharePnlButton period={win} label />
                     </div>
                   </div>
                   <div className="shrink-0 border-b border-line-50 px-6 pb-4 pt-1">

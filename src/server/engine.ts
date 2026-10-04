@@ -17,6 +17,7 @@ import { HttpError, lamportsOf, solString } from "./api";
 import { jobPush, jobNote } from "./jobs";
 import { syncPumpCluster } from "./pumpcluster";
 import { invalidateRpcCache } from "./rpcqueue";
+import { solPriceCached } from "./price";
 import { isDevnet, logActivity, store, track, type Job } from "./store";
 
 export { solString };
@@ -313,7 +314,7 @@ export async function buyWithWallets(opts: TradeOpts & { lamportsEach: bigint | 
     wallets: out.map((o) => o.address),
     signature: out.find((o) => o.ok)?.signature ?? undefined,
     jobId: opts.job?.id,
-    data: { side: "buy", solTotal: okSol, outcomes: out },
+    data: { side: "buy", solTotal: okSol, solUsd: solPriceCached(), outcomes: out },
   });
   return out;
 }
@@ -382,7 +383,7 @@ export async function sellWithWallets(opts: TradeOpts & { percent: number }): Pr
     wallets: out.map((o) => o.address),
     signature: out.find((o) => o.ok)?.signature ?? undefined,
     jobId: opts.job?.id,
-    data: { side: "sell", solTotal: okSol, percent: opts.percent, outcomes: out },
+    data: { side: "sell", solTotal: okSol, solUsd: solPriceCached(), percent: opts.percent, outcomes: out },
   });
   return out;
 }
