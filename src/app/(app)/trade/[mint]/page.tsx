@@ -125,8 +125,8 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
       <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
         <div className="no-scrollbar flex items-center gap-4 overflow-x-auto">
           {[
-            ["MC", mcUsd !== null ? usd(mcUsd) : c ? `${sol(c.marketCapSol)} SOL` : "—", "text-base font-semibold text-text-100"],
-            ["Price", priceUsd !== null ? `$${priceUsd < 0.001 ? priceUsd.toExponential(2) : priceUsd.toFixed(6)}` : c ? `${c.priceSol.toExponential(2)} SOL` : "—", "text-sm font-medium leading-[18px] text-text-200"],
+            ["MC", mcUsd !== null ? usd(mcUsd) : onCurve ? `${sol(c.marketCapSol)} SOL` : "—", "text-base font-semibold text-text-100"],
+            ["Price", priceUsd !== null ? `${priceUsd < 0.001 ? priceUsd.toExponential(2) : priceUsd.toFixed(6)}` : onCurve ? `${c.priceSol.toExponential(2)} SOL` : "—", "text-sm font-medium leading-[18px] text-text-200"],
             ["Liq", liqSol !== null ? (solUsd ? usd(liqSol * solUsd) : `${sol(liqSol)} SOL`) : "—", "text-sm font-medium leading-[18px] text-yellow-100"],
             ["Bonded", t?.complete ? "Migrated" : c ? `${c.progress.toFixed(1)}%` : "—", "text-sm font-medium leading-[18px] text-text-200"],
           ].map(([k, v, cls]) => (
