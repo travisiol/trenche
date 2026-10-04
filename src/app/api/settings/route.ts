@@ -1,17 +1,25 @@
 import { intIn, json, lamportsOf, readBody, route, solString } from "@/server/api";
 import { publicSettings, saveSettings, store } from "@/server/store";
+import { syncPumpCluster } from "@/server/pumpcluster";
 import { normalizeSolanaRpc, isHeliusSender } from "@/engine/solana/config.js";
 import type { SettingsUpdateRequest } from "@/lib/types";
 import { HttpError } from "@/server/api";
 
 export const dynamic = "force-dynamic";
 
-export const GET = route(async () => json(publicSettings(store().settings)));
+export const GET = route(async () => {
+  await syncPumpCluster().catch(() => null);
+  return json(publicSettings(store().settings));
+});
 
 export const POST = route(async (req: Request) => {
   const body = await readBody<SettingsUpdateRequest>(req);
   const st = store();
   const s = st.settings;
+  if (body.cluster !== undefined) {
+    if (body.cluster !== "mainnet" && body.cluster !== "devnet") throw new HttpError(400, "cluster must be \"mainnet\" or \"devnet\".");
+    s.cluster = body.cluster;
+  }
   if (body.rpcUrl !== undefined) {
     const u = normalizeSolanaRpc(String(body.rpcUrl));
     if (u && isHeliusSender(u)) throw new HttpError(400, "The read RPC cannot be a Sender endpoint (…/fast): put it in the send RPC field.");

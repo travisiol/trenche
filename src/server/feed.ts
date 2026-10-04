@@ -566,10 +566,20 @@ async function refreshPrice(): Promise<void> {
 
 /* ------------------------------------------------------------------ public */
 
+/** TRENCH_FEED=off: never open the PumpPortal websocket nor poll (a second connection from the same IP
+ *  gets banned for ~1 h — use it on a test server running next to the main one) */
+export const feedDisabled = (): boolean => /^(off|0|false|no)$/i.test(process.env.TRENCH_FEED ?? "");
+
 export function feedStart(): void {
   const f = feed();
   if (f.started) return;
   f.started = true;
+  if (feedDisabled()) {
+    f.error = "feed disabled (TRENCH_FEED=off)";
+    f.priceTimer = setInterval(() => void feed().impl.refreshPrice(), 30_000);
+    void refreshPrice();
+    return;
+  }
   connect();
   const tick = () => {
     const ff = feed();

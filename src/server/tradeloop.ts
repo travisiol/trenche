@@ -6,6 +6,7 @@ import { TASK_LIMITS } from "@/lib/types";
 import { lamportsOf, sleep, solString } from "./api";
 import { buyWithWallets, sellWithWallets, tipLamportsFor, type TradeOutcome } from "./engine";
 import { jobNew, jobPush, jobRun, jobWait } from "./jobs";
+import { registerRuntimeProducer, RESTORE_NOTE, restoreSection, saveRuntimeSoon } from "./persist";
 import { store, type Job } from "./store";
 
 export type LoopConfig = {
@@ -44,6 +45,8 @@ export class TradeLoop {
   startedAt: number | null = null;
   endedAt: number | null = null;
   steps: JobStep[] = [];
+  /** true when restored from runtime.json after a restart: status "stopped", start() continues the trade count */
+  resumable = false;
   private paused = false;
   private stopped = false;
   private running: Promise<void> | null = null;
@@ -69,17 +72,66 @@ export class TradeLoop {
       startedAt: this.startedAt,
       endedAt: this.endedAt,
       steps: this.steps.slice(-50),
+      resumable: this.resumable || undefined,
     };
   }
 
   private emit(): void {
     this.cfg.onChange?.(this.state());
+    saveRuntimeSoon();
+  }
+
+  /** serializable snapshot (bigints as strings) for runtime.json */
+  snapshot(): SavedLoop {
+    const { onChange: _o, ...c } = this.cfg;
+    return { cfg: { ...c, minLamports: c.minLamports.toString(), maxLamports: c.maxLamports.toString(), tipLamports: c.tipLamports.toString() }, jobId: this.job.id, status: this.status, done: this.done, sent: this.sent, failed: this.failed, error: this.error, startedAt: this.startedAt, endedAt: this.endedAt, steps: this.steps.slice(-100) };
+  }
+
+  /** rebuild a loop from its snapshot as "stopped, resumable" (or keep its final status when it had ended) */
+  static restore(saved: SavedLoop, onChange?: LoopConfig["onChange"]): TradeLoop {
+    const c = saved.cfg;
+    const loop = new TradeLoop({ ...c, minLamports: BigInt(c.minLamports), maxLamports: BigInt(c.maxLamports), tipLamports: BigInt(c.tipLamports), onChange });
+    loop.done = saved.done;
+    loop.sent = saved.sent;
+    loop.failed = saved.failed;
+    loop.steps = saved.steps ?? [];
+    loop.startedAt = saved.startedAt;
+    loop.endedAt = saved.endedAt;
+    loop.error = saved.error;
+    const ended = saved.status === "done" || saved.status === "error" || saved.status === "stopped";
+    loop.status = ended ? saved.status : "stopped";
+    loop.resumable = !ended && loop.done < c.totalTrades;
+    if (loop.resumable) {
+      loop.steps.push({ ok: true, at: Date.now(), note: RESTORE_NOTE });
+      loop.endedAt = Date.now();
+    }
+    // keep the pre-restart job (restored from jobs.json) instead of a duplicate
+    const st = store();
+    const old = saved.jobId ? st.jobs.get(saved.jobId) : undefined;
+    if (old) {
+      st.jobs.delete(loop.job.id);
+      loop.job = old;
+    }
+    loop.job.status = "stopped";
+    loop.job.error = loop.resumable ? RESTORE_NOTE : null;
+    loop.job.endedAt = Date.now();
+    loop.job.completed = loop.done;
+    loop.job.sent = loop.sent;
+    loop.job.failed = loop.failed;
+    return loop;
   }
 
   start(): void {
     if (this.running) return;
+    this.resumable = false;
+    this.stopped = false;
+    this.job.status = "running";
+    this.job.error = null;
+    this.job.endedAt = null;
+    this.job.stop = false;
     this.status = "running";
-    this.startedAt = Date.now();
+    this.startedAt = this.startedAt ?? Date.now();
+    this.endedAt = null;
     this.emit();
     this.running = this.run();
     jobRun(this.job, async () => {
@@ -109,11 +161,11 @@ export class TradeLoop {
       this.stopped = true;
       this.paused = false;
       this.job.stop = true;
-      if (this.status === "pending") {
-        this.status = "stopped";
-        this.endedAt = Date.now();
-        this.emit();
-      }
+      // the run loop notices within 250 ms; report "stopped" right away (no trade starts after this point)
+      this.status = "stopped";
+      this.nextAt = 0;
+      this.endedAt = Date.now();
+      this.emit();
     }
   }
 
@@ -181,16 +233,44 @@ export class TradeLoop {
     }
     this.status = this.error ? "error" : this.stopped ? "stopped" : "done";
     this.endedAt = Date.now();
+    this.running = null;
     this.nextAt = 0;
     this.emit();
     void st;
   }
 }
 
+export type SavedLoop = {
+  cfg: Omit<LoopConfig, "onChange" | "minLamports" | "maxLamports" | "tipLamports"> & { minLamports: string; maxLamports: string; tipLamports: string };
+  jobId?: string;
+  status: LaunchTaskState["status"];
+  done: number;
+  sent: number;
+  failed: number;
+  error: string | null;
+  startedAt: number | null;
+  endedAt: number | null;
+  steps: JobStep[];
+};
+
 type Registry = Map<string, TradeLoop>;
+/** every loop (launch tasks + standalone volume bots). Standalone `vol:` loops are persisted here; launch loops
+ *  are persisted with their launch (launch.ts) */
 export function loops(): Registry {
   const rt = store().runtime;
-  if (!rt.loops) rt.loops = new Map<string, TradeLoop>();
+  if (!rt.loops) {
+    const map = new Map<string, TradeLoop>();
+    rt.loops = map;
+    registerRuntimeProducer("volumeLoops", () => [...map.values()].filter((l) => l.cfg.id.startsWith("vol:")).map((l) => l.snapshot()));
+    for (const saved of restoreSection<SavedLoop[]>("volumeLoops") ?? []) {
+      try {
+        const loop = TradeLoop.restore(saved);
+        map.set(loop.cfg.id, loop);
+      } catch {
+        /* unreadable entry */
+      }
+    }
+  }
   return rt.loops as Registry;
 }
 

@@ -15,7 +15,8 @@ import { buildBuyTx, buildSellTx, planBuys, planSells, signWith, type BuyRow, ty
 import type { CurveState, JobStep } from "@/lib/types";
 import { HttpError, lamportsOf, solString } from "./api";
 import { jobPush, jobNote } from "./jobs";
-import { logActivity, store, track, type Job } from "./store";
+import { syncPumpCluster } from "./pumpcluster";
+import { isDevnet, logActivity, store, track, type Job } from "./store";
 
 export { solString };
 
@@ -102,6 +103,7 @@ export function groupWallets(groupId: string): string[] {
 
 /** explicit tip wins; else the Helius sender needs its 5000-lamport tip; else none */
 export function tipLamportsFor(tipSol: unknown): bigint {
+  if (isDevnet()) return BigInt(0); // no Jito, no Helius Sender on devnet: a tip would just burn SOL
   if (tipSol !== undefined && tipSol !== null && tipSol !== "") {
     const l = lamportsOf(tipSol, "tipSol", true);
     if (l > BigInt(0)) return l;
@@ -206,6 +208,8 @@ async function dispatch(
 /** buy `lamportsEach` of SOL on `mint` from every wallet. Fails cleanly (readable error) on empty wallets. */
 export async function buyWithWallets(opts: TradeOpts & { lamportsEach: bigint | ((address: string) => bigint) }): Promise<TradeOutcome[]> {
   requireUnlocked();
+  await syncPumpCluster();
+  opts = devnetPlain(opts);
   const st = store();
   const conn = readConn();
   const mintPk = new PublicKey(opts.mint);
@@ -256,6 +260,8 @@ export async function buyWithWallets(opts: TradeOpts & { lamportsEach: bigint | 
 /** sell `percent` of each wallet's balance. */
 export async function sellWithWallets(opts: TradeOpts & { percent: number }): Promise<TradeOutcome[]> {
   requireUnlocked();
+  await syncPumpCluster();
+  opts = devnetPlain(opts);
   const st = store();
   const conn = readConn();
   const mintPk = new PublicKey(opts.mint);
@@ -307,6 +313,13 @@ export async function sellWithWallets(opts: TradeOpts & { percent: number }): Pr
     data: { side: "sell", solTotal: okSol, percent: opts.percent, outcomes: out },
   });
   return out;
+}
+
+/** devnet has no Jito block engine: bundles become plain sequential sends and the job says so */
+export function devnetPlain<T extends TradeOpts>(opts: T): T {
+  if (!isDevnet() || (!opts.bundle && opts.tipLamports === BigInt(0))) return opts;
+  jobNote(opts.job, "Devnet: Jito is mainnet-only — sent as sequential transactions without tip (no atomic bundle).", { phase: "cluster" });
+  return { ...opts, bundle: false, tipLamports: BigInt(0) };
 }
 
 export const stepOf = (o: TradeOutcome): JobStep => ({ ok: o.ok, at: Date.now(), address: o.address, label: o.label, sol: o.sol, signature: o.signature, error: o.error ?? undefined });

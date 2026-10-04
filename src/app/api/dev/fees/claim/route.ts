@@ -5,6 +5,7 @@ import { HttpError, intIn, json, readBody, requireAddress, requireAddresses, rou
 import { fetchCurve, labelOf, readConn, requireUnlocked, sendConn, tipLamportsFor } from "@/server/engine";
 import { jobNew, jobPush, jobRun } from "@/server/jobs";
 import { logActivity, store } from "@/server/store";
+import { syncPumpCluster } from "@/server/pumpcluster";
 import type { FeesClaimRequest, JobCreated } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -13,6 +14,7 @@ export const dynamic = "force-dynamic";
  *  job.extra = { totalSol, signatures, claimed } once done. */
 export const POST = route(async (req: Request) => {
   requireUnlocked();
+  await syncPumpCluster();
   const body = await readBody<FeesClaimRequest>(req);
   const st = store();
   const conn = readConn();

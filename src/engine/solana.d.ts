@@ -180,6 +180,12 @@ declare module "@/engine/solana/pump/pdas.js" {
   export const TOKEN_TOTAL_SUPPLY: bigint;
   export const TOTAL_FEE_BPS: bigint;
   export const PUMP_PROGRAM_ID: PublicKey;
+  /** mutable: buy/sell account 1 (`fee_recipient`, read from Global.fee_recipient + fee_recipients) */
+  export const PUMP_BUYBACK_FEE_RECIPIENTS: string[];
+  /** mutable: buy/sell account 17 (second recipient list, Global offset 741) */
+  export const PUMP_FEE_RECIPIENTS: string[];
+  export function globalPda(): PublicKey;
+  export function mintAuthorityPda(): PublicKey;
   export function bondingCurvePda(mint: PublicKey): PublicKey;
   export function creatorVaultPda(creator: PublicKey): PublicKey;
   export function associatedTokenAddress(owner: PublicKey, mint: PublicKey, tokenProgram: PublicKey): PublicKey;

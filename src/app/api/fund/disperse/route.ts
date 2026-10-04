@@ -13,6 +13,7 @@ export const POST = route(async (req: Request) => {
     lamportsOf(body.maxSol ?? body.minSol, "maxSol"),
     intIn(body.minDelay, 0, 600_000, 0, "minDelay"),
     intIn(body.maxDelay, 0, 600_000, 0, "maxDelay"),
+    !!body.viaRelay,
   );
   const res: JobCreated = { jobId: job.id };
   return json(res);
