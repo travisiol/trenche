@@ -29,13 +29,29 @@ function cache(): Cache {
 
 export const IMAGE_CDN = (mint: string) => `https://axiomtrading-v2.axiom-cdn.io/${mint}.webp`;
 
-const GATEWAYS = ["https://ipfs.io/ipfs/", "https://pump.mypinata.cloud/ipfs/", "https://cloudflare-ipfs.com/ipfs/"];
+/** Path gateways that still serve pump.fun metadata (checked 2026-10): pump's own pinata (fast for pump-pinned content),
+ *  4everland (301 to its subdomain gateway, followed by fetch and by <img>), the public pinata gateway (slow, 4–6 s).
+ *  ipfs.io / dweb.link / w3s.link / nftstorage.link answer 429 "switching to a service worker gateway" and
+ *  cloudflare-ipfs.com is gone — ipfs.io is kept as the last resort only. */
+const GATEWAYS = ["https://pump.mypinata.cloud/ipfs/", "https://4everland.io/ipfs/", "https://gateway.pinata.cloud/ipfs/", "https://ipfs.io/ipfs/"];
+/** gateway written into image URLs handed to the browser */
+const IMAGE_GATEWAY = "https://4everland.io/ipfs/";
+const DEAD_IMAGE_HOSTS = new Set(["ipfs.io", "gateway.ipfs.io", "cloudflare-ipfs.com", "dweb.link", "w3s.link", "nftstorage.link"]);
+
+/** image URLs on a retired or rate-limited gateway (and ipfs:// URIs) are re-pointed at IMAGE_GATEWAY; others are kept */
+export function imageUrl(url: string | null): string | null {
+  if (!url) return null;
+  const http = ipfsToHttp(url);
+  const m = http.match(/^https?:\/\/([^/]+)\/ipfs\/([A-Za-z0-9._-]+(?:\/[^?#]*)?)/);
+  if (!m || !DEAD_IMAGE_HOSTS.has(m[1].toLowerCase())) return http;
+  return IMAGE_GATEWAY + m[2];
+}
 
 /** fetch the uri JSON; tries other IPFS gateways when the first one fails */
 export async function fetchUriJson(uri: string, timeoutMs = 7000): Promise<Record<string, unknown> | null> {
   const http = ipfsToHttp(uri);
   const m = http.match(/\/ipfs\/([A-Za-z0-9._-]+)\/?$/);
-  const candidates = m ? [http, ...GATEWAYS.map((g) => g + m[1]).filter((u) => u !== http)] : [http];
+  const candidates = m ? [...GATEWAYS.map((g) => g + m[1]), http].filter((u, i, a) => a.indexOf(u) === i) : [http];
   for (const url of candidates) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers: { accept: "application/json" } });
@@ -90,7 +106,7 @@ export function resolveMeta(
         meta.fetched = true;
         meta.name = meta.name ?? str(j.name);
         meta.symbol = meta.symbol ?? str(j.symbol);
-        meta.image = str(j.image) ? ipfsToHttp(str(j.image)!) : null;
+        meta.image = imageUrl(str(j.image));
         meta.description = str(j.description);
         meta.twitter = str(j.twitter);
         meta.telegram = str(j.telegram);
