@@ -5,7 +5,7 @@ import { parseSolanaKey } from "@/engine/solana/keys.js";
 import { generateSolanaWallets, parseSolanaWalletLines } from "@/engine/solana/state.js";
 import type { VaultStatus, WalletGroup, WalletInfo, WalletsResponse } from "@/lib/types";
 import { HttpError, solString } from "./api";
-import { requireUnlocked } from "./engine";
+import { getAccountsChunked, requireUnlocked } from "./engine";
 import { logActivity, saveWalletMeta, store, type KeystoreEntry } from "./store";
 
 export function vaultStatus(): VaultStatus {
@@ -230,14 +230,10 @@ export async function balances(force = false): Promise<Record<string, string | n
   if (!force && st.balances && Date.now() - st.balances.at < 5000 && addrs.every((a) => a in st.balances!.map)) return st.balances.map;
   const map: Record<string, string | null> = {};
   try {
-    const conn = st.sol.connection();
-    for (let i = 0; i < addrs.length; i += 100) {
-      const chunk = addrs.slice(i, i + 100);
-      const infos = await conn.getMultipleAccountsInfo(chunk.map((a) => new PublicKey(a)), "confirmed");
-      chunk.forEach((a, k) => {
-        map[a] = solString(BigInt(infos[k]?.lamports ?? 0));
-      });
-    }
+    const infos = await getAccountsChunked(st.sol.connection(), addrs.map((a) => new PublicKey(a)));
+    addrs.forEach((a, k) => {
+      map[a] = solString(BigInt(infos[k]?.lamports ?? 0));
+    });
   } catch {
     for (const a of addrs) map[a] = st.balances?.map[a] ?? null;
   }

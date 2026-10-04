@@ -1,11 +1,11 @@
 /* Typed wrappers over the untyped donchain engine. Amounts are lamports/BigInt here. */
 import { PublicKey, type Connection, type VersionedTransaction } from "@solana/web3.js";
 import { isHeliusSender, SENDER_TIP_LAMPORTS } from "@/engine/solana/config.js";
-import { readSolanaBalances } from "@/engine/solana/rpc.js";
 import { latestBlockhash, sendBundleAndConfirm, sendMany, type SendResult } from "@/engine/solana/send.js";
 import {
   INITIAL_REAL_TOKENS,
   TOKEN_2022_PROGRAM,
+  associatedTokenAddress,
   bondingCurvePda,
   parseBondingCurve,
   tokenProgramFor,
@@ -26,6 +26,55 @@ export function requireUnlocked(): void {
 
 export const readConn = (): Connection => store().sol.connection();
 export const sendConn = (): Connection => store().sol.sendConnection();
+
+/** publicnode (the free default) blocks getMultipleAccounts above 10 keys ("Request blocked", probed
+ *  2026-10-04: 10 ok, 12+ blocked; bursts of 8 parallel calls fine). Private RPCs take 100. */
+export function rpcChunk(): number {
+  return /publicnode/i.test(store().sol.config.rpcUrl) ? 10 : 100;
+}
+export const isPublicRpc = (): boolean => rpcChunk() === 10;
+
+/** getMultipleAccountsInfo in RPC-sized chunks, up to 6 in flight; throws on the first failed chunk */
+export async function getAccountsChunked(conn: Connection, keys: PublicKey[]): Promise<(import("@solana/web3.js").AccountInfo<Buffer> | null)[]> {
+  const size = rpcChunk();
+  const chunks: PublicKey[][] = [];
+  for (let i = 0; i < keys.length; i += size) chunks.push(keys.slice(i, i + size));
+  const out = new Array<import("@solana/web3.js").AccountInfo<Buffer> | null>(keys.length).fill(null);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(6, chunks.length) }, async () => {
+      while (next < chunks.length) {
+        const k = next++;
+        const res = await conn.getMultipleAccountsInfo(chunks[k], "confirmed");
+        res.forEach((r, i) => {
+          out[k * size + i] = r;
+        });
+      }
+    }),
+  );
+  return out;
+}
+
+/** SOL + token balance of each owner on `mint` (chunked replacement of the engine's readSolanaBalances) */
+export async function readBalancesChunked(conn: Connection, owners: string[], mint: string, tokenProgram: PublicKey): Promise<{ owner: string; sol: bigint; tokens: bigint | null }[]> {
+  if (owners.length === 0) return [];
+  const mintPk = new PublicKey(mint);
+  const ownerPks = owners.map((o) => new PublicKey(o));
+  const atas = ownerPks.map((o) => associatedTokenAddress(o, mintPk, tokenProgram));
+  const infos = await getAccountsChunked(conn, [...ownerPks, ...atas]);
+  return owners.map((owner, i) => {
+    const ata = infos[owners.length + i];
+    let tokens: bigint | null = BigInt(0);
+    if (ata?.data) {
+      try {
+        tokens = Buffer.from(ata.data).readBigUInt64LE(64);
+      } catch {
+        tokens = null;
+      }
+    }
+    return { owner, sol: BigInt(infos[i]?.lamports ?? 0), tokens };
+  });
+}
 
 export function labelOf(address: string): string {
   const st = store();
@@ -167,7 +216,7 @@ export async function buyWithWallets(opts: TradeOpts & { lamportsEach: bigint | 
   const wallets = vaultWallets(opts.wallets);
   const amountOf = (a: string) => (typeof opts.lamportsEach === "function" ? opts.lamportsEach(a) : opts.lamportsEach);
   // balance guard: a readable error instead of a failed broadcast
-  const infos = await conn.getMultipleAccountsInfo(wallets.map((w) => new PublicKey(w.address)), "confirmed").catch(() => null);
+  const infos = await getAccountsChunked(conn, wallets.map((w) => new PublicKey(w.address))).catch(() => null);
   const FEE_MARGIN = BigInt(3_000_000); // ATA rent + fees + priority
   const poor: string[] = [];
   wallets.forEach((w, i) => {
@@ -216,7 +265,7 @@ export async function sellWithWallets(opts: TradeOpts & { percent: number }): Pr
   if (curve.complete) throw new HttpError(409, "Token graduated to PumpSwap: selling on the curve is not possible here.");
   const wallets = vaultWallets(opts.wallets);
   const tokenProgram = await tokenProgramOf(conn, mintPk);
-  const balances = await readSolanaBalances(conn, wallets.map((w) => w.address), opts.mint, tokenProgram);
+  const balances = await readBalancesChunked(conn, wallets.map((w) => w.address), opts.mint, tokenProgram);
   const byOwner = new Map(balances.map((b) => [b.owner, b]));
   const unreadable: string[] = [];
   const rows: SellRow[] = [];

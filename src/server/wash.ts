@@ -2,11 +2,10 @@
  * The source wallet pays the fresh wallet's ATA rent + fee; the fresh wallet needs no SOL.
  * Fresh wallets are generated into the vault (label `wash-<n>`, group "wash"). */
 import { ComputeBudgetProgram, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
-import { readSolanaBalances } from "@/engine/solana/rpc.js";
 import { latestBlockhash, sendAndConfirm } from "@/engine/solana/send.js";
 import { ATA_PROGRAM, associatedTokenAddress } from "@/engine/solana/pump/pdas.js";
 import type { JobStep } from "@/lib/types";
-import { readConn, requireUnlocked, sendConn, tokenProgramOf, vaultWallets } from "./engine";
+import { readBalancesChunked, readConn, requireUnlocked, sendConn, tokenProgramOf, vaultWallets } from "./engine";
 import { logActivity, saveWalletMeta, store } from "./store";
 import { createGroup, generateWallets } from "./wallets";
 
@@ -50,7 +49,7 @@ export async function washTokens(mint: string, wallets: string[], onStep?: (s: J
   const mintPk = new PublicKey(mint);
   const sources = vaultWallets(wallets);
   const tokenProgram = await tokenProgramOf(conn, mintPk);
-  const balances = await readSolanaBalances(conn, sources.map((w) => w.address), mint, tokenProgram);
+  const balances = await readBalancesChunked(conn, sources.map((w) => w.address), mint, tokenProgram);
   const holders = balances.filter((b) => b.tokens !== null && b.tokens > BigInt(0));
   const out: WashResult[] = [];
   if (holders.length === 0) return out;

@@ -3,7 +3,7 @@ import { PublicKey } from "@solana/web3.js";
 import { readPositions } from "@/engine/solana/pump/positions.js";
 import type { Position } from "@/lib/types";
 import { solString } from "./api";
-import { labelOf, readConn, vaultWallets } from "./engine";
+import { isPublicRpc, labelOf, readConn, vaultWallets } from "./engine";
 import { metaCached, resolveMeta } from "./metadata";
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
@@ -25,9 +25,17 @@ export async function positions(wallets: string[], mints: string[]): Promise<Pos
   const ws = vaultWallets(wallets).map((w) => ({ label: w.label, owner: new PublicKey(w.address) }));
   const conn = readConn();
   const rows = await mapLimit(mints.slice(0, 40), 2, async (mint): Promise<Position | null> => {
-    let r;
+    let r: Awaited<ReturnType<typeof readPositions>>;
     try {
-      r = await readPositions(conn, new PublicKey(mint), ws, { maxSignatures: 300 });
+      const per = isPublicRpc() ? 5 : 50;
+      const parts: Awaited<ReturnType<typeof readPositions>>[] = [];
+      for (let i = 0; i < ws.length; i += per) parts.push(await readPositions(conn, new PublicKey(mint), ws.slice(i, i + per), { maxSignatures: 300 }));
+      r = parts[0];
+      for (const p of parts.slice(1)) {
+        r.positions.push(...p.positions);
+        for (const k of Object.keys(r.totals) as (keyof typeof r.totals)[]) r.totals[k] += p.totals[k];
+        r.historyComplete = r.historyComplete && p.historyComplete;
+      }
     } catch {
       return null;
     }
