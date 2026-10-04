@@ -1,125 +1,43 @@
-/* Dashboard: recent launches with live market cap, PnL windows from the activity journal, active tasks. */
+/* Dashboard: recent launches with live market cap, PnL windows from the on-chain ledger, active tasks. */
 import { PublicKey } from "@solana/web3.js";
-import type { DashboardLaunch, DashboardResponse, LaunchTaskState, PnlSharePeriod, PnlShareResponse, PnlWindow } from "@/lib/types";
+import type { DashboardLaunch, DashboardResponse, LaunchTaskState, PnlSharePeriod, PnlShareResponse } from "@/lib/types";
 import { curveMetrics, fetchCurve, readConn } from "./engine";
 import { feedCard, feedSolUsd } from "./feed";
+import { readCreatorFees } from "./fees";
 import { launchGet } from "./launch";
-import { metaCached } from "./metadata";
+import { ledgerDays, ledgerEntries, ledgerMints, ledgerPnl, ledgerStatus, refreshLedger } from "./ledger";
 import { positions } from "./positions";
+import { reconcileLaunches } from "./reconcile";
 import { solPrice } from "./price";
 import { store } from "./store";
 import { loops } from "./tradeloop";
 import { balances } from "./wallets";
 
-const TRADE_KINDS = new Set(["buy", "sell", "dump", "autodump", "sniper", "volume", "buy-loop", "buy_loop"]);
-
 const SHARE_WINDOW_MS: Record<PnlSharePeriod, number> = { "1d": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000, all: 0 };
-const f9 = (n: number) => (Math.round(n * 1e9) / 1e9).toString();
 const f2 = (n: number) => (Math.round(n * 100) / 100).toString();
+const f9 = (n: number) => (Math.round(n * 1e9) / 1e9).toString();
 
-/** Figures of the Share PnL card (see PnlShareResponse). Positions are best-effort: null when unreadable. */
-export async function pnlShare(period: PnlSharePeriod): Promise<PnlShareResponse> {
+/** creator fees still in the vaults of every launch dev (SOL), null when unreadable / no launch */
+async function pendingCreatorFees(): Promise<string | null> {
   const st = store();
-  const to = Date.now();
-  const since = SHARE_WINDOW_MS[period] ? to - SHARE_WINDOW_MS[period] : 0;
-  const usd = feedSolUsd() ?? (await solPrice().catch(() => null))?.usd ?? null;
-  let buys = 0,
-    sells = 0,
-    buysUsd = 0,
-    sellsUsd = 0,
-    trades = 0,
-    launches = 0,
-    usdAtCurrentPrice = false,
-    usdKnown = true,
-    first = Number.POSITIVE_INFINITY;
-  const perMint = new Map<string, number>();
-  for (const a of st.activity) {
-    if (a.at < since) continue;
-    if (a.kind === "launch" && a.ok) launches++;
-    if (!TRADE_KINDS.has(a.kind) || !a.data || typeof a.data.solTotal !== "number") continue;
-    const side = a.data.side;
-    if (side !== "buy" && side !== "sell") continue;
-    const sol = a.data.solTotal;
-    const journaled = typeof a.data.solUsd === "number" && a.data.solUsd > 0 ? a.data.solUsd : null;
-    const price = journaled ?? usd;
-    if (journaled === null && sol > 0) {
-      if (usd === null) usdKnown = false;
-      else usdAtCurrentPrice = true;
-    }
-    if (side === "buy") {
-      buys += sol;
-      buysUsd += price ? sol * price : 0;
-    } else {
-      sells += sol;
-      sellsUsd += price ? sol * price : 0;
-    }
-    trades++;
-    first = Math.min(first, a.at);
-    if (a.mint) perMint.set(a.mint, (perMint.get(a.mint) ?? 0) + (side === "sell" ? sol : -sol));
+  const devs = [...new Set(st.launches.map((l) => l.dev))];
+  if (!devs.length) return "0";
+  try {
+    const rows = await readCreatorFees(devs);
+    if (!rows.length) return null;
+    return f9(rows.reduce((s, r) => s + Number(r.claimable + r.cashback) / 1e9, 0));
+  } catch {
+    return null;
   }
-  let wins = 0,
-    losses = 0,
-    best: { mint: string; sol: number } | null = null;
-  for (const [mint, sol] of perMint) {
-    if (sol > 0) wins++;
-    else if (sol < 0) losses++;
-    if (!best || sol > best.sol) best = { mint, sol };
-  }
-  let unrealisedSol: number | null = null;
-  if (st.sol.unlocked) {
-    try {
-      const wallets = st.sol.wallets.map((w) => w.address);
-      const mints = [...new Set([...st.launches.map((l) => l.mint), ...st.tracked])];
-      unrealisedSol = wallets.length && mints.length ? (await positions(wallets, mints)).reduce((n, r) => n + Number(r.pnlSol), 0) : 0;
-    } catch {
-      unrealisedSol = null;
-    }
-  }
-  const bestSymbol = best ? (st.launches.find((l) => l.mint === best!.mint)?.symbol ?? metaCached(best.mint)?.symbol ?? feedCard(best.mint)?.symbol ?? null) : null;
-  return {
-    period,
-    from: since || (Number.isFinite(first) ? first : to),
-    to,
-    realisedSol: f9(sells - buys),
-    realisedUsd: usdKnown ? f2(sellsUsd - buysUsd) : null,
-    usdAtCurrentPrice,
-    unrealisedSol: unrealisedSol === null ? null : f9(unrealisedSol),
-    unrealisedUsd: unrealisedSol === null || usd === null ? null : f2(unrealisedSol * usd),
-    trades,
-    wins,
-    losses,
-    bestTradeSol: best ? f9(best.sol) : null,
-    bestTradeMint: best?.mint ?? null,
-    bestTradeSymbol: bestSymbol,
-    volumeSol: f9(buys + sells),
-    buysSol: f9(buys),
-    sellsSol: f9(sells),
-    launches,
-    wallets: st.sol.wallets.filter((w) => !st.walletMeta.meta[w.address]?.archived).length,
-    solPrice: usd,
-  };
-}
-
-function pnlWindow(since: number): PnlWindow {
-  let buys = 0,
-    sells = 0,
-    trades = 0;
-  for (const a of store().activity) {
-    if (a.at < since || !TRADE_KINDS.has(a.kind) || !a.data || typeof a.data.solTotal !== "number") continue;
-    const side = a.data.side;
-    if (side === "buy") buys += a.data.solTotal;
-    else if (side === "sell") sells += a.data.solTotal;
-    else continue;
-    trades++;
-  }
-  const f = (n: number) => (Math.round(n * 1e9) / 1e9).toString();
-  return { realisedSol: f(sells - buys), buysSol: f(buys), sellsSol: f(sells), trades };
 }
 
 export async function dashboard(): Promise<DashboardResponse> {
   const st = store();
   const conn = readConn();
   const usd = feedSolUsd() ?? (await solPrice().catch(() => null))?.usd ?? null;
+  // the ledger refreshes in the background (budgeted); the figures below use what is on disk right now
+  void refreshLedger().catch(() => null);
+  void reconcileLaunches().catch(() => 0);
   const recent = st.launches.slice(0, 10);
   const recentLaunches: DashboardLaunch[] = await Promise.all(
     recent.map(async (l): Promise<DashboardLaunch> => {
@@ -146,11 +64,73 @@ export async function dashboard(): Promise<DashboardResponse> {
     const vals = Object.values(b);
     if (vals.length && vals.every((v) => v !== null)) totalSol = (Math.round(vals.reduce((s, v) => s + Number(v), 0) * 1e9) / 1e9).toString();
   }
+  const pending = await pendingCreatorFees();
   return {
     recentLaunches,
-    pnl: { "24h": pnlWindow(now - 86_400_000), "7d": pnlWindow(now - 7 * 86_400_000), "30d": pnlWindow(now - 30 * 86_400_000), all: pnlWindow(0) },
+    pnl: {
+      "24h": ledgerPnl(now - 86_400_000, now, pending).window,
+      "7d": ledgerPnl(now - 7 * 86_400_000, now, pending).window,
+      "30d": ledgerPnl(now - 30 * 86_400_000, now, pending).window,
+      all: ledgerPnl(0, now, pending).window,
+    },
+    days: ledgerDays(),
+    mints: ledgerMints(),
+    ledger: ledgerStatus(),
     activeTasks,
     totalSol,
     solPrice: usd,
+  };
+}
+
+/** Figures of the Share PnL card (see PnlShareResponse). Positions are best-effort: null when unreadable. */
+export async function pnlShare(period: PnlSharePeriod): Promise<PnlShareResponse> {
+  const st = store();
+  const to = Date.now();
+  const since = SHARE_WINDOW_MS[period] ? to - SHARE_WINDOW_MS[period] : 0;
+  const usd = feedSolUsd() ?? (await solPrice().catch(() => null))?.usd ?? null;
+  await refreshLedger().catch(() => null);
+  const pending = await pendingCreatorFees();
+  const { window: w, mints } = ledgerPnl(since, to, pending);
+  const entries = ledgerEntries().filter((e) => e.at >= since && e.at <= to);
+  const first = entries[0]?.at ?? to;
+  const launches = entries.filter((e) => e.kind === "create").length;
+  let best: { mint: string; net: bigint } | null = null;
+  for (const m of mints.values()) if (!best || m.net > best.net) best = { mint: m.mint, net: m.net };
+  let unrealisedSol: number | null = null;
+  if (st.sol.unlocked) {
+    try {
+      const wallets = st.sol.wallets.map((x) => x.address);
+      const mintList = [...new Set([...st.launches.map((l) => l.mint), ...st.tracked])];
+      unrealisedSol = wallets.length && mintList.length ? (await positions(wallets, mintList)).filter((r) => Number(r.amount) > 0).reduce((n, r) => n + Number(r.valueSol), 0) : 0;
+    } catch {
+      unrealisedSol = null;
+    }
+  }
+  const net = Number(w.netSol);
+  return {
+    period,
+    from: since || first,
+    to,
+    netSol: w.netSol,
+    netUsd: usd === null ? null : f2(net * usd),
+    usdAtCurrentPrice: true,
+    grossSol: w.realisedSol,
+    fees: w.fees,
+    otherSol: w.otherSol,
+    unrealisedSol: unrealisedSol === null ? null : f9(unrealisedSol),
+    unrealisedUsd: unrealisedSol === null || usd === null ? null : f2(unrealisedSol * usd),
+    trades: w.trades,
+    wins: w.wins,
+    losses: w.losses,
+    bestTradeSol: best ? mints.get(best.mint)!.netSol : null,
+    bestTradeMint: best?.mint ?? null,
+    bestTradeSymbol: best ? (mints.get(best.mint)?.symbol ?? null) : null,
+    volumeSol: f9(Number(w.buysSol) + Number(w.sellsSol)),
+    buysSol: w.buysSol,
+    sellsSol: w.sellsSol,
+    launches,
+    wallets: st.sol.wallets.filter((x) => !st.walletMeta.meta[x.address]?.archived).length,
+    solPrice: usd,
+    estimated: w.estimated,
   };
 }

@@ -488,3 +488,13 @@ declare module "@/engine/solana/pump/launch.js" {
     opts: { cuPrice: number; slippageBps?: number; tipLamports?: bigint; spreadMs?: number },
   ): Promise<{ mint: string; sells: SendResult[]; error?: string }>;
 }
+
+declare module "@/engine/solana/pump/events.js" {
+  import type { PublicKey } from "@solana/web3.js";
+  export type PumpEvent =
+    | { kind: "create"; name: string; symbol: string; uri: string; mint: PublicKey; bondingCurve: PublicKey; user: PublicKey; creator: PublicKey; timestamp: bigint }
+    | { kind: "collectCreatorFee"; timestamp: bigint; creator: PublicKey; amount: bigint }
+    | { kind: "trade"; mint: PublicKey; solAmount: bigint; tokenAmount: bigint; isBuy: boolean; user: PublicKey; timestamp: bigint; fee: bigint; creator: PublicKey; creatorFee: bigint; cashback: bigint };
+  /** decodes the `Program data:` lines of a transaction's log messages (unknown events are skipped) */
+  export function parseEventLogs(logs: string[]): PumpEvent[];
+}

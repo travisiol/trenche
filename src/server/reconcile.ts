@@ -8,7 +8,7 @@ import { bondingCurvePda } from "@/engine/solana/pump/pdas.js";
 import type { LaunchRecord, LaunchRecordStatus } from "@/lib/types";
 import { readConn } from "./engine";
 import { launchRuns } from "./launch";
-import { logActivity, saveJobsSoon, saveLaunches, store } from "./store";
+import { logActivity, saveJobsSoon, saveLaunches, store, writeJson } from "./store";
 
 /** sidebar word for a record: launched (create confirmed), failed (a definitive error), pending (still unknown) */
 export function launchRecordStatus(l: LaunchRecord): LaunchRecordStatus {
@@ -71,6 +71,61 @@ export function markLaunched(mint: string, how: CreateCheck["how"], signature?: 
   }
 }
 
+const TRADE_LIKE = new Set(["buy", "sell", "dump", "autodump", "sniper", "volume", "buy-loop", "buy_loop", "fees", "claim"]);
+type Outcome = { address?: string; ok?: boolean; signature?: string | null; sol?: string; error?: string | null };
+
+/** Journal reconciliation: a sell / dump / claim journaled ok:false ("blockhash expired", confirmation timed out)
+ *  whose signature IS on chain (no error) is flipped to ok:true, its outcomes corrected and solTotal recomputed. Entries
+ *  of the last 7 days with at least one signature are checked once (`data.reconciledAt`); the PnL itself does not
+ *  depend on this (on-chain ledger), Activity and the calendar of the journal do. Returns how many were flipped. */
+export async function reconcileActivity(limit = 20): Promise<number> {
+  const st = store();
+  const now = Date.now();
+  const todo = st.activity
+    .filter((a) => !a.ok && TRADE_LIKE.has(a.kind) && a.at > now - 7 * 86_400_000 && !(a.data && a.data.reconciledAt) && (a.signature || (Array.isArray(a.data?.outcomes) && (a.data!.outcomes as Outcome[]).some((o) => o.signature))))
+    .slice(0, limit);
+  if (!todo.length) return 0;
+  const conn = readConn();
+  let flipped = 0;
+  for (const a of todo) {
+    const outcomes = Array.isArray(a.data?.outcomes) ? (a.data!.outcomes as Outcome[]) : [];
+    const sigs = [...new Set([a.signature, ...outcomes.map((o) => o.signature)].filter((s): s is string => !!s))];
+    const statuses = await conn.getSignatureStatuses(sigs, { searchTransactionHistory: true }).catch(() => null);
+    if (!statuses) continue; // RPC unreadable: retry next pass
+    const landed = new Set(sigs.filter((s, i) => {
+      const v = statuses.value[i];
+      return v && !v.err && (v.confirmationStatus === "confirmed" || v.confirmationStatus === "finalized");
+    }));
+    a.data = { ...(a.data ?? {}), reconciledAt: now };
+    if (!landed.size) {
+      if (now - a.at < 10 * 60_000) delete a.data.reconciledAt; // too young to be sure: check again later
+      continue;
+    }
+    let solTotal = 0;
+    let anyOutcome = false;
+    for (const o of outcomes) {
+      if (o.signature && landed.has(o.signature)) {
+        o.ok = true;
+        o.error = null;
+        anyOutcome = true;
+      }
+      if (o.ok) solTotal += Number(o.sol ?? 0) || 0;
+    }
+    if (!anyOutcome && !(a.signature && landed.has(a.signature))) continue;
+    a.ok = true;
+    if (outcomes.length) a.data.solTotal = solTotal;
+    a.data.reconciled = "landed on chain although the confirmation had failed";
+    a.message = `${a.message.replace(/\s*—\s*0\/\d+ confirmed.*$/, "")} — reconciled: landed on chain (${landed.size} signature${landed.size > 1 ? "s" : ""}).`;
+    flipped++;
+  }
+  try {
+    writeJson(st.paths.activity, st.activity);
+  } catch {
+    /* disk error: kept in memory */
+  }
+  return flipped;
+}
+
 let lastRun = 0;
 let running: Promise<number> | null = null;
 
@@ -84,6 +139,7 @@ export function reconcileLaunches(opts: { force?: boolean; minIntervalMs?: numbe
     const st = store();
     const todo = st.launches.filter((l) => !l.createConfirmed && l.createSignature && launchRecordStatus(l) === "pending").slice(0, 10);
     let fixed = 0;
+    fixed += await reconcileActivity().catch(() => 0);
     for (const l of todo) {
       const r = await checkCreateOnChain(l.mint, l.createSignature, 1).catch(() => null);
       if (!r) continue;

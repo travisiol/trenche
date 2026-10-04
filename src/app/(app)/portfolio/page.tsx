@@ -12,7 +12,8 @@ import { short, sol, usd } from "@/lib/format";
 import { toast } from "@/components/ui";
 import { cx } from "@/components/bx/ui";
 import { BxJob } from "@/components/bx/Job";
-import { PnlCalendar, dailyPnl } from "@/components/bx/PnlCalendar";
+import { PnlCalendar, type DayPnl } from "@/components/bx/PnlCalendar";
+import { PnlFees } from "@/components/bx/PnlFees";
 import { SharePnlButton } from "@/components/bx/SharePnl";
 import { AirdropModal, CreateModal, ExportModal, ImportModal, MoveModal, SendModal, type ModalKind } from "@/components/portfolio/BxModals";
 import { DepositDrawer, DisperseDrawer, ReverseDisperseDrawer, type DrawerKind } from "@/components/portfolio/Drawers";
@@ -85,12 +86,14 @@ export default function PortfolioPage() {
     return m;
   }, [activity.data]);
   const pnl = dash.data?.pnl[WIN_KEY[win]];
-  const realised = pnl ? Number(pnl.realisedSol) : null;
+  /** NET of every fee (on-chain ledger, every vault wallet) */
+  const realised = pnl ? Number(pnl.netSol) : null;
   const volume = pnl ? Number(pnl.buysSol) + Number(pnl.sellsSol) : null;
-  const unrealised = (positions.data ?? []).filter((r) => scopeWallets.some((w) => w.address === r.wallet)).reduce((n, r) => n + Number(r.pnlSol), 0);
+  /** current value of the tokens the scoped wallets still hold (their cost is inside the net figure) */
+  const unrealised = (positions.data ?? []).filter((r) => Number(r.amount) > 0 && scopeWallets.some((w) => w.address === r.wallet)).reduce((n, r) => n + Number(r.valueSol), 0);
   const totalPnl = realised === null ? null : realised + unrealised;
-  const money = (s: number | null) => (s === null ? "—" : unit === "USD" && solUsd ? usd(s * solUsd, 2) : `${sol(s)} SOL`);
-  const days = dailyPnl(activity.data?.items ?? []);
+  const money = (s: number | null) => (s === null ? "—" : unit === "USD" && solUsd ? `${s < 0 ? "-" : ""}${usd(Math.abs(s) * solUsd, 2)}` : `${sol(s)} SOL`);
+  const days = new Map<string, DayPnl>((dash.data?.days ?? []).map((x) => [x.date, x]));
 
   const rows = useMemo(() => {
     let list: WalletInfo[];
@@ -446,7 +449,7 @@ export default function PortfolioPage() {
                       <span className="text-sm font-medium text-text-100">{money(volume)}</span>
                     </div>
                     <div className="flex h-[18px] min-w-[calc(50%-16px)] items-center gap-2">
-                      <span className="whitespace-nowrap text-sm text-text-300">{win} Realized Profit</span>
+                      <span className="whitespace-nowrap text-sm text-text-300">{win} Net Realized</span>
                       <span className={cx("text-sm font-medium", realised === null ? "text-text-100" : realised > 0 ? "text-increase" : realised < 0 ? "text-decrease" : "text-text-100")}>{money(realised)}</span>
                     </div>
                     <div className="flex h-[18px] min-w-[calc(50%-16px)] items-center">
@@ -457,10 +460,11 @@ export default function PortfolioPage() {
                       <span className={cx("ml-1 whitespace-nowrap text-sm font-medium", totalPnl === null ? "text-text-100" : totalPnl > 0 ? "text-increase" : totalPnl < 0 ? "text-decrease" : "text-text-100")}>{money(totalPnl)}</span>
                     </div>
                     <div className="flex h-[18px] min-w-[calc(50%-16px)] items-center gap-2">
-                      <span className="whitespace-nowrap text-sm text-text-300">Unrealized Profits</span>
+                      <span className="whitespace-nowrap text-sm text-text-300">Holdings value</span>
                       <span className={cx("text-sm font-medium", unrealised > 0 ? "text-increase" : unrealised < 0 ? "text-decrease" : "text-text-100")}>{positions.data ? money(unrealised) : "—"}</span>
                     </div>
                   </div>
+                  <PnlFees pnl={pnl} solUsd={solUsd} unit={unit} compact className="mt-2" />
                   <div className="mt-3.5 grid grid-cols-2 gap-2 lg:grid-cols-3">
                     <Action icon={<ArrowDownToLine className="h-4 w-4 shrink-0" />} label="Deposit" onClick={() => setDrawer("deposit")} />
                     <Action icon={<ArrowUpFromLine className="h-4 w-4 shrink-0" />} label="Withdraw" onClick={() => (live.length ? setModal("withdraw") : toast("Create or import a wallet to withdraw funds.", "info"))} disabled={!canSign} />

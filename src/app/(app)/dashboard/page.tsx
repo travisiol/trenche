@@ -6,15 +6,16 @@ import { useState } from "react";
 import { Activity, BookOpen, ChartLine, Gift, Rocket } from "lucide-react";
 import { BxCard, BxSeg, PadAvatar, cx } from "@/components/bx/ui";
 import { DOCS_URL } from "@/components/bx/Shell";
-import { PnlCalendar, dailyPnl } from "@/components/bx/PnlCalendar";
+import { PnlCalendar, type DayPnl } from "@/components/bx/PnlCalendar";
+import { PnlFees } from "@/components/bx/PnlFees";
 import { SharePnlButton } from "@/components/bx/SharePnl";
 import { useDrafts } from "@/components/launch/drafts";
 import { TaskRowCompact } from "@/components/dev/TaskRowCompact";
 import { failureMessage, useGet } from "@/lib/api";
 import { useSolPrice, useWallets } from "@/lib/store";
 import { groupPositions } from "@/lib/positions";
-import { age, usd } from "@/lib/format";
-import type { ActivityResponse, DashboardResponse, FeesSummaryResponse, PositionsResponse } from "@/lib/types";
+import { usd } from "@/lib/format";
+import type { DashboardResponse, FeesSummaryResponse, PositionsResponse } from "@/lib/types";
 
 type Win = "1D" | "7D" | "30D" | "All";
 const WIN_KEY: Record<Win, "24h" | "7d" | "30d" | "all"> = { "1D": "24h", "7D": "7d", "30D": "30d", All: "all" };
@@ -30,7 +31,6 @@ export default function DashboardPage() {
   const router = useRouter();
   const dash = useGet<DashboardResponse>("/api/dashboard", 5000);
   const positions = useGet<PositionsResponse>("/api/positions", 10000);
-  const activity = useGet<ActivityResponse>("/api/activity?limit=500", 10000);
   const price = useSolPrice();
   const wallets = useWallets();
   const [win, setWin] = useState<Win>("30D");
@@ -38,20 +38,23 @@ export default function DashboardPage() {
   const d = dash.data;
   const solUsd = d?.solPrice ?? price.data?.usd ?? null;
   const pnl = d?.pnl[WIN_KEY[win]];
-  const realised = pnl ? Number(pnl.realisedSol) : 0;
+  /** NET of every fee (on-chain ledger): gross curve cash-flow − costs + creator fees claimed */
+  const realised = pnl ? Number(pnl.netSol) : 0;
   const volume = pnl ? Number(pnl.buysSol) + Number(pnl.sellsSol) : 0;
   const grouped = groupPositions(positions.data);
-  const unrealised = grouped.reduce((n, p) => n + Number(p.pnlSol), 0);
+  /** what the tokens still held are worth now (their cost is already inside the net figure) */
   const holdings = grouped.filter((p) => Number(p.amount) > 0).reduce((n, p) => n + Number(p.valueSol), 0);
-  const total = realised + unrealised;
+  const total = realised + holdings;
   const basis = pnl ? Number(pnl.buysSol) : 0;
   const pct = basis > 0 ? (total / basis) * 100 : 0;
   const launches = d?.recentLaunches ?? [];
   /** Block X lists drafts under Latest launches too (`??` avatar · $TOKEN · Draft · $0.00) */
   const { drafts } = useDrafts();
   const draftRows = drafts.filter((x) => !x.launchedMint).slice(0, 5);
-  const pnlByMint = new Map(grouped.map((p) => [p.mint, Number(p.pnlSol)]));
-  const days = dailyPnl(activity.data?.items ?? []);
+  /** per-launch result = net ledger result on the mint + current value of what is still held */
+  const heldByMint = new Map(grouped.map((p) => [p.mint, Number(p.amount) > 0 ? Number(p.valueSol) : 0]));
+  const pnlByMint = new Map((d?.mints ?? []).map((m) => [m.mint, Number(m.netSol) + (heldByMint.get(m.mint) ?? 0)]));
+  const days = new Map<string, DayPnl>((d?.days ?? []).map((x) => [x.date, x]));
   const walletCount = (wallets.data?.wallets ?? []).filter((w) => !w.archived).length;
 
   return (
@@ -168,21 +171,22 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <div className="shrink-0 border-b border-line-50 px-6 pb-4 pt-1">
-                    <p className="text-[14px] text-text-300">Total PnL</p>
+                    <p className="text-[14px] text-text-300">Total PnL · net of fees</p>
                     <p className={cx("mt-0.5 text-[28px] font-medium tracking-[-0.03em] tabular-nums xl:text-[32px]", total > 0 ? "text-increase" : total < 0 ? "text-decrease" : "text-text-100")}>
-                      <span className="inline-flex items-center gap-1.5">{money(total, solUsd, unit)}</span> ({pct >= 0 ? "+" : ""}
+                      <span className="inline-flex items-center gap-1.5">{money(total, solUsd, unit, true)}</span> ({pct >= 0 ? "+" : ""}
                       {pct.toFixed(1)}%)
                     </p>
+                    <PnlFees pnl={pnl} solUsd={solUsd} unit={unit} className="mt-1" />
                     <div className="mt-3 grid grid-cols-2 gap-x-5 gap-y-2 xl:mt-4 xl:gap-y-3">
                       {[
-                        [`${win} Realized Profit`, money(realised, solUsd, unit)],
-                        ["Unrealized", money(unrealised, solUsd, unit)],
-                        [`${win} Total Volume`, money(volume, solUsd, unit)],
-                        ["Holdings", money(holdings, solUsd, unit)],
-                      ].map(([k, v]) => (
-                        <div key={k} className="min-w-0">
+                        [`${win} Net Realized`, money(realised, solUsd, unit, true), realised],
+                        ["Holdings (current value)", money(holdings, solUsd, unit), 0],
+                        [`${win} Total Volume`, money(volume, solUsd, unit), 0],
+                        [`${win} Gross (sells − buys)`, money(pnl ? Number(pnl.realisedSol) : 0, solUsd, unit, true), pnl ? Number(pnl.realisedSol) : 0],
+                      ].map(([k, v, tone]) => (
+                        <div key={String(k)} className="min-w-0">
                           <p className="truncate text-[13px] text-text-300">{k}</p>
-                          <p className="mt-0.5 inline-flex max-w-full items-center gap-1 truncate text-[15px] font-medium tabular-nums text-text-100">
+                          <p className={cx("mt-0.5 inline-flex max-w-full items-center gap-1 truncate text-[15px] font-medium tabular-nums", Number(tone) > 0 ? "text-increase" : Number(tone) < 0 ? "text-decrease" : "text-text-100")}>
                             <span className="truncate">{v}</span>
                           </p>
                         </div>

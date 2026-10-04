@@ -1154,17 +1154,85 @@ export type DashboardLaunch = LaunchRecord & {
   progress: number | null;
   complete: boolean | null;
 };
+/** Every fee the vault wallets paid over a window, from the on-chain ledger (SOL, decimal strings; see
+ *  src/server/ledger.ts). Categories are exclusive: they add up to `totalCostSol`. */
+export type FeeBreakdown = {
+  /** base signature fee: 5000 lamports × signatures of every transaction a vault wallet paid for */
+  networkSol: string;
+  /** priority fee actually charged (meta.fee − base) on those transactions */
+  priorityTipSol: string;
+  /** SOL sent to Jito tip accounts */
+  jitoTipSol: string;
+  /** pump.fun protocol + creator fee on our buys/sells (from the trade events) */
+  pumpTradeFeeSol: string;
+  /** rent paid for accounts created in trade transactions (token accounts, volume accumulators), minus rent
+   *  recovered when they were closed — approximate: new accounts of the transaction except the curve, the fee
+   *  recipients, the tip accounts and the vault wallets */
+  rentSol: string;
+  /** rent paid inside create transactions (mint, bonding curve, metadata…) */
+  launchSol: string;
+  /** signature/priority fees and tips of transfers between wallets, deposits, withdrawals, plus the SOL lost in
+   *  relay hops (relay received − relay returned) */
+  transferFeeSol: string;
+  totalCostSol: string;
+  /** creator fees collected on chain (collect_creator_fee events of a vault wallet) — income */
+  creatorFeesClaimedSol: string;
+  /** creator fees still sitting in the vaults (not added to the PnL), null when unreadable */
+  creatorFeesPendingSol: string | null;
+};
 export type PnlWindow = {
-  /** realised cash-flow from this app's journal: sells − buys (SOL, decimal string) */
+  /** GROSS trading cash-flow on the curve: sells − buys before any fee (SOL, decimal string) */
   realisedSol: string;
   buysSol: string;
   sellsSol: string;
   trades: number;
+  /** mints with a positive / negative net result over the window */
+  wins: number;
+  losses: number;
+  /** = realisedSol − fees.totalCostSol + fees.creatorFeesClaimedSol + otherSol */
+  netSol: string;
+  fees: FeeBreakdown;
+  /** SOL movements of the vault wallets that are neither a trade, a transfer nor a claim (rent refunds of closed
+   *  token accounts, unknown programs) — included in netSol */
+  otherSol: string;
+  /** true while transactions of the window are still being fetched (figures may grow) */
+  estimated: boolean;
+};
+/** one mint of the ledger */
+export type MintPnl = {
+  mint: string;
+  symbol: string | null;
+  /** net SOL result of every trade/create transaction on this mint (fees inside those transactions deducted) */
+  netSol: string;
+  buysSol: string;
+  sellsSol: string;
+  trades: number;
+  /** epoch ms of the first / last transaction */
+  firstAt: number;
+  lastAt: number;
+};
+export type LedgerStatus = {
+  /** every signature of every vault wallet has been read */
+  complete: boolean;
+  /** transactions queued, not read yet */
+  pending: number;
+  /** transactions read */
+  txs: number;
+  /** signatures the RPC could not return (left out, retried later) */
+  unreadable: number;
+  scannedAt: number | null;
+  /** the wallets covered by the ledger */
+  wallets: number;
 };
 /** GET /api/dashboard */
 export type DashboardResponse = {
   recentLaunches: DashboardLaunch[];
   pnl: { "24h": PnlWindow; "7d": PnlWindow; "30d": PnlWindow; all: PnlWindow };
+  /** net SOL per UTC day (ledger), for the PnL calendar */
+  days: { date: string; sol: number; trades: number }[];
+  /** per-mint net result (ledger), all time */
+  mints: MintPnl[];
+  ledger: LedgerStatus;
   /** running/paused tasks across live launches + standalone volume bots */
   activeTasks: { launchId: string; mint: string; symbol: string; task: LaunchTaskState }[];
   totalSol: string | null;
@@ -1175,30 +1243,32 @@ export type DashboardResponse = {
 
 export type PnlSharePeriod = "1d" | "7d" | "30d" | "all";
 /** GET /api/pnl/share?period=1d|7d|30d|all — the figures of the "Share PnL" card (PNG / WebM drawn in the browser).
- *  Every number comes from this app's activity journal (buy/sell entries: `data.side`, `data.solTotal`, and
- *  `data.solUsd` = SOL price at trade time, journaled since this endpoint exists) + the current positions. */
+ *  Every number comes from the on-chain ledger of the vault wallets (src/server/ledger.ts) + the current positions. */
 export type PnlShareResponse = {
   period: PnlSharePeriod;
-  /** epoch ms of the window (`from` = the first journaled trade for "all", or `to` when the journal is empty) */
+  /** epoch ms of the window (`from` = the first ledger entry for "all", or `to` when the ledger is empty) */
   from: number;
   to: number;
-  /** sells − buys over the window (SOL, decimal string) */
-  realisedSol: string;
-  /** Σ sell SOL × price − Σ buy SOL × price, price at trade time when the entry has it, else the current SOL price;
-   *  null when no price is known at all */
-  realisedUsd: string | null;
-  /** true when at least one trade in the window was valued at the CURRENT SOL price (its entry carries no price) */
+  /** NET realised result over the window: gross curve cash-flow − every fee + creator fees claimed + other
+   *  SOL movements (SOL, decimal string) — what the card shows */
+  netSol: string;
+  /** netSol × the current SOL price (the chain carries no historical price), null when the price is unknown */
+  netUsd: string | null;
+  /** always true: USD figures use the current SOL price */
   usdAtCurrentPrice: boolean;
-  /** open positions' PnL (value − cost + realised) of every vault wallet on launched + tracked mints;
-   *  null when the positions could not be read (locked vault, RPC) */
+  /** gross curve cash-flow: sells − buys before fees */
+  grossSol: string;
+  fees: FeeBreakdown;
+  otherSol: string;
+  /** current value of the tokens still held (vault wallets × launched + tracked mints); null when unreadable */
   unrealisedSol: string | null;
   unrealisedUsd: string | null;
-  /** journaled buy/sell entries in the window (a multi-wallet buy is ONE entry) */
+  /** trade transactions in the window (one per transaction, not per wallet batch) */
   trades: number;
-  /** mints whose realised SOL over the window is > 0 / < 0 */
+  /** mints whose net SOL over the window is > 0 / < 0 */
   wins: number;
   losses: number;
-  /** best per-mint realised SOL over the window, null without any trade */
+  /** best per-mint net SOL over the window, null without any trade */
   bestTradeSol: string | null;
   bestTradeMint: string | null;
   bestTradeSymbol: string | null;
@@ -1206,12 +1276,14 @@ export type PnlShareResponse = {
   volumeSol: string;
   buysSol: string;
   sellsSol: string;
-  /** confirmed launches in the window */
+  /** create transactions in the window */
   launches: number;
   /** active (non-archived) vault wallets */
   wallets: number;
   /** current SOL/USD, null when unknown */
   solPrice: number | null;
+  /** true while the ledger still has transactions to read */
+  estimated: boolean;
 };
 
 /* -------------------------------------------------------------- positions */

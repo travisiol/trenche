@@ -33,6 +33,7 @@ import { armAutoclaim, autoclaimStatusOrNull, normalizeAutoClaim } from "./autoc
 import { buyWithWallets, groupWallets, labelOf, readConn, requireUnlocked, sendConn, tipLamportsFor, vaultWallets } from "./engine";
 import { jobNew, jobNote, jobPush, jobRun } from "./jobs";
 import { registerRuntimeProducer, RESTORE_NOTE, restoreSection, saveRuntimeSoon } from "./persist";
+import { solPriceCached } from "./price";
 import { syncPumpCluster } from "./pumpcluster";
 import { checkCreateOnChain, reconcileLaunches } from "./reconcile";
 import { fetchUriJson } from "./metadata";
@@ -692,6 +693,18 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
     signature: created.signature,
     jobId: run.job.id,
   });
+  if (created.confirmed) {
+    // the buys of a launch are trades too: journaled as buy entries (the on-chain ledger is the PnL truth, the
+    // journal feeds Activity / per-wallet volume)
+    const devBuy = Number(solString(o.devBuyLamports));
+    if (devBuy > 0)
+      logActivity(st, { kind: "buy", ok: true, message: `Dev buy ${devBuy.toFixed(4)} SOL on ${run.state.symbol} (launch).`, mint, wallets: [dev], signature: created.signature ?? undefined, jobId: run.job.id, data: { side: "buy", solTotal: devBuy, solUsd: solPriceCached(), launchDevBuy: true } });
+    const bundled = bundleTasks.flatMap((t) => t.wallets.filter((w) => buyOutcomes[rowAddr.indexOf(w)]?.confirmed).map((w) => ({ address: w, sol: Number(solString(t.amounts.get(w)!)) })));
+    if (bundled.length) {
+      const total = bundled.reduce((s, b) => s + b.sol, 0);
+      logActivity(st, { kind: "buy", ok: true, message: `Bundle buy ${total.toFixed(4)} SOL on ${run.state.symbol} — ${bundled.length} wallet(s) confirmed.`, mint, wallets: bundled.map((b) => b.address), jobId: run.job.id, data: { side: "buy", solTotal: total, solUsd: solPriceCached(), bundle: true, outcomes: bundled.map((b) => ({ address: b.address, ok: true, sol: b.sol.toString() })) } });
+    }
+  }
   if (!created.confirmed) {
     run.state.status = "failed";
     run.state.error = created.error ?? "creation not confirmed";

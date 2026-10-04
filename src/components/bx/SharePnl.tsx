@@ -64,8 +64,10 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
 /** Draws one frame. `t` = animation progress 0..1 (1 = the still card used for the PNG). */
 export function drawPnlCard(ctx: CanvasRenderingContext2D, d: PnlShareResponse, opts: CardOptions, font: string, t = 1) {
   const W = CARD_W, H = CARD_H;
-  const realised = Number(d.realisedSol);
-  const realisedUsd = d.realisedUsd === null ? null : Number(d.realisedUsd);
+  const realised = Number(d.netSol);
+  const realisedUsd = d.netUsd === null ? null : Number(d.netUsd);
+  const rewards = Number(d.fees.creatorFeesClaimedSol);
+  const costs = Number(d.fees.totalCostSol);
   const buys = Number(d.buysSol);
   const pct = buys > 0 ? (realised / buys) * 100 : 0;
   const tone = realised < 0 ? C.down : C.up;
@@ -126,7 +128,7 @@ export function drawPnlCard(ctx: CanvasRenderingContext2D, d: PnlShareResponse, 
   ctx.save();
   ctx.font = `500 20px ${font}`;
   ctx.fillStyle = C.text3;
-  ctx.fillText("REALIZED PNL", 72, 222);
+  ctx.fillText("REALIZED PNL · NET OF FEES", 72, 222);
   ctx.fillStyle = tone;
   if (opts.hideAmounts) {
     ctx.font = `700 150px ${font}`;
@@ -177,8 +179,9 @@ export function drawPnlCard(ctx: CanvasRenderingContext2D, d: PnlShareResponse, 
     ctx.font = `600 30px ${font}`;
     ctx.fillStyle = k === "BEST TRADE" && best !== null && !opts.hideAmounts ? (best < 0 ? C.down : C.up) : C.text;
     ctx.fillText(v, x + 18, y + 68);
-    if (sub) {
-      ctx.font = `400 14px ${font}`;
+    const vW = ctx.measureText(v).width;
+    ctx.font = `400 14px ${font}`;
+    if (sub && 18 + vW + 12 + ctx.measureText(sub).width + 16 <= tileW) {
       ctx.fillStyle = C.text3;
       ctx.textAlign = "right";
       ctx.fillText(sub, x + tileW - 16, y + 68);
@@ -195,7 +198,10 @@ export function drawPnlCard(ctx: CanvasRenderingContext2D, d: PnlShareResponse, 
   const notes: string[] = [];
   if (d.solPrice) notes.push(`SOL $${d.solPrice.toLocaleString("en-US", { maximumFractionDigits: 2 })}`);
   if (d.usdAtCurrentPrice && !opts.hideAmounts && realisedUsd !== null) notes.push("USD at current SOL price");
-  if (d.unrealisedSol !== null && !opts.hideAmounts) notes.push(`unrealized ${fmtSol(Number(d.unrealisedSol))}`);
+  if (!opts.hideAmounts && costs > 0) notes.push(`fees ${fmtSol(-costs)}`);
+  if (!opts.hideAmounts && rewards > 0) notes.push(`rewards ${fmtSol(rewards)}`);
+  if (d.unrealisedSol !== null && !opts.hideAmounts && Number(d.unrealisedSol) > 0) notes.push(`holdings ${Number(d.unrealisedSol).toFixed(3)} SOL`);
+  if (d.estimated) notes.push("ledger still syncing");
   ctx.fillText(notes.join("  ·  "), 72, H - 36);
   if (opts.showWallets) {
     ctx.textAlign = "right";
@@ -371,9 +377,11 @@ export function SharePnlModal({ open, onClose, initialPeriod = "1D" }: { open: b
         </div>
         {d ? (
           <p className="text-[12px] leading-relaxed text-text-300">
-            {d.trades} journaled trade{d.trades !== 1 ? "s" : ""} in this window
-            {d.usdAtCurrentPrice ? " · some entries carry no SOL price at trade time: their USD value uses the current price (the card says so)" : ""}
-            {d.unrealisedSol === null ? " · positions unreadable right now (unrealized not shown)" : ""}.
+            {d.trades} on-chain trade{d.trades !== 1 ? "s" : ""} in this window · net of {Number(d.fees.totalCostSol).toFixed(4)} SOL of fees
+            {Number(d.fees.creatorFeesClaimedSol) > 0 ? ` · creator fees claimed +${Number(d.fees.creatorFeesClaimedSol).toFixed(4)} SOL` : ""}
+            {" · USD at the current SOL price"}
+            {d.estimated ? " · the ledger is still reading transactions, figures may change" : ""}
+            {d.unrealisedSol === null ? " · positions unreadable right now (holdings not shown)" : ""}.
           </p>
         ) : null}
         <div className="flex flex-wrap items-center gap-2">
