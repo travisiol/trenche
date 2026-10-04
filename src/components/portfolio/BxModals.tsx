@@ -465,10 +465,12 @@ export function DisperseModal({ open, onClose, wallets, groups, selected, active
 export function ConsolidateModal({ open, onClose, wallets, groups, selected, active, balances, privacy }: Base & { privacy: boolean }) {
   const [from, setFrom] = useState<string[]>(selected.filter((a) => a !== active));
   const [to, setTo] = useState(active ?? "");
+  const [viaRelay, setViaRelay] = useState(privacy);
   const [jobId, setJobId] = useState<string | null>(null);
   const s = useSubmit();
   const t = to || active || "";
   const total = from.reduce((n, a) => n + bal(balances, wallets, a), 0);
+  const feePer = viaRelay ? TX_FEE + 0.000005 : TX_FEE;
   return (
     <BxModal open={open} onClose={onClose} title={privacy ? "Reverse Disperse" : "Consolidate"} width={560}>
       <div className="flex flex-col gap-3 p-4">
@@ -482,26 +484,26 @@ export function ConsolidateModal({ open, onClose, wallets, groups, selected, act
           <WalletSelect value={t} onChange={setTo} wallets={wallets} balances={balances} />
         </div>
         {privacy ? (
-          <div className="flex items-center justify-between gap-3 rounded-md border border-line-100 bg-bg-50 px-3 py-2 text-xs opacity-60" title="The server sweep has no relay option yet">
+          <div className="flex items-center justify-between gap-3 rounded-md border border-line-100 bg-bg-50 px-3 py-2 text-xs">
             <span>
-              <span className="font-medium text-text-100">Relay hop</span>
-              <span className="block text-[11px] text-text-300">Not available for sweeps yet — each wallet sends straight to the destination.</span>
+              <span className="font-medium text-text-100">Relay hop (privacy)</span>
+              <span className="block text-[11px] text-text-300">Each wallet empties itself through its own fresh relay wallet, keys never stored, two signatures per wallet.</span>
             </span>
-            <BxSwitch checked={false} onChange={() => undefined} disabled />
+            <BxSwitch checked={viaRelay} onChange={setViaRelay} />
           </div>
         ) : null}
         <Summary
           rows={[
             { k: `Held by ${from.length} wallet${from.length !== 1 ? "s" : ""}`, v: `${sol(total)} SOL` },
-            { k: "Network fees", v: `~${sol(from.length * TX_FEE, 6)} SOL` },
-            { k: "Arrives", v: `≈ ${sol(Math.max(0, total - from.length * TX_FEE))} SOL`, tone: "good" },
+            { k: viaRelay ? "Network + relay fees" : "Network fees", v: `~${sol(from.length * feePer, 6)} SOL` },
+            { k: "Arrives", v: `≈ ${sol(Math.max(0, total - from.length * feePer))} SOL`, tone: "good" },
           ]}
         />
         <Err>{s.err}</Err>
         <BxJob jobId={jobId} />
       </div>
       <Foot onClose={onClose} label={jobId ? "Close" : "Cancel"}>
-        <BxButton variant="primary" disabled={!t || !from.length || s.busy} onClick={() => s.run(async () => setJobId((await post<JobCreated>("/api/fund/consolidate", { from, to: t })).jobId))}>
+        <BxButton variant="primary" disabled={!t || !from.length || s.busy} onClick={() => s.run(async () => setJobId((await post<JobCreated>("/api/fund/consolidate", { from, to: t, viaRelay: viaRelay || undefined })).jobId))}>
           {privacy ? <Undo2 className="h-3.5 w-3.5" /> : <Shuffle className="h-3.5 w-3.5" />} Sweep {from.length}
         </BxButton>
       </Foot>

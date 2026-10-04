@@ -134,13 +134,34 @@ export function disperse(from: string, to: string[], minLam: bigint, maxLam: big
 }
 
 /** many vault wallets → one destination (any address), each sends its whole balance minus fee */
-export function consolidate(from: string[], to: string): Job {
+export function consolidate(from: string[], to: string, viaRelay = false): Job {
   requireUnlocked();
   const st = store();
   const sources = vaultWallets(from).filter((w) => w.address !== to);
   if (sources.length === 0) throw new HttpError(400, "No source wallet (the destination cannot be a source).");
-  const job = jobNew("consolidate", sources.length, `Consolidate ${sources.length} wallet(s) → ${to.slice(0, 6)}…`);
+  const job = jobNew("consolidate", viaRelay ? sources.length * 2 : sources.length, `Consolidate ${sources.length} wallet(s) → ${to.slice(0, 6)}…${viaRelay ? " via relays" : ""}`);
   jobRun(job, async (j) => {
+    if (viaRelay) {
+      // each source empties itself through its own fresh relay: source → relay → destination
+      const conn = readConn();
+      const cuPrice = st.sol.config.priorityMicroLamports;
+      let sent = 0;
+      const relays: string[] = [];
+      const errors: string[] = [];
+      for (const w of sources) {
+        const bal = await getSolBalance(conn, w.address).catch(() => null);
+        if (bal === null) { errors.push(`${w.label}: RPC unreachable`); jobPush(j, false, { phase: "hop1", address: w.address, error: "RPC unreachable: balance could not be read" }); jobPush(j, false, { phase: "hop2", address: w.address, error: "skipped" }); continue; }
+        const lamports = bal - TX_FEE_MARGIN - RELAY_FEE;
+        if (lamports <= BigInt(0)) { errors.push("empty"); jobPush(j, false, { phase: "hop1", address: w.address, error: "empty" }); jobPush(j, false, { phase: "hop2", address: w.address, error: "skipped" }); continue; }
+        const r = await relayHop(j, st.sol.keypair(w.address), to, lamports, cuPrice);
+        relays.push(r.relay);
+        if (r.ok) sent += 1; else errors.push(`${w.label}: ${r.error}`);
+      }
+      j.extra = { sent, total: sources.length, viaRelay: true, relays };
+      logActivity(st, { kind: "consolidate", ok: sent > 0, message: `Consolidate via relays → ${to.slice(0, 6)}…: ${sent}/${sources.length} wallet(s) swept.`, wallets: [...sources.map((s) => s.address), to], jobId: j.id });
+      if (sent === 0) throw new Error(errors.every((e) => e === "empty") ? "Every source wallet is empty. Nothing was sent." : errors[0]);
+      return;
+    }
     const r = await sweepSol({
       conn: readConn(),
       sendConn: sendConn(),

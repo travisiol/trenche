@@ -141,7 +141,7 @@ export type AirdropResponse = {
   /** wallet balance after the airdrop, null when unreadable */
   balance: string | null;
 };
-export type FundConsolidateRequest = { from: string[]; to: string };
+export type FundConsolidateRequest = { from: string[]; to: string; /** each source empties itself through its own fresh relay wallet (2 signatures per source) */ viaRelay?: boolean };
 
 /* --------------------------------------------------------------- settings */
 
