@@ -419,7 +419,7 @@ export function TasksPanel({
                       <span className="font-mono text-text-300">{devRow ? `${sol(devRow.amount, 0)} tokens · ${pct(devRow.supplyPct, 2)}` : "—"}</span>
                       <span className="ml-auto flex items-center gap-1">
                         {tp.sellPercents.map((p) => (
-                          <button key={p} type="button" disabled={sellBusy !== null || !devRow || !(Number(devRow.amount) > 0)} onClick={() => devSell(p)} className="h-6 rounded border border-decrease/40 px-1.5 text-[10px] font-medium text-decrease hover:bg-decrease/10 disabled:cursor-not-allowed disabled:opacity-40">
+                          <button key={p} type="button" disabled={!devRow || !(Number(devRow.amount) > 0)} onClick={() => devSell(p)} className="h-6 rounded border border-decrease/40 px-1.5 text-[10px] font-medium text-decrease hover:bg-decrease/10 disabled:cursor-not-allowed disabled:opacity-40">
                             Sell {p}%
                           </button>
                         ))}

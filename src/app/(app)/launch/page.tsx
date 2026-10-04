@@ -233,7 +233,6 @@ function LaunchScreen() {
 
   const dumpAll = async () => {
     if (!viewingMint) return;
-    if (!confirm_(`Sell 100 % of ${token.data?.symbol ?? short(viewingMint)} on every wallet of this launch?`)) return;
     try {
       const r = await post<JobCreated>("/api/dev/dump", { mint: viewingMint, percent: 100, bundle: settings.data?.jitoEnabled ?? true, slippageBps: settings.data?.slippageBps ?? 2000, tipSol: settings.data?.tipSol });
       setDumpJob(r.jobId);

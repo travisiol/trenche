@@ -227,8 +227,8 @@ export type TradingPreset = {
 export type TradingPresets = [TradingPreset, TradingPreset, TradingPreset];
 /** Block X defaults, observed 2026-10-04 */
 export const TRADING_PRESET_DEFAULTS: TradingPresets = [
-  { buyAmounts: ["0.1", "0.15", "0.22", "0.5"], buyPercents: [10, 25, 50, 100], sellPercents: [5, 10, 20, 50], slippagePercent: 30, tipSol: "0.0002", buysValueSpreadPct: 0, buysDelaySec: 0 },
-  { buyAmounts: ["0.2", "0.35", "0.5", "1"], buyPercents: [15, 30, 50, 75], sellPercents: [10, 25, 50, 75], slippagePercent: 30, tipSol: "0.0002", buysValueSpreadPct: 0, buysDelaySec: 0 },
+  { buyAmounts: ["0.1", "0.15", "0.22", "0.5"], buyPercents: [10, 25, 50, 100], sellPercents: [25, 50, 75, 100], slippagePercent: 30, tipSol: "0.0002", buysValueSpreadPct: 0, buysDelaySec: 0 },
+  { buyAmounts: ["0.2", "0.35", "0.5", "1"], buyPercents: [15, 30, 50, 75], sellPercents: [25, 50, 75, 100], slippagePercent: 30, tipSol: "0.0002", buysValueSpreadPct: 0, buysDelaySec: 0 },
   { buyAmounts: ["0.5", "1", "2", "5"], buyPercents: [25, 50, 75, 100], sellPercents: [25, 50, 75, 100], slippagePercent: 30, tipSol: "0.0002", buysValueSpreadPct: 0, buysDelaySec: 0 },
 ];
 export const TRADING_PRESET_LIMITS = { maxSpreadPct: 100, maxDelaySec: 1, maxSlippagePercent: 100 } as const;
