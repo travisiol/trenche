@@ -153,8 +153,11 @@ export function DisperseDrawer({ onClose, wallets, groups, scopeLabel, scopeGrou
   };
   const savePreset = async (name: string, id?: string) => {
     try {
-      await post("/api/fund/disperse/presets", { preset: { id, name, totalSol: total || "0", variationPct: variation, delayMinutes: Number(delay) || 0, viaRelay } });
+      const r = await post<DispersePresetsResponse>("/api/fund/disperse/presets", { preset: { id, name, totalSol: total || "0", variationPct: variation, delayMinutes: Number(delay) || 0, viaRelay } });
       await presetsQ.refresh();
+      // Block X keeps the saved preset selected (Update / Delete act on it right away)
+      const saved = id ? r.presets.find((p) => p.id === id) : [...r.presets].reverse().find((p) => p.name === name);
+      if (saved) setPreset(saved.id);
       setNaming(null);
       toast(`Preset “${name}” ${id ? "updated" : "saved"}`, "ok");
     } catch (e) {

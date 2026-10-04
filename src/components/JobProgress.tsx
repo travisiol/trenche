@@ -44,7 +44,7 @@ export function useJob(jobId: string | null, opts?: { sse?: string | null; inter
   return { job, error: err };
 }
 
-const STATUS_WORD: Record<JobView["status"], string> = { running: "Running", done: "Done", error: "Failed", stopped: "Stopped (server restarted)" };
+const STATUS_WORD: Record<JobView["status"], string> = { running: "Running", done: "Done", error: "Failed", stopped: "Stopped" };
 
 export function JobProgress({ jobId, sse, compact }: { jobId: string | null; sse?: string | null; compact?: boolean }) {
   const { job, error } = useJob(jobId, { sse });

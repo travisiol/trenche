@@ -62,7 +62,8 @@ export function jobRun(job: Job, fn: (job: Job) => Promise<void>): void {
       saveJobsSoon();
     })
     .catch((err: unknown) => {
-      job.status = "error";
+      // a cooperative stop (POST /api/jobs/[id]/stop) ends the loop by throwing: that is "stopped", not a failure
+      job.status = job.stop ? "stopped" : "error";
       job.error = (err instanceof Error ? err.message : String(err)).slice(0, 400);
       job.endedAt = Date.now();
       saveJobsSoon();

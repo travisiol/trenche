@@ -11,6 +11,7 @@ const eslintConfig = defineConfig([
     ".next/**",
     // build dir of the second dev server (TRENCH_DIST_DIR=.next-test, see next.config.ts)
     ".next-test/**",
+    ".next-qa/**",
     "out/**",
     "build/**",
     "next-env.d.ts",

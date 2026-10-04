@@ -1,13 +1,38 @@
 "use client";
 /** Job progress in Block X style: status line, bar, steps with phase (relay / hop1 / hop2 / recover …) and explorer links. */
-import { ExternalLink } from "lucide-react";
+import { useState } from "react";
+import { ExternalLink, Square } from "lucide-react";
 import { useJob } from "@/components/JobProgress";
+import { failureMessage, post } from "@/lib/api";
+import { toast } from "@/components/ui";
 import { useSettings } from "@/lib/store";
 import type { JobStep, JobView } from "@/lib/types";
 import { short, solscanTx, time } from "@/lib/format";
 import { cx } from "./ui";
 
-const WORD: Record<JobView["status"], string> = { running: "Running", done: "Done", error: "Failed", stopped: "Stopped — the server restarted while this job ran; nothing more will be sent" };
+/** "stopped" = ended by a Stop click or by a server restart; the job error line says which */
+const WORD: Record<JobView["status"], string> = { running: "Running", done: "Done", error: "Failed", stopped: "Stopped" };
+
+/** Stop a running job (cooperative: waiting jobs end at their next check; a transaction in flight is never cancelled). */
+export function StopJobButton({ jobId, className }: { jobId: string; className?: string }) {
+  const [busy, setBusy] = useState(false);
+  const stop = async () => {
+    setBusy(true);
+    try {
+      await post(`/api/jobs/${jobId}/stop`, {});
+      toast("Stop requested — the job ends at its next check", "info");
+    } catch (e) {
+      toast(failureMessage(e), "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button type="button" disabled={busy} onClick={stop} className={cx("inline-flex h-6 shrink-0 items-center gap-1 rounded border border-decrease/40 px-2 text-[11px] font-medium text-decrease transition-colors hover:bg-decrease/10 disabled:opacity-40", className)} title="Stop this job — nothing already sent is cancelled">
+      <Square className="h-3 w-3" /> Stop
+    </button>
+  );
+}
 
 export function useExplorerSuffix() {
   const settings = useSettings();
@@ -39,6 +64,7 @@ export function BxJob({ jobId, compact }: { jobId: string | null; compact?: bool
         <span className="ml-auto shrink-0 font-mono tabular-nums text-text-300">
           {job.completed}/{job.total || "?"} · {job.sent} sent{job.failed ? ` · ${job.failed} failed` : ""}
         </span>
+        {job.status === "running" ? <StopJobButton jobId={job.id} /> : null}
       </div>
       <div className="h-1 w-full overflow-hidden rounded-full bg-line-50">
         <div className={cx("h-full transition-all", tone)} style={{ width: `${pct}%` }} />
