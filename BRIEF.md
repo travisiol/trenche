@@ -1,4 +1,4 @@
-# TRENCH — brief de construction (privé, usage local, un seul utilisateur)
+# DONCHAIN (ex-TRENCH) — brief de construction (privé, usage local, un seul utilisateur)
 
 Remake privé de Block X (blockx.gg) : terminal Solana pump.fun « Launch · Trade · Trench ».
 Pas de login, pas de pricing, pas de referral. Les clés privées restent sur la machine
