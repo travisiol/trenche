@@ -79,6 +79,9 @@ export type Store = {
     tracked: string;
     jobs: string;
     runtime: string;
+    drafts: string;
+    recent: string;
+    ctos: string;
   };
   sol: SolanaState;
   passphrase: string | null;
@@ -148,6 +151,9 @@ function build(): Store {
     tracked: join(dir, "tracked.json"),
     jobs: join(dir, "jobs.json"),
     runtime: join(dir, "runtime.json"),
+    drafts: join(dir, "drafts.json"),
+    recent: join(dir, "recent.json"),
+    ctos: join(dir, "ctos.json"),
   };
   const saved = readJson<Partial<StoredSettings>>(paths.settings, {});
   const settings: StoredSettings = { ...DEFAULT_SETTINGS, ...saved, tradingPresets: mergeTradingPresets(saved.tradingPresets) };
@@ -318,6 +324,13 @@ export function publicSettings(s: StoredSettings): Settings {
     keybinds: s.keybinds,
     theme: "dark",
   };
+}
+
+/** path of a per-feature JSON file (drafts/recent/ctos); resolved lazily so a Store singleton built by an older
+ *  version of this module (globalThis survives HMR) still finds it */
+export function dataPath(name: "drafts" | "recent" | "ctos"): string {
+  const st = store();
+  return st.paths[name] ?? join(st.dir, `${name}.json`);
 }
 
 export function saveWalletMeta(st: Store): void {
