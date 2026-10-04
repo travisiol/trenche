@@ -54,6 +54,11 @@ function LaunchModalBody({ onClose, form, onChange, wallets, balances }: Props) 
   const [secretErr, setSecretErr] = useState<string | null>(null);
   const [fetching, setFetching] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  /** latest form for async handlers (the mint grind can take minutes: apply its result on what the user typed meanwhile) */
+  const formRef = useRef(form);
+  useEffect(() => {
+    formRef.current = form;
+  }, [form]);
   const set = <K extends keyof LaunchForm>(k: K, v: LaunchForm[K]) => onChange({ ...form, [k]: v });
   const dev = wallets.find((w) => w.address === form.devWallet) ?? null;
   const balOf = (a: string) => Number(balances?.[a] ?? wallets.find((w) => w.address === a)?.sol ?? 0) || 0;
@@ -142,12 +147,19 @@ function LaunchModalBody({ onClose, form, onChange, wallets, balances }: Props) 
     if (form.vanity) return set("vanity", "");
     setFetching(true);
     try {
-      const r = await post<JobCreated>("/api/launch/mint", { suffix: "pump" });
+      // pump.fun vanity mints end in lowercase "pump": the grind is case-sensitive (≈ 58⁴ keys, well under a minute on a desktop)
+      const r = await post<JobCreated>("/api/launch/mint", { suffix: "pump", caseSensitive: true, timeoutMs: 600_000 });
       toast("Reserving a …pump address — grinding keypairs", "info");
-      const job = await waitJob(r.jobId, 120_000);
+      const job = await waitJob(r.jobId, 610_000);
       const mint = typeof job.extra?.mint === "string" ? job.extra.mint : null;
-      if (job.error || !mint) throw new Error(job.error ?? "No mint address came back");
-      onChange({ ...form, reservedMint: mint, mintAddress: mint, vanity: "" });
+      if (job.error || !mint) throw new Error(job.error ?? (job.done ? "No mint address came back" : "Still grinding — try again in a moment"));
+      const cur = formRef.current;
+      if (cur.mintSecret) {
+        // a keypair was imported while grinding: keep it, hand the address back to the pool
+        post(`/api/launch/mint/${mint}/release`, {}).catch(() => {});
+        return toast(`Reserved ${short(mint, 6, 6)} released — this draft launches on the imported keypair`, "info");
+      }
+      onChange({ ...cur, reservedMint: mint, mintAddress: mint, vanity: "" });
       toast(`Reserved ${short(mint, 6, 6)}`, "ok");
     } catch (e) {
       if (isApiFailure(e) && (e.kind === "missing" || e.status === 404 || e.status === 405)) {

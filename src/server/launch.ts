@@ -77,7 +77,7 @@ export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<Laun
     keypair = takeReserved(addr);
     mintSource = "reserved";
   } else if (suffix) {
-    const r = await grindVanity(suffix, { timeoutMs: 90_000 });
+    const r = await grindVanity(suffix, { caseSensitive: true, timeoutMs: 180_000 });
     if (!r) throw new HttpError(504, `No address ending with "${suffix}" found in 90 s. Reserve one first with POST /api/launch/mint (it runs as a job) or use a shorter suffix.`);
     keypair = r.keypair;
     mintSource = "vanity";
