@@ -38,12 +38,16 @@ import { ipfsToHttp } from "@/engine/solana/pump/metadata.js";
 import { isDevnet, logActivity, saveLaunches, store, track, type Job, type PendingMint } from "./store";
 import { loops, TradeLoop, type SavedLoop } from "./tradeloop";
 import { resolveWashPairs, washPairs } from "./wash";
+import { markDraftLaunched } from "./drafts";
+import { grindVanity, takeReserved } from "./vanity";
 
 /* ------------------------------------------------------------------ prepare */
 
 export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<LaunchPrepareResponse> {
   requireUnlocked();
   const st = store();
+  if (req.quote !== undefined && String(req.quote).toUpperCase() !== "SOL") throw new HttpError(400, `Quote "${String(req.quote)}" is not supported: DONCHAIN launches on pump.fun are quoted in SOL only.`);
+  if (req.launchpad !== undefined && String(req.launchpad).toLowerCase() !== "pumpfun") throw new HttpError(400, `Launchpad "${String(req.launchpad)}" is not supported: only pump.fun.`);
   const name = String(req.name ?? "").trim().slice(0, 32);
   const symbol = String(req.symbol ?? "").trim().slice(0, 10);
   if (!name) throw new HttpError(400, "name required.");
@@ -52,6 +56,35 @@ export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<Laun
   if (!m) throw new HttpError(400, "imageDataUrl must be a base64 data URL (data:image/png;base64,…).");
   const imageBase64 = m[2].replace(/\s+/g, "");
   if (imageBase64.length > 6_000_000) throw new HttpError(400, "Image too large (4 MB max).");
+  // mint keypair: imported (Block X "Import your own mint keypair") > reserved ("Fetch mint address") > vanity grind > random
+  const suffix = String(req.vanitySuffix ?? req.vanity ?? "").trim();
+  if (suffix && !/^[1-9A-HJ-NP-Za-km-z]{1,6}$/.test(suffix)) throw new HttpError(400, "vanitySuffix: 1–6 base58 characters (no 0, O, I, l).");
+  const endsWithSuffix = (addr: string) => !suffix || addr.toLowerCase().endsWith(suffix.toLowerCase());
+  let keypair: import("@solana/web3.js").Keypair;
+  let mintSource: LaunchPrepareResponse["mintSource"];
+  if (req.mintSecret !== undefined && String(req.mintSecret).trim() !== "") {
+    try {
+      keypair = parseSolanaKey(String(req.mintSecret).trim());
+    } catch {
+      throw new HttpError(400, "mintSecret: not a valid keypair (base58 secret key or [1,2,3,…] byte array expected).");
+    }
+    if (!endsWithSuffix(keypair.publicKey.toBase58())) throw new HttpError(400, `The imported mint ${keypair.publicKey.toBase58()} does not end with "${suffix}".`);
+    if (pendings().has(keypair.publicKey.toBase58()) || registry().has(keypair.publicKey.toBase58())) throw new HttpError(409, "This mint keypair was already prepared or launched here.");
+    mintSource = "imported";
+  } else if (req.mint !== undefined && String(req.mint).trim() !== "") {
+    const addr = String(req.mint).trim();
+    if (!endsWithSuffix(addr)) throw new HttpError(400, `The reserved mint ${addr} does not end with "${suffix}".`);
+    keypair = takeReserved(addr);
+    mintSource = "reserved";
+  } else if (suffix) {
+    const r = await grindVanity(suffix, { timeoutMs: 90_000 });
+    if (!r) throw new HttpError(504, `No address ending with "${suffix}" found in 90 s. Reserve one first with POST /api/launch/mint (it runs as a job) or use a shorter suffix.`);
+    keypair = r.keypair;
+    mintSource = "vanity";
+  } else {
+    keypair = generateMint();
+    mintSource = "generated";
+  }
   const uri = await uploadPumpMetadata({
     name,
     symbol,
@@ -62,8 +95,6 @@ export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<Laun
     telegram: req.telegram ? String(req.telegram) : undefined,
     website: req.website ? String(req.website) : undefined,
   });
-  const vanity = req.vanity ? String(req.vanity).trim().slice(0, 4) : undefined;
-  const keypair = generateMint(vanity);
   const mint = keypair.publicKey.toBase58();
   let image: string | null = null;
   const j = await fetchUriJson(uri, 5000).catch(() => null);
@@ -76,8 +107,8 @@ export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<Laun
     if (oldest) pm.delete(oldest[0]);
   }
   saveRuntimeSoon();
-  logActivity(st, { kind: "launch", ok: true, message: `Launch prepared: ${symbol} · metadata ${uri}`, mint, data: { uri } });
-  return { uri, mint, name, symbol, mintSource: vanity ? "vanity" : "generated" };
+  logActivity(st, { kind: "launch", ok: true, message: `Launch prepared: ${symbol} · mint ${mintSource} · metadata ${uri}`, mint, data: { uri, mintSource } });
+  return { uri, mint, name, symbol, mintSource };
 }
 
 /* ------------------------------------------------------------------ runtime */
@@ -892,21 +923,4 @@ export function stopAllTasks(launchId: string): LaunchTaskState[] {
 /** every known launch run (for search / dashboards) */
 export function launchRuns(): LaunchRun[] {
   return [...registry().values()];
-}
-
-/* ------------------------------------------------------------------ drafts hook (drafts.ts owns the file) */
-
-let draftHook: ((draftId: string, mint: string) => void) | null = null;
-/** drafts.ts registers how a draft is marked launched (keeps launch.ts free of the drafts module) */
-export function onDraftLaunched(fn: (draftId: string, mint: string) => void): void {
-  draftHook = fn;
-}
-function markDraftLaunched(draftId: string | null, mint: string): void {
-  if (draftId && draftHook) {
-    try {
-      draftHook(draftId, mint);
-    } catch {
-      /* draft gone */
-    }
-  }
 }
