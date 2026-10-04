@@ -109,6 +109,8 @@ export default function PortfolioPage() {
   const allChecked = rows.length > 0 && rows.every((w) => selected.has(w.address));
   const toggleSort = (key: SortKey) => setSort((s) => (s?.key === key ? (s.dir === 1 ? { key, dir: -1 } : null) : { key, dir: 1 }));
   const base = { wallets: live, groups, selected: sel, active, balances: bal };
+  /** one wallet's key from its row (key icon) */
+  const [exportOne, setExportOne] = useState<string | null>(null);
   const relayJobs = (jobs.data?.jobs ?? []).filter((j) => (activityTab === "disperse" ? j.kind === "disperse" || j.kind === "distribute" || j.kind === "transfer" : j.kind === "consolidate"));
 
   const bulk = async (fn: () => Promise<void>, ok: string) => {
@@ -168,9 +170,9 @@ export default function PortfolioPage() {
                     <div className="flex items-center gap-2 text-xs text-text-300">
                       {tab === "wallets" ? (
                         <>
-                          <button type="button" disabled={!sel.length || !canSign} onClick={() => setModal("export")} className={tool} title={!sel.length ? "Select wallets first" : !canSign ? "Unlock the vault" : "Export the private keys of the selection"}>
+                          <button type="button" disabled={!canSign || !live.length} onClick={() => setModal("export")} className={tool} title={!canSign ? "Unlock the vault" : sel.length ? "Export the private keys of the selection" : "Export the private keys of every wallet"}>
                             <KeyRound className="h-3.5 w-3.5" />
-                            Export Keys
+                            Export Keys{sel.length ? ` (${sel.length})` : " (all)"}
                           </button>
                           <button type="button" disabled={!sel.length} onClick={() => setModal("move")} className={tool} title={!sel.length ? "Select wallets first" : "Move the selection into a group"}>
                             <FolderPlus className="h-3.5 w-3.5" />
@@ -355,7 +357,8 @@ export default function PortfolioPage() {
                             canSign={canSign}
                             dragPayload={selected.has(w.address) ? sel.join(",") : w.address}
                             draggable={!!transfer}
-                          />
+                          onExport={setExportOne}
+                            />
                         ))
                       )}
                     </tbody>
@@ -501,7 +504,8 @@ export default function PortfolioPage() {
         }}
       />
       <ImportModal open={modal === "import"} onClose={() => setModal(null)} group={curGroup?.id} />
-      {modal === "export" ? <ExportModal open onClose={() => setModal(null)} {...base} /> : null}
+      {modal === "export" ? <ExportModal open onClose={() => setModal(null)} {...base} selected={sel.length ? sel : live.map((w) => w.address)} /> : null}
+      {exportOne ? <ExportModal open onClose={() => setExportOne(null)} {...base} selected={[exportOne]} /> : null}
       {modal === "move" ? <MoveModal open onClose={() => setModal(null)} {...base} /> : null}
       {modal === "withdraw" ? <SendModal kind="withdraw" open onClose={() => setModal(null)} {...base} /> : null}
       {modal === "airdrop" ? <AirdropModal open onClose={() => setModal(null)} {...base} /> : null}
@@ -532,7 +536,7 @@ function Action({ icon, label, onClick, disabled }: { icon: React.ReactNode; lab
   );
 }
 
-function WalletRow({ w, groups, active, checked, onCheck, balance, tokens, vol, canSign, dragPayload, draggable }: { w: WalletInfo; groups: WalletGroup[]; active: boolean; checked: boolean; onCheck: (v: boolean) => void; balance: number; tokens: number; vol: { sol: number; approx: boolean } | null; canSign: boolean; dragPayload: string; draggable: boolean }) {
+function WalletRow({ w, groups, active, checked, onCheck, balance, tokens, vol, canSign, dragPayload, draggable, onExport }: { w: WalletInfo; groups: WalletGroup[]; active: boolean; checked: boolean; onCheck: (v: boolean) => void; balance: number; tokens: number; vol: { sol: number; approx: boolean } | null; canSign: boolean; dragPayload: string; draggable: boolean; onExport: (address: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [label, setLabel] = useState(w.label);
   const [copied, setCopied] = useState(false);
@@ -585,7 +589,9 @@ function WalletRow({ w, groups, active, checked, onCheck, balance, tokens, vol, 
       <td className="px-2 py-2 font-mono tabular-nums text-text-100">{sol(balance)}</td>
       <td className="px-2 py-2 text-right">
         <div className="flex items-center justify-end gap-1">
-
+          <button type="button" disabled={!canSign} onClick={() => onExport(w.address)} className="flex h-6 w-6 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-text-100 disabled:opacity-40" title={canSign ? "Export this wallet's private key" : "Unlock the vault"}>
+            <KeyRound className="h-3 w-3" />
+          </button>
           <button type="button" onClick={() => post("/api/wallets/update", { address: w.address, archived: !w.archived }).then(() => walletsRes.refresh()).catch((e) => toast(failureMessage(e), "err"))} className="flex h-6 w-6 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-text-100" title={w.archived ? "Unarchive" : "Archive"}>
             <Archive className="h-3 w-3" />
           </button>
