@@ -5,7 +5,7 @@ import { ApiError, Button, Field, InlineError, Input, Kbd, Panel, Spinner, Toggl
 import { LockIcon, UnlockModal } from "@/components/Navbar";
 import { failureMessage, post } from "@/lib/api";
 import { refreshVaultDependents, settingsRes, useSettings, useVault, writeLocalPresets } from "@/lib/store";
-import type { Settings, SettingsUpdateRequest } from "@/lib/ui-types";
+import type { Settings, SettingsUpdateRequest } from "@/lib/types";
 
 export default function SettingsPage() {
   const settings = useSettings();

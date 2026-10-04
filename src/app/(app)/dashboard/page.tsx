@@ -9,7 +9,7 @@ import { TaskRowCompact } from "@/components/dev/TaskRowCompact";
 import { useGet } from "@/lib/api";
 import { useSolPrice } from "@/lib/store";
 import { age, isMint, short, signedSol, sol, usd } from "@/lib/format";
-import type { DashboardResponse } from "@/lib/ui-types";
+import type { DashboardResponse } from "@/lib/types";
 
 export default function DashboardPage() {
   return (

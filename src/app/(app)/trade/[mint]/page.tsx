@@ -8,7 +8,7 @@ import { DevRoom, TokenHeader } from "@/components/dev/DevRoom";
 import { useGet, useSSE } from "@/lib/api";
 import { useWallets } from "@/lib/store";
 import { age, pct, short, sol, solscanAccount, solscanTx, time } from "@/lib/format";
-import type { Candle, CandleTf, FeedTrade, TokenCandlesResponse, TokenHoldersResponse, TokenInfo, TokenTradesResponse } from "@/lib/ui-types";
+import type { Candle, CandleTf, FeedTrade, TokenCandlesResponse, TokenHoldersResponse, TokenInfo, TokenTradesResponse } from "@/lib/types";
 
 const TF: CandleTf[] = ["1s", "15s", "1m"];
 const TF_SEC: Record<CandleTf, number> = { "1s": 1, "15s": 15, "1m": 60 };

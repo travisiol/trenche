@@ -8,7 +8,7 @@ import { publishFeedStatus, useFeedStatus } from "@/components/feed-status";
 import { failureMessage, post, useSSE } from "@/lib/api";
 import { DEFAULT_PRESETS, readLocalPresets, solPriceRes, useSettings, useVault, useWallets, writeLocalPresets } from "@/lib/store";
 import { short } from "@/lib/format";
-import type { FeedCard, FeedColumn, FeedMigrate, FeedSnapshot, FeedStatus } from "@/lib/ui-types";
+import type { FeedCard, FeedColumn, FeedMigrate, FeedSnapshot, FeedStatus } from "@/lib/types";
 
 type Cols = Record<FeedColumn, FeedCard[]>;
 const EMPTY: Cols = { new: [], almost: [], migrated: [] };

@@ -8,6 +8,7 @@
  *  - "error"    → the server answered `{ error }`
  */
 import { useEffect, useRef, useSyncExternalStore } from "react";
+import type { JobCreated, JobView } from "./types";
 
 export type ApiFailureKind = "network" | "missing" | "locked" | "error";
 
@@ -209,4 +210,24 @@ export function useGet<T>(path: string | null, intervalMs = 0): ResourceState<T>
   const active = (res ?? IDLE) as Resource<T>;
   const state = useSyncExternalStore(active.subscribe, active.getSnapshot, () => SERVER_SNAPSHOT as ResourceState<T>);
   return { ...state, refresh: active.refresh };
+}
+
+/** Poll GET /api/jobs/[id] until the job is done (or `timeoutMs` elapses) and return its final view. */
+export async function waitJob(jobId: string, timeoutMs = 120_000, everyMs = 1000): Promise<JobView> {
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    const job = await get<JobView>(`/api/jobs/${jobId}`);
+    if (job.done || Date.now() > until) return job;
+    await new Promise((r) => setTimeout(r, everyMs));
+  }
+}
+
+/** Result of a creator-fees claim, read back from its job (extra.totalSol / extra.signatures). */
+export type ClaimResult = { error: string | null; totalSol: string; confirmed: number; signatures: string[] };
+export async function claimFees(body: { mint?: string; wallet?: string; wallets?: string[] }): Promise<ClaimResult> {
+  const { jobId } = await post<JobCreated>("/api/dev/fees/claim", body);
+  const job = await waitJob(jobId);
+  const signatures = Array.isArray(job.extra?.signatures) ? (job.extra!.signatures as string[]) : job.steps.map((s) => s.signature).filter((s): s is string => !!s);
+  const totalSol = typeof job.extra?.totalSol === "string" ? job.extra.totalSol : typeof job.extra?.totalSol === "number" ? String(job.extra.totalSol) : "0";
+  return { error: job.error, totalSol, confirmed: job.steps.filter((s) => s.ok && s.signature).length, signatures };
 }

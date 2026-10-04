@@ -2,7 +2,7 @@
 /** Candlestick chart (lightweight-charts v5) fed by GET /api/token/[mint]/candles?tf= and live trades. */
 import { useEffect, useRef } from "react";
 import { CandlestickSeries, ColorType, HistogramSeries, createChart, type CandlestickData, type HistogramData, type IChartApi, type ISeriesApi, type Time, type UTCTimestamp } from "lightweight-charts";
-import type { Candle } from "@/lib/ui-types";
+import type { Candle } from "@/lib/types";
 
 export function CandleChart({ candles, live, height = 380, unitLabel }: { candles: Candle[]; live: Candle | null; height?: number; unitLabel?: string }) {
   const el = useRef<HTMLDivElement>(null);

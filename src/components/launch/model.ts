@@ -2,7 +2,7 @@
  * Launch form model — Block X task model reproduced 1:1 (see BRIEF "Tâches de launch").
  * Saved as a draft in localStorage and as presets through /api/presets.
  */
-import { TASK_DEFAULTS, TASK_LIMITS, type LaunchTask, type LaunchTaskType, type TradeMode } from "@/lib/ui-types";
+import { TASK_DEFAULTS, TASK_LIMITS, type LaunchTask, type LaunchTaskType, type TradeMode } from "@/lib/types";
 
 export type FormTask = {
   id: string;

@@ -7,7 +7,7 @@ import { failureMessage, post, useGet } from "@/lib/api";
 import { useSettings, useVault, useWallets } from "@/lib/store";
 import { age, compact, pct, short, sol, usd } from "@/lib/format";
 import { usePresets } from "@/components/trade/TradePanel";
-import type { TrendingResponse, TrendingWindow } from "@/lib/ui-types";
+import type { TrendingResponse, TrendingWindow } from "@/lib/types";
 
 const WINDOWS: TrendingWindow[] = ["1m", "5m", "1h", "6h", "24h"];
 

@@ -6,8 +6,8 @@
  */
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import type { LaunchState, LaunchStep, LaunchTaskState, TaskActionResponse } from "@/lib/ui-types";
-import { PAUSABLE_TASKS } from "@/lib/ui-types";
+import type { LaunchState, LaunchStep, LaunchTaskState, TaskActionResponse } from "@/lib/types";
+import { PAUSABLE_TASKS } from "@/lib/types";
 import { api, failureMessage, post, useSSE } from "@/lib/api";
 import { pumpfunUrl, short, solscanTx, time } from "@/lib/format";
 import { Icon3D } from "../Icon3D";

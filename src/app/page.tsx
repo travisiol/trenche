@@ -2,7 +2,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import type { WalletsResponse } from "@/lib/ui-types";
+import type { WalletsResponse } from "@/lib/types";
 
 /** `/` → /portfolio when the vault has no wallet yet, else /dashboard. */
 export default function Home() {

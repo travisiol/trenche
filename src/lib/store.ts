@@ -1,13 +1,13 @@
 "use client";
 /** Shared polled resources (navbar + pages read the same snapshots). */
 import { createResource, useResource } from "./api";
-import type { BalancesResponse, SettingsResponseLike, SolPriceResponse, VaultStatus, WalletsResponse } from "./ui-types";
+import type { BalancesResponse, Settings, SolPriceResponse, VaultStatus, WalletsResponse } from "./types";
 
 export const vaultRes = createResource<VaultStatus>("/api/vault", 5000);
 export const walletsRes = createResource<WalletsResponse>("/api/wallets", 10000);
 export const balancesRes = createResource<BalancesResponse>("/api/balances", 5000);
 export const solPriceRes = createResource<SolPriceResponse>("/api/sol-price", 30000);
-export const settingsRes = createResource<SettingsResponseLike>("/api/settings", 0);
+export const settingsRes = createResource<Settings>("/api/settings", 0);
 
 export const useVault = () => useResource(vaultRes);
 export const useWallets = () => useResource(walletsRes);

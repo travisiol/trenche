@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
-import type { LaunchTaskState, TaskActionResponse } from "@/lib/ui-types";
-import { PAUSABLE_TASKS } from "@/lib/ui-types";
+import type { LaunchTaskState, TaskActionResponse } from "@/lib/types";
+import { PAUSABLE_TASKS } from "@/lib/types";
 import { failureMessage, post } from "@/lib/api";
 import { Icon3D } from "../Icon3D";
 import { Button, Dot, Progress, toast } from "../ui";

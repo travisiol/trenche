@@ -9,7 +9,7 @@ import { EMPTY_FORM, TASK_META, clearDraft, fromPreset, loadDraft, newTask, pres
 import { useBalances, useVault, useWallets } from "@/lib/store";
 import { failureMessage, get, post, useGet } from "@/lib/api";
 import { isMint, short, sol } from "@/lib/format";
-import type { LaunchExecuteRequest, LaunchExecuteResponse, LaunchPrepareResponse, LaunchPreset, LaunchTaskType, PresetsResponse, TokenInfo } from "@/lib/ui-types";
+import type { LaunchExecuteRequest, LaunchExecuteResponse, LaunchPrepareResponse, LaunchPreset, LaunchTaskType, PresetsResponse, TokenInfo } from "@/lib/types";
 
 const noop = () => () => {};
 const useHydrated = () => useSyncExternalStore(noop, () => true, () => false);

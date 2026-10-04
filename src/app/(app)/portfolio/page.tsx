@@ -9,7 +9,7 @@ import { useBalances, useSolPrice, useVault, useWallets, walletsRes } from "@/li
 import { del, failureMessage, useGet } from "@/lib/api";
 import { signedSol, sol, usd } from "@/lib/format";
 
-import type { DashboardResponse } from "@/lib/ui-types";
+import type { DashboardResponse } from "@/lib/types";
 
 type Period = "24h" | "7d" | "30d" | "all";
 

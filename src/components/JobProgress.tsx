@@ -5,7 +5,7 @@
  */
 import { useEffect, useState } from "react";
 import { api, useSSE } from "@/lib/api";
-import type { JobView, JobStep } from "@/lib/ui-types";
+import type { JobView, JobStep } from "@/lib/types";
 import { short, solscanTx, time } from "@/lib/format";
 import { Dot, Progress, Spinner, cx } from "./ui";
 

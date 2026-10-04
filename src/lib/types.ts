@@ -793,3 +793,36 @@ export type PresetsUpdateRequest =
   | { preset: Omit<LaunchPreset, "createdAt"> & { createdAt?: number } }
   | { remove: string }
   | { presets: LaunchPreset[] };
+
+/** POST /api/dev/fees/claim → { jobId } */
+export type FeesClaimResponse = JobCreated;
+
+/** One wallet's slice of a position (UI aggregation of PositionRow by mint, see src/lib/positions.ts) */
+export type PositionWallet = {
+  address: string;
+  label: string;
+  amount: string;
+  valueSol: string;
+  costSol: string;
+  realisedSol: string;
+  pnlSol: string;
+  supplyPct: number | null;
+  isDev: boolean;
+};
+/** Per-mint view of PositionRow[] used by Holdings and the dev room */
+export type Position = {
+  mint: string;
+  symbol: string | null;
+  name: string | null;
+  image: string | null;
+  amount: string;
+  valueSol: string;
+  costSol: string;
+  realisedSol: string;
+  pnlSol: string;
+  supplyPct: number | null;
+  onCurve: boolean;
+  progress: number | null;
+  marketCapSol: number | null;
+  wallets: PositionWallet[];
+};

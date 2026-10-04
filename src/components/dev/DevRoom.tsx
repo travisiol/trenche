@@ -6,8 +6,9 @@
  */
 import Link from "next/link";
 import { useState } from "react";
-import type { AutoDumpStatus, CreatorFeesResponse, DashboardResponse, FeesClaimResponse, JobCreated, PositionsResponse, TokenInfo, VolumeStatus, WalletInfo } from "@/lib/ui-types";
-import { failureMessage, post, useGet } from "@/lib/api";
+import type { AutoDumpStatus, CreatorFeesResponse, DashboardResponse, JobCreated, PositionsResponse, TokenInfo, VolumeStatus, WalletInfo } from "@/lib/types";
+import { failureMessage, post, useGet, claimFees, type ClaimResult } from "@/lib/api";
+import { groupPositions } from "@/lib/positions";
 import { useSettings, useVault, useWallets } from "@/lib/store";
 import { age, pct, pumpfunUrl, short, signedSol, sol, solscanAccount, usd } from "@/lib/format";
 import { Icon3D } from "../Icon3D";
@@ -65,7 +66,7 @@ export function DevRoom({ mint, embedded, activeTasks }: { mint: string; embedde
   const wallets = useWallets();
   const settings = useSettings();
   const canSign = vault.data?.unlocked ?? false;
-  const pos = positions.data?.find((p) => p.mint === mint) ?? null;
+  const pos = groupPositions(positions.data).find((p) => p.mint === mint) ?? null;
   const rows = (pos?.wallets ?? []).filter((w) => Number(w.amount) > 0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [dump, setDump] = useState(false);
@@ -264,7 +265,7 @@ function DumpModal({ open, onClose, mint, wallets, symbol, onJob }: { open: bool
 function CreatorFees({ mint, canSign }: { mint: string; canSign: boolean }) {
   const fees = useGet<CreatorFeesResponse>(`/api/dev/fees/${mint}`, 5000);
   const [busy, setBusy] = useState(false);
-  const [res, setRes] = useState<FeesClaimResponse | null>(null);
+  const [res, setRes] = useState<ClaimResult | null>(null);
   const claimable = Number(fees.data?.claimableSol ?? 0);
   return (
     <section className="panel p-4 flex flex-col gap-3">
@@ -285,7 +286,7 @@ function CreatorFees({ mint, canSign }: { mint: string; canSign: boolean }) {
           onClick={async () => {
             setBusy(true);
             try {
-              const r = await post<FeesClaimResponse>("/api/dev/fees/claim", { mint });
+              const r = await claimFees({ mint });
               setRes(r);
               fees.refresh();
               toast(r.error ? r.error : `Claimed ${r.totalSol} SOL`, r.error ? "err" : "ok");

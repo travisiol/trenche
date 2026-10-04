@@ -1,6 +1,6 @@
 "use client";
 import { useRef, useState } from "react";
-import type { WalletGroup, WalletInfo } from "@/lib/ui-types";
+import type { WalletGroup, WalletInfo } from "@/lib/types";
 import { short, sol } from "@/lib/format";
 import { post, failureMessage } from "@/lib/api";
 import { walletsRes } from "@/lib/store";

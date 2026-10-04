@@ -1,7 +1,7 @@
 "use client";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import type { FeedCard as Card, JobCreated } from "@/lib/ui-types";
+import type { FeedCard as Card, JobCreated } from "@/lib/types";
 import { failureMessage, post } from "@/lib/api";
 import { useSettings, useVault, useWallets } from "@/lib/store";
 import { age, compact, pct, short, sol, usd } from "@/lib/format";

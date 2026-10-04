@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
-import type { LaunchTaskType, WalletGroup, WalletInfo } from "@/lib/ui-types";
-import { TASK_LIMITS } from "@/lib/ui-types";
+import type { LaunchTaskType, WalletGroup, WalletInfo } from "@/lib/types";
+import { TASK_LIMITS } from "@/lib/types";
 import { short, sol } from "@/lib/format";
 import { Icon3D } from "../Icon3D";
 import { Button, Field, Input, Segmented, Toggle, cx } from "../ui";

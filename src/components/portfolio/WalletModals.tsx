@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
-import type { WalletInfo, WalletsExportResponse, JobCreated } from "@/lib/ui-types";
+import type { WalletInfo, WalletsExportResponse, JobCreated } from "@/lib/types";
 import { post, failureMessage } from "@/lib/api";
 import { refreshVaultDependents, walletsRes } from "@/lib/store";
 import { short, sol } from "@/lib/format";

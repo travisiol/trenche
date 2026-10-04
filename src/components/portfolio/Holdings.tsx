@@ -1,8 +1,9 @@
 "use client";
 import Link from "next/link";
 import { useState } from "react";
-import type { ActivityResponse, JobCreated, Position, PositionsResponse } from "@/lib/ui-types";
+import type { ActivityResponse, JobCreated, Position, PositionsResponse } from "@/lib/types";
 import { post, failureMessage, useGet } from "@/lib/api";
+import { groupPositions } from "@/lib/positions";
 import { useSettings } from "@/lib/store";
 import { dateTime, pct, short, signedSol, sol, solscanTx } from "@/lib/format";
 import { ApiError, Button, Empty, Spinner, TokenImage, cx, toast } from "../ui";
@@ -41,7 +42,7 @@ export function SellButtons({ p, wallets, size = "xs" }: { p: Position; wallets?
 
 export function Holdings({ wallets }: { wallets: string[] }) {
   const pos = usePositions(wallets);
-  const rows = (pos.data ?? []).filter((p) => Number(p.amount) > 0);
+  const rows = groupPositions(pos.data).filter((p) => Number(p.amount) > 0);
   return (
     <div className="flex flex-col min-h-0">
       {pos.error ? <ApiError error={pos.error} retry={pos.refresh} compact /> : null}

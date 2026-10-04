@@ -3,10 +3,10 @@ import Link from "next/link";
 import { useState } from "react";
 import { Icon3D } from "@/components/Icon3D";
 import { ApiError, Button, Empty, Input, Panel, Spinner, Stat, TokenImage, toast } from "@/components/ui";
-import { failureMessage, post, useGet } from "@/lib/api";
+import { failureMessage, post, useGet, claimFees } from "@/lib/api";
 import { useVault } from "@/lib/store";
 import { dateTime, isMint, short, sol, solscanTx } from "@/lib/format";
-import type { ActivityResponse, CreatorFeesResponse, FeesClaimResponse, LaunchesResponse } from "@/lib/ui-types";
+import type { ActivityResponse, CreatorFeesResponse, LaunchesResponse } from "@/lib/types";
 
 const EXTRA_KEY = "trench.rewards.extra";
 function readExtra(): string[] {
@@ -134,7 +134,7 @@ function FeeRow({ mint, canSign, launch, onRemove }: { mint: string; canSign: bo
         onClick={async () => {
           setBusy(true);
           try {
-            const r = await post<FeesClaimResponse>("/api/dev/fees/claim", { mint });
+            const r = await claimFees({ mint });
             toast(r.error ?? `Claimed ${r.totalSol} SOL`, r.error ? "err" : "ok");
             fees.refresh();
           } catch (e) {
