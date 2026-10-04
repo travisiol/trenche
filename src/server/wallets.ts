@@ -4,6 +4,7 @@ import { assertStrongPassphrase, keystoreExists, loadKeystore, saveKeystore } fr
 import { parseSolanaKey } from "@/engine/solana/keys.js";
 import { generateSolanaWallets, parseSolanaWalletLines } from "@/engine/solana/state.js";
 import type { VaultStatus, WalletGroup, WalletInfo, WalletsResponse } from "@/lib/types";
+import { WALLET_LIMITS } from "@/lib/types";
 import { HttpError, solString } from "./api";
 import { getAccountsChunked, requireUnlocked } from "./engine";
 import { logActivity, saveWalletMeta, store, type KeystoreEntry } from "./store";
@@ -114,31 +115,57 @@ export function walletsResponse(): WalletsResponse {
   return { wallets, groups: st.walletMeta.groups, active: st.walletMeta.active, unlocked: st.sol.unlocked && !!st.passphrase };
 }
 
+/** Block X "Create Wallets": numbered labels "<prefix> n" (Sniper 1, Sniper 2…), n continuing after the existing ones */
 export function generateWallets(count: number, label?: string, group?: string): string[] {
   requireUnlocked();
   const st = store();
-  const prefix = (label || "wallet").trim().replace(/\s+/g, "-").slice(0, 16) || "wallet";
-  const fresh = generateSolanaWallets(count, prefix, st.vault.length);
+  if (!Number.isFinite(count) || count < 1) throw new HttpError(400, "Number of wallets: at least 1.");
+  if (count > WALLET_LIMITS.maxCreate) throw new HttpError(400, `Generate up to ${WALLET_LIMITS.maxCreate} new developer wallets at once (asked ${count}).`);
+  const prefix = (label || "Wallet").trim().replace(/\s+/g, " ").slice(0, 24) || "Wallet";
+  const re = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} (\\d+)$`);
+  let n = Math.max(0, ...Object.values(st.walletMeta.meta).map((m) => Number(m.label?.match(re)?.[1] ?? 0)), ...st.sol.wallets.map((w) => Number(w.label.match(re)?.[1] ?? 0)));
+  const fresh = generateSolanaWallets(count, prefix.replace(/\s+/g, "-"), st.vault.length).map((w) => ({ ...w, label: `${prefix} ${++n}` }));
   st.vault = [...st.vault, ...fresh.map(({ label: l, secret }) => ({ label: l, secret }))];
   persist(st);
-  if (group) {
-    if (!st.walletMeta.groups.some((g) => g.id === group)) throw new HttpError(400, "Unknown group.");
-    for (const w of fresh) st.walletMeta.meta[w.address].group = group;
-    saveWalletMeta(st);
+  for (const w of fresh) {
+    const m = (st.walletMeta.meta[w.address] ??= { group: null, archived: false, order: 0 });
+    m.label = w.label;
+    if (group) {
+      if (!st.walletMeta.groups.some((g) => g.id === group)) throw new HttpError(400, "Unknown group.");
+      m.group = group;
+    }
   }
-  logActivity(st, { kind: "wallets", ok: true, message: `${fresh.length} wallet(s) generated.`, wallets: fresh.map((w) => w.address) });
+  saveWalletMeta(st);
+  logActivity(st, { kind: "wallets", ok: true, message: `${fresh.length} wallet(s) generated (${prefix}).`, wallets: fresh.map((w) => w.address) });
   return fresh.map((w) => w.address);
 }
 
-export function importWallets(lines: string[]): { added: number; errors: string[] } {
+/** Block X "Import Wallets": up to 50 keys, labelled "<prefix> n" (Imported 1, Imported 2…) unless the line carries its own label */
+export function importWallets(lines: string[], prefix = "Imported"): { added: number; errors: string[] } {
   requireUnlocked();
   const st = store();
-  const { entries, errors } = parseSolanaWalletLines(lines.join("\n"));
+  // one key per line, or comma-separated base58 keys; a JSON byte array "[1,2,…]" stays whole
+  const keys = lines
+    .join("\n")
+    .split(/\r?\n/)
+    .flatMap((l) => (l.trim().startsWith("[") ? [l.trim()] : l.split(",")))
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (keys.length > WALLET_LIMITS.maxImport) throw new HttpError(400, `Up to ${WALLET_LIMITS.maxImport} keys per import (got ${keys.length}).`);
+  const { entries, errors } = parseSolanaWalletLines(keys.join("\n"));
   if (entries.length === 0) throw new HttpError(400, errors[0] ?? "No valid Solana key in the input.");
   const have = new Set(st.vault.map((e) => e.secret));
-  const fresh = entries.filter((e) => !have.has(e.secret));
+  const pfx = (prefix || "Imported").trim().replace(/\s+/g, " ").slice(0, 24) || "Imported";
+  const re = new RegExp(`^${pfx.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} (\\d+)$`);
+  let n = Math.max(0, ...Object.values(st.walletMeta.meta).map((m) => Number(m.label?.match(re)?.[1] ?? 0)), ...st.sol.wallets.map((w) => Number(w.label.match(re)?.[1] ?? 0)));
+  const fresh = entries.filter((e) => !have.has(e.secret)).map((e) => ({ secret: e.secret, label: e.label && !/^(imported|wallet|sol|key)-?\d*$/i.test(e.label) ? e.label : `${pfx} ${++n}` }));
   st.vault = [...st.vault, ...fresh.map(({ label, secret }) => ({ label, secret }))];
   persist(st);
+  for (const e of fresh) {
+    const addr = pubkeyOf(e.secret);
+    if (addr) (st.walletMeta.meta[addr] ??= { group: null, archived: false, order: 0 }).label = e.label;
+  }
+  saveWalletMeta(st);
   logActivity(st, { kind: "wallets", ok: true, message: `${fresh.length} wallet(s) imported.` });
   return { added: fresh.length, errors };
 }

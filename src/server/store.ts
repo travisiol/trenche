@@ -328,9 +328,9 @@ export function publicSettings(s: StoredSettings): Settings {
 
 /** path of a per-feature JSON file (drafts/recent/ctos); resolved lazily so a Store singleton built by an older
  *  version of this module (globalThis survives HMR) still finds it */
-export function dataPath(name: "drafts" | "recent" | "ctos"): string {
+export function dataPath(name: "drafts" | "recent" | "ctos" | "dispersePresets"): string {
   const st = store();
-  return st.paths[name] ?? join(st.dir, `${name}.json`);
+  return (st.paths as Record<string, string>)[name] ?? join(st.dir, `${name}.json`);
 }
 
 export function saveWalletMeta(st: Store): void {
