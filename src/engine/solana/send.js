@@ -18,9 +18,69 @@ function signatureOf(t) {
   return a;
 }
 
+/* --- Confirmation ------------------------------------------------------------------------
+   Every status read of every in-flight transaction is coalesced into ONE getSignatureStatuses
+   call per ~150 ms window (10 wallets confirming at once = 1 RPC call per poll, not 10). A read
+   that fails (429…) answers `undefined` (= unknown), never `null` (= not found). */
+var statusBatch = { pending: new Map(), timer: null, conn: null };
+
+function statusOf(conn, sig, history = false) {
+  if (history)
+    return conn
+      .getSignatureStatuses([sig], { searchTransactionHistory: true })
+      .then(r => r?.value?.[0] ?? null)
+      .catch(() => undefined);
+  return new Promise(resolve => {
+    const b = statusBatch;
+    b.conn = conn;
+    const list = b.pending.get(sig) ?? [];
+    list.push(resolve);
+    b.pending.set(sig, list);
+    if (!b.timer) b.timer = setTimeout(flushStatuses, 150);
+  });
+}
+
+async function flushStatuses() {
+  const b = statusBatch,
+    entries = [...b.pending.entries()].slice(0, 256);
+  for (const [sig] of entries) b.pending.delete(sig);
+  b.timer = b.pending.size ? setTimeout(flushStatuses, 150) : null;
+  const sigs = entries.map(([sig]) => sig),
+    res = await b.conn.getSignatureStatuses(sigs).catch(() => null);
+  entries.forEach(([, cbs], i) => {
+    const v = res ? (res.value?.[i] ?? null) : undefined;
+    for (const cb of cbs) cb(v);
+  });
+}
+
+var isLanded = s => !!s && !s.err && (s.confirmationStatus === "confirmed" || s.confirmationStatus === "finalized");
+
+/* After the blockhash window closed (or the time budget ran out) a signature is re-checked with
+   searchTransactionHistory a few times: a 429 storm during the window must not turn a landed
+   transaction into "expired". Returns the status, null when really absent, undefined when unreadable. */
+async function recheck(conn, sig, tries = 4) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    const s = await statusOf(conn, sig, true);
+    if (s) return s;
+    last = s;
+    if (i < tries - 1) await sleep(1200 + 600 * i);
+  }
+  return last;
+}
+
+/**
+ * Broadcast + confirm one signed transaction.
+ * opts: { lastValidBlockHeight, timeoutMs (75 s), rebroadcastMs, simulateConn, dryRun,
+ *         verify?: () => Promise<boolean>   — state check used when the signature is not found after expiry
+ *                                              (mint/curve exists, token balance moved): true = landed,
+ *         rebuild?: () => Promise<{ tx, lastValidBlockHeight }> — re-sign with a fresh blockhash when the
+ *                                              transaction really was never included (max `maxRebuilds` = 2) }
+ * Result: { signature, broadcasts, confirmed, ms, error?, expired?, recovered?: "history" | "verify", rebuilds }
+ */
 export async function sendAndConfirm(t, e, r, n = {}) {
-  const a = Date.now(),
-    o = signatureOf(r);
+  const a = Date.now();
+  let o = signatureOf(r);
   if (n.dryRun)
     return {
       signature: o,
@@ -31,9 +91,14 @@ export async function sendAndConfirm(t, e, r, n = {}) {
     };
   let i = r.serialize(),
     s = n.rebroadcastMs ?? 800,
-    c = n.timeoutMs ?? 6e4,
+    c = n.timeoutMs ?? 75e3,
     d = 0,
-    l = "";
+    l = "",
+    lastValid = n.lastValidBlockHeight,
+    rebuilds = 0,
+    maxRebuilds = n.maxRebuilds ?? 2,
+    budgetEnd = a + c;
+  const done = (confirmed, extra = {}) => ({ signature: o, broadcasts: d, confirmed, ms: Date.now() - a, rebuilds, ...extra });
   if (n.simulateConn)
     try {
       const p = await n.simulateConn.simulateTransaction(r, {
@@ -43,13 +108,7 @@ export async function sendAndConfirm(t, e, r, n = {}) {
       });
       if (p.value.err) {
         const f = (p.value.logs ?? []).slice(-4).join(" | ");
-        return {
-          signature: o,
-          broadcasts: 0,
-          confirmed: !1,
-          ms: Date.now() - a,
-          error: `simulation: ${JSON.stringify(p.value.err)}${f ? " \u2014 " + f : ""}`.slice(0, 300),
-        };
+        return done(!1, { error: `simulation: ${JSON.stringify(p.value.err)}${f ? " — " + f : ""}`.slice(0, 300) });
       }
     } catch {}
   const u = async () => {
@@ -68,62 +127,74 @@ export async function sendAndConfirm(t, e, r, n = {}) {
       l = f;
     }
   };
-  if ((await u(), d === 0 && l))
-    return {
-      signature: o,
-      broadcasts: 0,
-      confirmed: !1,
-      ms: Date.now() - a,
-      error: l.slice(0, 200),
-    };
-  for (; Date.now() - a < c;) {
-    const f = (await t.getSignatureStatuses([o]).catch(() => null))?.value?.[0];
-    if (f) {
-      if (f.err)
-        return {
-          signature: o,
-          broadcasts: d,
-          confirmed: !1,
-          ms: Date.now() - a,
-          error: JSON.stringify(f.err),
-        };
-      if (f.confirmationStatus === "confirmed" || f.confirmationStatus === "finalized")
-        return {
-          signature: o,
-          broadcasts: d,
-          confirmed: !0,
-          ms: Date.now() - a,
-        };
+  if ((await u(), d === 0 && l)) return done(!1, { error: l.slice(0, 200) });
+  /* the signature was not found after the window closed: history re-check → state check → fresh blockhash */
+  const notFound = async why => {
+    const h = await recheck(t, o);
+    if (isLanded(h)) return done(!0, { recovered: "history" });
+    if (h && h.err) return done(!1, { error: JSON.stringify(h.err) });
+    if (n.verify) {
+      const ok = await n.verify().catch(() => !1);
+      if (ok) return done(!0, { recovered: "verify" });
     }
-    if (
-      n.lastValidBlockHeight !== void 0 &&
-      (await t.getBlockHeight("confirmed").catch(() => 0)) > n.lastValidBlockHeight
-    )
-      return {
-        signature: o,
-        broadcasts: d,
-        confirmed: !1,
-        ms: Date.now() - a,
-        error: "blockhash expired (150 blocks) \u2014 transaction never included",
-      };
-    (await sleep(s), await u());
-  }
-  return {
-    signature: o,
-    broadcasts: d,
-    confirmed: !1,
-    ms: Date.now() - a,
-    error: "timeout exceeded",
+    if (n.rebuild && rebuilds < maxRebuilds && h !== undefined) {
+      rebuilds++;
+      try {
+        const nb = await n.rebuild();
+        r = nb.tx;
+        o = signatureOf(r);
+        i = r.serialize();
+        lastValid = nb.lastValidBlockHeight;
+        l = "";
+        budgetEnd = Date.now() + Math.min(c, 60e3);
+        await u();
+        if (d === 0 && l) return done(!1, { error: l.slice(0, 200) });
+        return null; // keep polling with the new signature
+      } catch (err) {
+        return done(!1, { error: `rebuild failed: ${err.message ?? err}`.slice(0, 200), expired: !0 });
+      }
+    }
+    return done(!1, {
+      error: h === undefined ? `${why} — RPC could not confirm the signature (rate-limited): check it on the explorer` : `${why} — transaction not found on chain after re-check`,
+      expired: !0,
+    });
   };
+  let poll = 600;
+  for (;;) {
+    for (; Date.now() < budgetEnd;) {
+      const f = await statusOf(t, o);
+      if (f) {
+        if (f.err) return done(!1, { error: JSON.stringify(f.err) });
+        if (isLanded(f)) return done(!0);
+      }
+      if (lastValid !== void 0 && (await t.getBlockHeight("confirmed").catch(() => 0)) > lastValid) {
+        const r2 = await notFound("blockhash expired (150 blocks)");
+        if (r2) return r2;
+        poll = 600;
+        continue;
+      }
+      await sleep(poll);
+      poll = Math.min(2500, Math.round(poll * 1.35));
+      if (Date.now() - a > s) await u();
+    }
+    const r3 = await notFound("confirmation timed out");
+    if (r3) return r3;
+  }
 }
 
+/** opts.rebuild may be a function of the transaction index: (i) => Promise<{ tx, lastValidBlockHeight }>;
+ *  opts.verify likewise: (i) => Promise<boolean>. */
 export async function sendMany(t, e, r, n = {}) {
   const a = Math.max(0, Math.round(n.staggerMs ?? 0));
   return Promise.all(
     r.map(
       async (o, i) => (
         a > 0 && i > 0 && (await sleep(a * i)),
-        sendAndConfirm(t, e, o, n).catch(s => ({
+        sendAndConfirm(t, e, o, {
+          ...n,
+          rebuild: typeof n.rebuild == "function" ? () => n.rebuild(i) : void 0,
+          verify: typeof n.verify == "function" ? () => n.verify(i) : void 0,
+        }).catch(s => ({
           signature: signatureOf(o),
           broadcasts: 0,
           confirmed: !1,
@@ -173,6 +244,8 @@ export async function submitJitoBundle(txs, opts = {}) {
 
 // Envoie le bundle puis confirme via les signatures de ses tx (elles ne confirment que
 // si le bundle entier a atterri — atomique). Renvoie {ok, bundleId, sigs, landed, error}.
+// Après la fenêtre : re-vérification de la 1re signature dans l'historique + opts.verify()
+// (état on-chain) avant de déclarer le bundle perdu — un 429 n'est pas un échec.
 export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
   const sigs = txs.map(signatureOf);
   let bundleId;
@@ -183,14 +256,20 @@ export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
   }
   const timeoutMs = opts.timeoutMs ?? 45000,
     t0 = Date.now();
+  let poll = 700;
   for (; Date.now() - t0 < timeoutMs;) {
     const st = (await readConn.getSignatureStatuses(sigs).catch(() => null))?.value ?? [];
     const bad = st.find(s => s && s.err);
     if (bad) return { ok: !1, bundleId, sigs, error: `A bundle transaction reverted: ${JSON.stringify(bad.err)}` };
     const landed = st.map(s => !!(s && (s.confirmationStatus === "confirmed" || s.confirmationStatus === "finalized")));
     if (landed.length === sigs.length && landed.every(Boolean)) return { ok: !0, bundleId, sigs, landed };
-    await sleep(700);
+    await sleep(poll);
+    poll = Math.min(2500, Math.round(poll * 1.3));
   }
+  const h = await recheck(readConn, sigs[0]);
+  if (isLanded(h)) return { ok: !0, bundleId, sigs, landed: sigs.map(() => !0), recovered: "history" };
+  if (h && h.err) return { ok: !1, bundleId, sigs, error: `A bundle transaction reverted: ${JSON.stringify(h.err)}` };
+  if (opts.verify && (await opts.verify().catch(() => !1))) return { ok: !0, bundleId, sigs, landed: sigs.map(() => !0), recovered: "verify" };
   return {
     ok: !1,
     bundleId,

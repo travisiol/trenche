@@ -77,7 +77,7 @@ function LaunchScreen() {
   const token = useGet<TokenInfo>(viewingMint ? `/api/token/${viewingMint}` : null, 4000);
   const launchState = useLaunchState(view.kind === "mint" ? view.mint : null);
   /** CTO task states as a LaunchState for the Tasks panel once the CTO ran (Start / Stop live on the right rail) */
-  const ctoLive: LaunchState | null = cto && cto.mint && (cto.status === "running" || cto.status === "stopped" || cto.taskStates.some((t) => t.status !== "pending")) ? { id: cto.id, mint: cto.mint, name: cto.name, symbol: cto.symbol ?? "", dev: "", mode: "plain", status: cto.status === "running" ? "live" : "done", createSignature: null, createConfirmed: true, error: null, steps: [], tasks: cto.taskStates, startedAt: cto.createdAt, sellOnExternal: null, autoDump: cto.autoDump, autoDevSell: null } : null;
+  const ctoLive: LaunchState | null = cto && cto.mint && (cto.status === "running" || cto.status === "stopped" || cto.taskStates.some((t) => t.status !== "pending")) ? { id: cto.id, mint: cto.mint, name: cto.name, symbol: cto.symbol ?? "", dev: "", mode: "plain", status: cto.status === "running" ? "live" : "done", createSignature: null, createConfirmed: true, error: null, steps: [], tasks: cto.taskStates, startedAt: cto.createdAt, sellOnExternal: null, autoDump: cto.autoDump, autoDevSell: null, autoClaim: null } : null;
   const openCto = (c: CtoRecord) => {
     setCtoForm({ ...newForm(active), id: c.id, name: c.name, symbol: c.symbol ?? "", tasks: c.tasks.map(fromApiTask) });
     setView({ kind: "cto", id: c.id });
@@ -118,7 +118,7 @@ function LaunchScreen() {
     if (withModal) setModal(true);
   };
   const newLaunch = (withModal = true) => {
-    const f = newForm(active);
+    const f = newForm(active, settings.data?.autoClaimRewards ?? true);
     saveDraft(f).catch((e) => toast(failureMessage(e), "err"));
     openDraft(f, withModal);
   };
@@ -533,6 +533,11 @@ function LaunchScreen() {
                 ))}
                 {form.autoDevSellEnabled ? <li>Auto Dev Sell: 100 % of the dev wallet {form.autoDevSellMode === "ms" ? `${form.autoDevSellValue} ms after the token goes live` : `at $${form.autoDevSellValue} market cap`}.</li> : null}
                 {form.sellOnExternalEnabled ? <li>Auto Dump once net external volume reaches {form.sellOnExternalThreshold} SOL.</li> : null}
+                {form.autoClaimEnabled ? (
+                  <li>
+                    Auto-claim: the creator fees go to <b className="text-text-100">{dev?.label || "the dev wallet"}</b> by themselves once the vault holds ≥ {form.autoClaimMinSol || "0.01"} SOL (checked every {form.autoClaimIntervalSec || "300"} s).
+                  </li>
+                ) : null}
               </ol>
               <div className="flex flex-col gap-1 rounded-md border border-line-100 bg-bg-50 px-3 py-2 text-xs">
                 {needs.map((r) => (

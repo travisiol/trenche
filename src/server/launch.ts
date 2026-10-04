@@ -29,7 +29,8 @@ import type {
 import { TASK_DEFAULTS, TASK_LIMITS } from "@/lib/types";
 import { HttpError, intIn, lamportsOf, numIn, sleep, solString } from "./api";
 import { armAutodump, autodumpStatus, disarmAutodump, disarmTaskWatches } from "./autodump";
-import { buyWithWallets, groupWallets, readConn, requireUnlocked, sendConn, tipLamportsFor, vaultWallets } from "./engine";
+import { armAutoclaim, autoclaimStatusOrNull, normalizeAutoClaim } from "./autoclaim";
+import { buyWithWallets, groupWallets, labelOf, readConn, requireUnlocked, sendConn, tipLamportsFor, vaultWallets } from "./engine";
 import { jobNew, jobNote, jobPush, jobRun } from "./jobs";
 import { registerRuntimeProducer, RESTORE_NOTE, restoreSection, saveRuntimeSoon } from "./persist";
 import { syncPumpCluster } from "./pumpcluster";
@@ -151,7 +152,7 @@ type SavedPending = { mint: string; secret: string; uri: string; name: string; s
 
 function serializeRun(run: LaunchRun): SavedRun {
   return {
-    state: { ...run.state, autoDump: null, autoDevSell: null, tasks: [], steps: run.state.steps.slice(-200) },
+    state: { ...run.state, autoDump: null, autoDevSell: null, autoClaim: null, tasks: [], steps: run.state.steps.slice(-200) },
     tasks: run.tasks.map((t): SavedTask => {
       if (t.type === "bundle") return { id: t.id, type: t.type, wallets: t.wallets, autoStart: t.autoStart, amounts: Object.fromEntries([...t.amounts].map(([k, v]) => [k, v.toString()])), slippageBps: t.slippageBps, tipLamports: t.tipLamports.toString(), autoRetryCount: t.autoRetryCount, activitySol: t.activitySol };
       if (t.type === "sniper") return { id: t.id, type: t.type, wallets: t.wallets, autoStart: t.autoStart, amounts: Object.fromEntries([...t.amounts].map(([k, v]) => [k, v.toString()])), slippageBps: t.slippageBps, tipLamports: t.tipLamports.toString(), autoRetryCount: t.autoRetryCount, minDelayMs: t.minDelayMs, maxDelayMs: t.maxDelayMs, activitySol: t.activitySol };
@@ -186,7 +187,7 @@ function restoreRun(sv: SavedRun): LaunchRun | null {
   const record = st.launches.find((l) => l.mint === mint) ?? { mint, name: sv.state.name, symbol: sv.state.symbol, uri: null, image: null, dev: sv.state.dev, mode: sv.state.mode, at: sv.state.startedAt, createSignature: sv.state.createSignature, createConfirmed: !!sv.state.createConfirmed, createError: null, wallets: [sv.state.dev, ...tasks.flatMap((t) => t.wallets)], buysConfirmed: 0, buysTotal: 0, jobId: sv.jobId };
   const job: Job = st.jobs.get(sv.jobId) ?? { id: sv.jobId, kind: `launch-${sv.state.mode}`, label: `Launch ${sv.state.symbol}`, total: 0, completed: 0, sent: 0, failed: 0, steps: [], status: "stopped", cluster: st.settings.cluster, nextAt: 0, error: RESTORE_NOTE, extra: { mint }, startedAt: sv.state.startedAt, endedAt: Date.now(), stop: true };
   if (!st.jobs.has(job.id)) st.jobs.set(job.id, job);
-  const state: LaunchState = { ...sv.state, tasks: [], autoDump: null, autoDevSell: null, restored: { at: Date.now(), note: RESTORE_NOTE } };
+  const state: LaunchState = { ...sv.state, tasks: [], autoDump: null, autoDevSell: null, autoClaim: null, restored: { at: Date.now(), note: RESTORE_NOTE } };
   if (state.status === "preparing" || state.status === "sending") {
     state.status = state.createConfirmed ? "live" : "failed";
     state.error = state.createConfirmed ? null : `Server restarted during the send. Create signature: ${state.createSignature ?? "none — check the dev wallet on the explorer before retrying"}.`;
@@ -250,7 +251,7 @@ export function launchGet(id: string): LaunchRun | undefined {
 
 export function launchStateOf(run: LaunchRun): LaunchState {
   const devSell = autodumpStatus(DEV_SELL_KEY(run.state.mint));
-  return { ...run.state, tasks: run.tasks.map((t) => taskState(run, t.id)), autoDump: autodumpStatus(run.state.mint), autoDevSell: devSell.armedAt ? devSell : null, steps: run.state.steps.slice(-200) };
+  return { ...run.state, tasks: run.tasks.map((t) => taskState(run, t.id)), autoDump: autodumpStatus(run.state.mint), autoDevSell: devSell.armedAt ? devSell : null, autoClaim: autoclaimStatusOrNull(run.state.mint), steps: run.state.steps.slice(-200) };
 }
 
 export function subscribeLaunch(id: string, fn: (ev: LaunchStreamEvent) => void): () => void {
@@ -489,6 +490,9 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
     if (m === "ms" && v > 7 * 86_400_000) throw new HttpError(400, "autoDevSell.value: 7 days max.");
   }
   if (req.sellOnExternalEnabled && !(Number(req.sellOnExternalThreshold) > 0)) throw new HttpError(400, "Auto Dump: the external volume threshold (SOL) must be > 0 when enabled.");
+  // "Auto-claim rewards → dev wallet": on by default (Settings.autoClaimRewards), validated before anything is sent
+  const autoClaimOn = req.autoClaim ? !!req.autoClaim.enabled : st.settings.autoClaimRewards !== false;
+  const autoClaim = autoClaimOn ? normalizeAutoClaim(req.autoClaim) : null;
   const draftId = req.draftId ? String(req.draftId) : null;
   const slippageBps = intIn(req.slippageBps, 0, 9000, st.settings.slippageBps);
   const cuPrice = intIn(req.cuPrice, 0, 50_000_000, st.settings.cuPrice);
@@ -554,6 +558,7 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
       sellOnExternal: req.sellOnExternalEnabled ? { enabled: true, threshold: String(req.sellOnExternalThreshold ?? "0"), externalVolumeSol: 0, fired: false } : null,
       autoDump: null,
       autoDevSell: null,
+      autoClaim: null,
       draftId,
     },
     job,
@@ -570,11 +575,11 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   saveLaunches(st);
   track(st, mint);
   job.extra = { mint, mode, phase: "preparing" };
-  jobRun(job, async () => runLaunch(run, { pendingKeypair: pending.keypair, uri: pending.uri, devBuyLamports, slippageBps, cuPrice, bundleTip, cashback: false, req })); // pump.fun rejects cashback coins since 2026-10 (create_v2 error 6082 CashbackDeprecated): the flag is never sent
+  jobRun(job, async () => runLaunch(run, { pendingKeypair: pending.keypair, uri: pending.uri, devBuyLamports, slippageBps, cuPrice, bundleTip, cashback: false, autoClaim, req })); // pump.fun rejects cashback coins since 2026-10 (create_v2 error 6082 CashbackDeprecated): the flag is never sent
   return { jobId: job.id, id: mint, mint, mode, tasks: tasks.map((t) => ({ id: t.id, type: t.type })) };
 }
 
-type RunOpts = { pendingKeypair: import("@solana/web3.js").Keypair; uri: string; devBuyLamports: bigint; slippageBps: number; cuPrice: number; bundleTip: bigint; cashback: boolean; req: LaunchExecuteRequest };
+type RunOpts = { pendingKeypair: import("@solana/web3.js").Keypair; uri: string; devBuyLamports: bigint; slippageBps: number; cuPrice: number; bundleTip: bigint; cashback: boolean; autoClaim: { minSol: string; intervalSec: number } | null; req: LaunchExecuteRequest };
 
 async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   const st = store();
@@ -698,6 +703,15 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
       step(run, "autodump", true, `Auto Dev Sell armed · ${ds.mode === "ms" ? `${ds.value} ms after live` : `MC ≥ $${ds.value}`}`);
     } catch (e) {
       step(run, "autodump", false, `Auto Dev Sell not armed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  // Auto-claim rewards → dev wallet: the creator vault is read every intervalSec and claimed to the dev once ≥ minSol
+  if (o.autoClaim) {
+    try {
+      armAutoclaim(mint, { ...o.autoClaim, creator: dev });
+      step(run, "autoclaim", true, `Auto-claim armed · creator fees → ${labelOf(dev)} when ≥ ${o.autoClaim.minSol} SOL, checked every ${o.autoClaim.intervalSec}s`);
+    } catch (e) {
+      step(run, "autoclaim", false, `Auto-claim not armed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   // bundle "Sell all on external": sell 100 % of the bundle wallets once net external SOL ≥ threshold

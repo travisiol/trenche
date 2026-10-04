@@ -1,7 +1,7 @@
 /* Typed wrappers over the untyped donchain engine. Amounts are lamports/BigInt here. */
 import { PublicKey, type Connection, type VersionedTransaction } from "@solana/web3.js";
 import { isHeliusSender, SENDER_TIP_LAMPORTS } from "@/engine/solana/config.js";
-import { latestBlockhash, sendBundleAndConfirm, sendMany, type SendResult } from "@/engine/solana/send.js";
+import { latestBlockhash, sendBundleAndConfirm, sendMany, type Rebuilt, type SendResult } from "@/engine/solana/send.js";
 import {
   INITIAL_REAL_TOKENS,
   TOKEN_2022_PROGRAM,
@@ -16,6 +16,7 @@ import type { CurveState, JobStep } from "@/lib/types";
 import { HttpError, lamportsOf, solString } from "./api";
 import { jobPush, jobNote } from "./jobs";
 import { syncPumpCluster } from "./pumpcluster";
+import { invalidateRpcCache } from "./rpcqueue";
 import { isDevnet, logActivity, store, track, type Job } from "./store";
 
 export { solString };
@@ -174,18 +175,31 @@ export type TradeOpts = {
 
 export type TradeOutcome = { address: string; label: string; ok: boolean; signature: string | null; error: string | null; sol: string };
 
+/** per-transaction hooks for sendMany: re-sign with a fresh blockhash / prove by token balance (see send.js) */
+type DispatchHooks = {
+  rebuild?: (i: number) => Promise<Rebuilt>;
+  verify?: (i: number) => Promise<boolean>;
+};
+
 async function dispatch(
   txs: VersionedTransaction[],
   rows: { address: string; label: string; sol: string }[],
   opts: TradeOpts,
   lastValidBlockHeight: number,
+  hooks: DispatchHooks = {},
 ): Promise<TradeOutcome[]> {
   const conn = readConn();
   const out: TradeOutcome[] = [];
+  const noteRecovery = (r: { recovered?: "history" | "verify"; rebuilds?: number }, label: string) => {
+    if (r.recovered === "history") jobNote(opts.job, `${label}: found in the transaction history after the confirmation window (RPC was rate-limited).`, { phase: "confirm" });
+    if (r.recovered === "verify") jobNote(opts.job, `${label}: proven by the token balance after the confirmation window.`, { phase: "confirm" });
+    if (r.rebuilds) jobNote(opts.job, `${label}: re-signed with a fresh blockhash (${r.rebuilds}×).`, { phase: "confirm" });
+  };
   if (opts.bundle) {
     for (let i = 0; i < txs.length; i += 5) {
       const chunk = txs.slice(i, i + 5);
-      const r = await sendBundleAndConfirm(conn, chunk, { timeoutMs: 45_000 });
+      const r = await sendBundleAndConfirm(conn, chunk, { timeoutMs: 45_000, verify: hooks.verify ? () => hooks.verify!(i) : undefined });
+      if (r.recovered) noteRecovery(r, `bundle ${i / 5 + 1}`);
       chunk.forEach((_tx, k) => {
         const row = rows[i + k];
         const o: TradeOutcome = { address: row.address, label: row.label, ok: r.ok, signature: r.sigs[k] ?? null, error: r.ok ? null : (r.error ?? "bundle not landed"), sol: row.sol };
@@ -193,16 +207,32 @@ async function dispatch(
         jobPush(opts.job, o.ok, { label: o.label, address: o.address, sol: o.sol, signature: o.signature, error: o.error ?? undefined, phase: "bundle" });
       });
     }
+    invalidateRpcCache((k) => rows.some((r) => k.includes(r.address)) || k.includes(opts.mint));
     return out;
   }
-  const results: SendResult[] = await sendMany(conn, sendConn(), txs, { lastValidBlockHeight, staggerMs: 0 });
+  const results: SendResult[] = await sendMany(conn, sendConn(), txs, { lastValidBlockHeight, staggerMs: 0, rebuild: hooks.rebuild, verify: hooks.verify });
   results.forEach((r, k) => {
     const row = rows[k];
+    noteRecovery(r, row.label);
     const o: TradeOutcome = { address: row.address, label: row.label, ok: r.confirmed, signature: r.signature ?? null, error: r.confirmed ? null : (r.error ?? "not confirmed"), sol: row.sol };
     out.push(o);
     jobPush(opts.job, o.ok, { label: o.label, address: o.address, sol: o.sol, signature: o.signature, error: o.error ?? undefined, phase: "send" });
   });
+  invalidateRpcCache((k) => rows.some((r) => k.includes(r.address)) || k.includes(opts.mint));
   return out;
+}
+
+/** token balance of one wallet's ATA right now (null when the RPC cannot read it) */
+async function tokenBalanceOf(conn: Connection, owner: string, mint: PublicKey, tokenProgram: PublicKey): Promise<bigint | null> {
+  const ata = associatedTokenAddress(new PublicKey(owner), mint, tokenProgram);
+  const info = await conn.getAccountInfo(ata, "confirmed").catch(() => undefined);
+  if (info === undefined) return null;
+  if (!info?.data) return BigInt(0);
+  try {
+    return Buffer.from(info.data).readBigUInt64LE(64);
+  } catch {
+    return null;
+  }
 }
 
 /** buy `lamportsEach` of SOL on `mint` from every wallet. Fails cleanly (readable error) on empty wallets. */
@@ -219,29 +249,42 @@ export async function buyWithWallets(opts: TradeOpts & { lamportsEach: bigint | 
   if (curve.complete) throw new HttpError(409, "Token graduated to PumpSwap: buying on the curve is not possible here.");
   const wallets = vaultWallets(opts.wallets);
   const amountOf = (a: string) => (typeof opts.lamportsEach === "function" ? opts.lamportsEach(a) : opts.lamportsEach);
-  // balance guard: a readable error instead of a failed broadcast
-  const infos = await getAccountsChunked(conn, wallets.map((w) => new PublicKey(w.address))).catch(() => null);
+  // balance guard (SOL + current token balance in one chunked read): a readable error instead of a failed broadcast;
+  // the token balance is the proof used when a signature is not found after the blockhash window
+  const tokenProgram = await tokenProgramOf(conn, mintPk);
+  const pre = await readBalancesChunked(conn, wallets.map((w) => w.address), opts.mint, tokenProgram).catch(() => null);
   const FEE_MARGIN = BigInt(3_000_000); // ATA rent + fees + priority
   const poor: string[] = [];
   wallets.forEach((w, i) => {
-    const bal = BigInt(infos?.[i]?.lamports ?? 0);
-    if (infos && bal < amountOf(w.address) + FEE_MARGIN + opts.tipLamports) poor.push(`${w.label} (${solString(bal)} SOL)`);
+    const bal = pre?.[i]?.sol ?? BigInt(0);
+    if (pre && bal < amountOf(w.address) + FEE_MARGIN + opts.tipLamports) poor.push(`${w.label} (${solString(bal)} SOL)`);
   });
   if (poor.length === wallets.length)
     throw new HttpError(402, `Insufficient SOL: ${poor.join(", ")} — each wallet needs the buy amount + ~0.003 SOL for fees${opts.tipLamports > BigInt(0) ? " + the tip" : ""}.`);
   if (poor.length) jobNote(opts.job, `Skipped (insufficient SOL): ${poor.join(", ")}`);
-  const active = wallets.filter((_w, i) => BigInt(infos?.[i]?.lamports ?? 0) >= amountOf(_w.address) + FEE_MARGIN + opts.tipLamports || !infos);
-  const tokenProgram = await tokenProgramOf(conn, mintPk);
+  const active = wallets.filter((_w, i) => !pre || (pre[i]?.sol ?? BigInt(0)) >= amountOf(_w.address) + FEE_MARGIN + opts.tipLamports);
+  const preTokens = new Map(active.map((w) => [w.address, pre?.find((b) => b.owner === w.address)?.tokens ?? null]));
   const rows: BuyRow[] = active.map((w) => ({ label: w.label, signer: st.sol.keypair(w.address), solIn: amountOf(w.address), cuPrice: opts.cuPrice }));
   const plans = planBuys(rows, { virtualTokenReserves: curve.virtualTokenReserves, virtualSolReserves: curve.virtualSolReserves, realTokenReserves: curve.realTokenReserves }, opts.slippageBps);
   const { blockhash, lastValidBlockHeight } = await latestBlockhash(conn);
-  const txs = plans.map((p, i) =>
+  const build = (i: number, recentBlockhash: string) =>
     signWith(
-      buildBuyTx({ mint: mintPk, creator: curve.creator, tokenProgram, cuPrice: opts.cuPrice, ataExists: false, tipLamports: opts.bundle || opts.tipLamports > BigInt(0) ? opts.tipLamports : BigInt(0), recentBlockhash: blockhash }, p),
+      buildBuyTx({ mint: mintPk, creator: curve.creator, tokenProgram, cuPrice: opts.cuPrice, ataExists: false, tipLamports: opts.bundle || opts.tipLamports > BigInt(0) ? opts.tipLamports : BigInt(0), recentBlockhash }, plans[i]),
       rows[i].signer,
-    ),
-  );
-  const out = await dispatch(txs, active.map((w) => ({ address: w.address, label: w.label, sol: solString(amountOf(w.address)) })), opts, lastValidBlockHeight);
+    );
+  const txs = plans.map((_p, i) => build(i, blockhash));
+  const out = await dispatch(txs, active.map((w) => ({ address: w.address, label: w.label, sol: solString(amountOf(w.address)) })), opts, lastValidBlockHeight, {
+    rebuild: async (i) => {
+      const fresh = await latestBlockhash(conn);
+      return { tx: build(i, fresh.blockhash), lastValidBlockHeight: fresh.lastValidBlockHeight };
+    },
+    // a buy landed when the wallet now holds more tokens than before the send
+    verify: async (i) => {
+      const before = preTokens.get(active[i].address);
+      const now = await tokenBalanceOf(conn, active[i].address, mintPk, tokenProgram);
+      return before !== null && before !== undefined && now !== null && now > before;
+    },
+  });
   track(st, opts.mint);
   const okSol = out.filter((o) => o.ok).reduce((s, o) => s + Number(o.sol), 0);
   logActivity(st, {
@@ -294,13 +337,24 @@ export async function sellWithWallets(opts: TradeOpts & { percent: number }): Pr
     throw new HttpError(409, unreadable.length ? `RPC could not read the balance of ${unreadable.join(", ")}. Nothing was sold — retry.` : "Nothing to sell: these wallets hold no tokens of this mint.");
   const plans = planSells(rows, { virtualTokenReserves: curve.virtualTokenReserves, virtualSolReserves: curve.virtualSolReserves, realTokenReserves: curve.realTokenReserves }, opts.slippageBps);
   const { blockhash, lastValidBlockHeight } = await latestBlockhash(conn);
-  const txs = plans.map((p, i) =>
+  const build = (i: number, recentBlockhash: string) =>
     signWith(
-      buildSellTx({ mint: mintPk, creator: curve.creator, tokenProgram, cuPrice: opts.cuPrice, tipLamports: opts.bundle || opts.tipLamports > BigInt(0) ? opts.tipLamports : BigInt(0), recentBlockhash: blockhash, cashback: curve.isCashbackCoin }, p),
+      buildSellTx({ mint: mintPk, creator: curve.creator, tokenProgram, cuPrice: opts.cuPrice, tipLamports: opts.bundle || opts.tipLamports > BigInt(0) ? opts.tipLamports : BigInt(0), recentBlockhash, cashback: curve.isCashbackCoin }, plans[i]),
       rows[i].signer,
-    ),
-  );
-  const out = await dispatch(txs, rowMeta.map((m, i) => ({ ...m, sol: solString(plans[i].expectedSol) })), opts, lastValidBlockHeight);
+    );
+  const txs = plans.map((_p, i) => build(i, blockhash));
+  const out = await dispatch(txs, rowMeta.map((m, i) => ({ ...m, sol: solString(plans[i].expectedSol) })), opts, lastValidBlockHeight, {
+    rebuild: async (i) => {
+      const fresh = await latestBlockhash(conn);
+      return { tx: build(i, fresh.blockhash), lastValidBlockHeight: fresh.lastValidBlockHeight };
+    },
+    // a sell landed when the wallet now holds fewer tokens than before the send
+    verify: async (i) => {
+      const before = byOwner.get(rowMeta[i].address)?.tokens ?? null;
+      const now = await tokenBalanceOf(conn, rowMeta[i].address, mintPk, tokenProgram);
+      return before !== null && now !== null && now < before;
+    },
+  });
   const okSol = out.filter((o) => o.ok).reduce((s, o) => s + Number(o.sol), 0);
   logActivity(st, {
     kind: opts.kind ?? "sell",

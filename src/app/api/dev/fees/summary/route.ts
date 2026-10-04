@@ -39,7 +39,7 @@ export const GET = route(async () => {
     if (rows.length && vals.length === 0) return null;
     return (Math.round(vals.reduce((s, v) => s + Number(v), 0) * 1e9) / 1e9).toString();
   };
-  const claimed = st.activity.filter((a) => a.kind === "fees" && a.ok && a.data && typeof a.data.totalSol === "string").reduce((s, a) => s + Number(a.data!.totalSol), 0);
+  const claimed = st.activity.filter((a) => (a.kind === "fees" || a.kind === "claim") && a.ok && a.data && typeof a.data.totalSol === "string").reduce((s, a) => s + Number(a.data!.totalSol), 0);
   const res: FeesSummaryResponse = {
     at: Date.now(),
     pendingSol: sum("pendingSol"),

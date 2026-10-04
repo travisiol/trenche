@@ -94,14 +94,34 @@ declare module "@/engine/solana/send.js" {
     confirmed: boolean;
     ms: number;
     error?: string;
+    /** the blockhash window closed (or the budget ran out) and the signature was not found: never a reverted tx */
+    expired?: boolean;
+    /** confirmed after the window: found in the transaction history / proven by the on-chain state check */
+    recovered?: "history" | "verify";
+    /** fresh-blockhash re-signs done (max 2) */
+    rebuilds?: number;
+  }
+  export interface Rebuilt {
+    tx: VersionedTransaction;
+    lastValidBlockHeight: number;
   }
   export interface SendOpts {
     dryRun?: boolean;
     rebroadcastMs?: number;
+    /** default 75 000 */
     timeoutMs?: number;
     simulateConn?: Connection;
     lastValidBlockHeight?: number;
     staggerMs?: number;
+    /** on-chain state check used when the signature is not found after expiry: true = the transaction landed */
+    verify?: () => Promise<boolean>;
+    /** re-sign with a fresh blockhash when the transaction really was never included */
+    rebuild?: () => Promise<Rebuilt>;
+    maxRebuilds?: number;
+  }
+  export interface SendManyOpts extends Omit<SendOpts, "verify" | "rebuild"> {
+    verify?: (index: number) => Promise<boolean>;
+    rebuild?: (index: number) => Promise<Rebuilt>;
   }
   export function sendAndConfirm(
     read: Connection,
@@ -113,7 +133,7 @@ declare module "@/engine/solana/send.js" {
     read: Connection,
     send: Connection,
     txs: VersionedTransaction[],
-    opts?: SendOpts,
+    opts?: SendManyOpts,
   ): Promise<SendResult[]>;
   export function latestBlockhash(conn: Connection): Promise<{ blockhash: string; lastValidBlockHeight: number }>;
   export function submitJitoBundle(txs: VersionedTransaction[], opts?: { blockEngineUrl?: string }): Promise<string>;
@@ -123,11 +143,12 @@ declare module "@/engine/solana/send.js" {
     sigs: string[];
     landed?: boolean[];
     error?: string;
+    recovered?: "history" | "verify";
   }
   export function sendBundleAndConfirm(
     read: Connection,
     txs: VersionedTransaction[],
-    opts?: { timeoutMs?: number; blockEngineUrl?: string },
+    opts?: { timeoutMs?: number; blockEngineUrl?: string; verify?: () => Promise<boolean> },
   ): Promise<BundleResult>;
 }
 
@@ -416,7 +437,14 @@ declare module "@/engine/solana/pump/launch.js" {
     read: Connection,
     send: Connection,
     prep: LaunchPrep,
-    opts?: { dryRun?: boolean; spreadMs?: number },
+    opts?: {
+      dryRun?: boolean;
+      spreadMs?: number;
+      /** re-prepare the create transaction with a fresh blockhash (sendAndConfirm `rebuild`) */
+      rebuildCreate?: () => Promise<import("@/engine/solana/send.js").Rebuilt>;
+      /** step log: expired buys re-sent with a fresh blockhash, buys proven by balance */
+      onNote?: (note: string) => void;
+    },
   ): Promise<LaunchResult>;
   export interface BundleStep {
     phase: "bundle" | "sent" | "fail";

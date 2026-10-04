@@ -77,6 +77,11 @@ export type LaunchForm = {
   autoDevSellEnabled: boolean;
   autoDevSellMode: "ms" | "mc";
   autoDevSellValue: string;
+  /** Auto-claim rewards → dev wallet: the server claims the pump.fun creator vault to the dev wallet on a timer
+   *  (default on = Settings.autoClaimRewards; min SOL 0.01, every 300 s) */
+  autoClaimEnabled: boolean;
+  autoClaimMinSol: string;
+  autoClaimIntervalSec: string;
   updatedAt: number;
 };
 
@@ -142,11 +147,15 @@ export const EMPTY_FORM: LaunchForm = {
   autoDevSellEnabled: false,
   autoDevSellMode: "ms",
   autoDevSellValue: "",
+  autoClaimEnabled: true,
+  autoClaimMinSol: "0.01",
+  autoClaimIntervalSec: "300",
   updatedAt: 0,
 };
 
-export function newForm(devWallet = ""): LaunchForm {
-  return { ...EMPTY_FORM, id: newDraftId(), devWallet, updatedAt: Date.now() };
+/** `autoClaim` = Settings.autoClaimRewards (the Launch Token "Auto-claim rewards → dev wallet" default) */
+export function newForm(devWallet = "", autoClaim = true): LaunchForm {
+  return { ...EMPTY_FORM, id: newDraftId(), devWallet, autoClaimEnabled: autoClaim, updatedAt: Date.now() };
 }
 
 /** Accepts any older draft shape (localStorage of ui2, server drafts) and fills the gaps. */
@@ -222,6 +231,10 @@ export function validateForm(f: LaunchForm): string[] {
   for (const t of f.tasks) for (const m of validateTask(t)) out.push(`${TASK_META[t.type].label}: ${m}`);
   if (f.sellOnExternalEnabled && !(Number(f.sellOnExternalThreshold) > 0)) out.push("Auto Dump: set the external volume threshold.");
   if (f.autoDevSellEnabled && !(Number(f.autoDevSellValue) > 0)) out.push(f.autoDevSellMode === "ms" ? "Auto Dev Sell: set the delay in ms." : "Auto Dev Sell: set the market cap.");
+  if (f.autoClaimEnabled) {
+    if (!(Number(f.autoClaimMinSol) >= 0.001)) out.push("Auto-claim: min SOL must be at least 0.001.");
+    if (!(Number(f.autoClaimIntervalSec) >= 300)) out.push("Auto-claim: the interval must be at least 300 s (one vault read per tick).");
+  }
   return out;
 }
 
@@ -347,6 +360,7 @@ export function toExecuteRequest(f: LaunchForm, mint: string): LaunchExecuteRequ
     sellOnExternalEnabled: f.sellOnExternalEnabled || undefined,
     sellOnExternalThreshold: f.sellOnExternalEnabled ? f.sellOnExternalThreshold : undefined,
     autoDevSell: f.autoDevSellEnabled && v > 0 ? { mode: f.autoDevSellMode, value: v } : undefined,
+    autoClaim: { enabled: !!f.autoClaimEnabled, minSol: f.autoClaimMinSol || undefined, intervalSec: Number(f.autoClaimIntervalSec) || undefined },
     slippageBps: f.slippageBps,
     cashback: false,
     draftId: f.id || undefined,

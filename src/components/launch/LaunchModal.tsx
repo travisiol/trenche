@@ -391,6 +391,26 @@ function LaunchModalBody({ onClose, form, onChange, wallets, balances }: Props) 
                   </div>
                 </div>
 
+                <div className="pb-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <div className={cx("inline-flex h-8 items-center gap-2 rounded-md border px-2.5 text-xs transition-colors", form.autoClaimEnabled ? "border-accent/40 bg-accent/15 text-text-100" : "border-line-100 bg-bg-50 text-text-200")} title="Once the token is live, the server reads the pump.fun creator vault on a timer and claims the creator fees to the developer wallet by itself — no manual Claim. pump.fun pays the vault out to the creator account, so the SOL always lands on the dev wallet.">
+                      <BxSwitch checked={form.autoClaimEnabled} onChange={(v) => set("autoClaimEnabled", v)} />
+                      <span>Auto-claim rewards → dev wallet</span>
+                    </div>
+                    {form.autoClaimEnabled ? (
+                      <>
+                        <div className="relative" title="Claim once the creator vault holds at least this much (claimable + cashback)">
+                          <input id="launch-auto-claim-min" inputMode="decimal" value={form.autoClaimMinSol} onChange={(e) => set("autoClaimMinSol", e.target.value)} placeholder="0.01" className="h-8 w-[108px] rounded-md border border-line-100 bg-bg-50 px-2 pr-[52px] font-mono text-[11px] text-text-100 outline-none focus:border-accent" />
+                          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-text-300">min SOL</span>
+                        </div>
+                        <div className="relative" title="How often the vault is read (seconds, at least 300 — one RPC read per tick)">
+                          <input id="launch-auto-claim-interval" inputMode="numeric" value={form.autoClaimIntervalSec} onChange={(e) => set("autoClaimIntervalSec", e.target.value)} placeholder="300" className="h-8 w-[88px] rounded-md border border-line-100 bg-bg-50 px-2 pr-9 font-mono text-[11px] text-text-100 outline-none focus:border-accent" />
+                          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-text-300">every s</span>
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
 
                 <div className="pb-2">
                   <div className="flex min-w-0 items-center gap-2">

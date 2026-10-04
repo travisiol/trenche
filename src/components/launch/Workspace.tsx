@@ -2,7 +2,7 @@
 /** Block X launch workspace: Chart · Tasks · Token info · Activity panels + the right rail (Launch · Claim Rewards). */
 import { useState } from "react";
 import { ChevronDown, Gift, GripVertical, Info, Pencil, Plus, Rocket, Settings2, Square, Trash2 } from "lucide-react";
-import type { JobCreated, LaunchPreset, LaunchState, LaunchTaskType, PositionsResponse, TokenInfo, TokenTradesResponse, WalletGroup, WalletInfo } from "@/lib/types";
+import type { AutoClaimStatus, JobCreated, LaunchPreset, LaunchState, LaunchTaskType, PositionsResponse, TokenInfo, TokenTradesResponse, WalletGroup, WalletInfo } from "@/lib/types";
 import { failureMessage, post, useGet } from "@/lib/api";
 import { useSolPrice } from "@/lib/store";
 import { usePresetIndex, useTradingPresets } from "@/lib/presets";
@@ -26,6 +26,77 @@ export function Panel({ title, right, children, className }: { title: string; ri
         {right ? <div className="ml-auto shrink-0">{right}</div> : null}
       </div>
       <div className="relative min-h-0 flex-1 overflow-hidden">{children}</div>
+    </div>
+  );
+}
+
+/** Dev task · "Auto-claim rewards → dev wallet" watcher of the live mint (GET /api/dev/autoclaim?mint=): pending in the
+ *  creator vault, last claim, total claimed, Arm / Disarm (Resume after a server restart). Works for a CTO or any viewed
+ *  mint whose creator is a vault wallet — the server never claims for a creator it cannot sign for. */
+export function AutoClaimRow({ mint }: { mint: string }) {
+  const st = useGet<AutoClaimStatus>(`/api/dev/autoclaim?mint=${mint}`, 5000);
+  const [busy, setBusy] = useState(false);
+  const s = st.data ?? null;
+  const act = async (action: "arm" | "disarm" | "resume" | "tick") => {
+    setBusy(true);
+    try {
+      await post(`/api/dev/autoclaim?mint=${mint}`, { action });
+      st.refresh();
+      if (action !== "tick") toast(action === "disarm" ? "Auto-claim disarmed" : "Auto-claim armed — creator fees go to the dev wallet by themselves", "ok");
+    } catch (e) {
+      toast(failureMessage(e), "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const btn = "h-6 rounded border border-line-100 px-1.5 text-[10px] font-medium text-text-200 hover:bg-hover-200 disabled:cursor-not-allowed disabled:opacity-40";
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line-50 px-3 py-2 text-xs" data-testid="autoclaim-row">
+      <span className="inline-flex items-center gap-1.5 text-text-100">
+        <Gift className="h-3 w-3 text-text-300" /> Auto-claim
+      </span>
+      <span className={cx("rounded px-1.5 py-0.5 text-[10px] font-medium", s?.enabled ? "bg-green-100/15 text-green-100" : s?.resumable ? "bg-yellow-100/15 text-yellow-100" : "bg-hover-200 text-text-300")} title={s?.enabled ? `Reads the creator vault every ${s.intervalSec}s and claims to the dev wallet once ≥ ${s.minSol} SOL` : s?.resumable ? "Restored after a server restart: disarmed until you resume it" : "Off — claim by hand with Claim Rewards"}>
+        {!s ? "…" : s.enabled ? "on" : s.resumable ? "paused · restart" : "off"}
+      </span>
+      {s ? (
+        <span className="font-mono text-text-300" title="Creator vault: claimable + cashback at the last read">
+          pending {s.pendingSol === null ? "—" : sol(s.pendingSol)} SOL
+        </span>
+      ) : null}
+      {s ? (
+        <span className="font-mono text-text-300" title="Claimed by the watcher to the dev wallet">
+          claimed {sol(s.claimedSol)} SOL{s.claims ? ` · ${s.claims}×` : ""}
+        </span>
+      ) : null}
+      {s?.lastClaimAt ? <span className="text-text-300">last claim {age(s.lastClaimAt)} ago</span> : null}
+      {s?.lastCheckAt ? <span className="text-text-300">checked {age(s.lastCheckAt)} ago</span> : null}
+      {s?.claiming ? <span className="text-accent">claiming…</span> : null}
+      {s?.error ? (
+        <span className="min-w-0 basis-full truncate text-yellow-100" title={s.error}>
+          {s.error}
+        </span>
+      ) : null}
+      <span className="ml-auto flex items-center gap-1">
+        {s?.enabled || s?.resumable ? (
+          <button type="button" disabled={busy} onClick={() => act("tick")} className={btn} title="Read the creator vault now">
+            Check now
+          </button>
+        ) : null}
+        {s?.resumable ? (
+          <button type="button" disabled={busy} onClick={() => act("resume")} className={cx(btn, "border-accent/40 text-accent")}>
+            Resume
+          </button>
+        ) : null}
+        {s?.enabled ? (
+          <button type="button" disabled={busy} onClick={() => act("disarm")} className={cx(btn, "border-decrease/40 text-decrease hover:bg-decrease/10")}>
+            Disarm
+          </button>
+        ) : (
+          <button type="button" disabled={busy || !s} onClick={() => act("arm")} className={cx(btn, "border-accent/40 text-accent")} title="Arm the auto-claim watcher on this mint (needs an unlocked vault)">
+            Arm
+          </button>
+        )}
+      </span>
     </div>
   );
 }
@@ -241,6 +312,7 @@ export function TasksPanel({
                 </div>
               )
             ) : null}
+            {live?.mint ?? launchId ? <AutoClaimRow mint={live?.mint ?? launchId!} /> : null}
           </div>
           {readOnly && live ? (
             <div className="flex flex-col">

@@ -5,7 +5,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Keypair } from "@solana/web3.js";
 import { SolanaState } from "@/engine/solana/state.js";
-import { HELIUS_SENDER_URL, SOLANA_PUBLIC_RPC, normalizeSolanaRpc } from "@/engine/solana/config.js";
+import { HELIUS_SENDER_URL, SOLANA_PUBLIC_RPC, normalizeSolanaRpc, withSwqosOnly } from "@/engine/solana/config.js";
+import { noteReadRpc, queuedConnection } from "./rpcqueue";
 import type { ActivityItem, LaunchPreset, LaunchRecord, Settings, TradingPreset, TradingPresets } from "@/lib/types";
 import { DEFAULT_TIP_SOL, TRADING_PRESET_DEFAULTS } from "@/lib/types";
 
@@ -29,6 +30,8 @@ export type StoredSettings = {
   pumpportalKey: string;
   heliusKey: string;
   jitoEnabled: boolean;
+  /** Launch Token modal "Auto-claim rewards → dev wallet" default (true) */
+  autoClaimRewards: boolean;
   slippageBps: number;
   cuPrice: number;
   tipSol: string;
@@ -108,6 +111,7 @@ const DEFAULT_SETTINGS: StoredSettings = {
   pumpportalKey: "",
   heliusKey: "",
   jitoEnabled: false,
+  autoClaimRewards: true,
   slippageBps: 1000,
   cuPrice: 2_000_000,
   tipSol: DEFAULT_TIP_SOL,
@@ -159,10 +163,21 @@ function build(): Store {
   };
   const saved = readJson<Partial<StoredSettings>>(paths.settings, {});
   const settings: StoredSettings = { ...DEFAULT_SETTINGS, ...saved, tradingPresets: mergeTradingPresets(saved.tradingPresets) };
+  // every server-side Connection goes through the RPC queue (concurrency, retry on 429, micro-cache) — rpcqueue.ts
+  const sol = new SolanaState();
+  sol.connection = () => {
+    const url = sol.config.rpcUrl?.trim() || SOLANA_PUBLIC_RPC;
+    noteReadRpc(url);
+    return queuedConnection(url);
+  };
+  sol.sendConnection = () => {
+    const url = withSwqosOnly(sol.config.sendRpcUrl ?? "");
+    return url ? queuedConnection(url) : sol.connection();
+  };
   const store: Store = {
     dir,
     paths,
-    sol: new SolanaState(),
+    sol,
     passphrase: null,
     vault: [],
     settings,
@@ -270,7 +285,11 @@ export function effectiveRpcUrl(s: StoredSettings): string {
   const explicit = normalizeSolanaRpc(s.rpcUrl);
   if (isDevnet(s)) return explicit && /devnet/i.test(explicit) ? explicit : DEVNET_RPC;
   if (explicit) return explicit;
-  if (s.heliusKey.trim()) return `https://mainnet.helius-rpc.com/?api-key=${s.heliusKey.trim()}`;
+  if (s.heliusKey.trim()) {
+    const k = s.heliusKey.trim();
+    const m = /api-key=([A-Za-z0-9-]+)/.exec(k); // a whole URL stored by an older build
+    return `https://mainnet.helius-rpc.com/?api-key=${m ? m[1] : k}`;
+  }
   return SOLANA_PUBLIC_RPC;
 }
 
@@ -318,6 +337,7 @@ export function publicSettings(s: StoredSettings): Settings {
     hasPumpportalKey: !!s.pumpportalKey.trim(),
     hasHeliusKey: !!s.heliusKey.trim(),
     jitoEnabled: s.jitoEnabled,
+    autoClaimRewards: s.autoClaimRewards !== false,
     slippageBps: s.slippageBps,
     cuPrice: s.cuPrice,
     tipSol: s.tipSol,

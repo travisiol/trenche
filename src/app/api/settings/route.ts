@@ -61,8 +61,14 @@ export const POST = route(async (req: Request) => {
     s.sendRpcUrl = u;
   }
   if (body.pumpportalKey !== undefined) s.pumpportalKey = String(body.pumpportalKey).trim();
-  if (body.heliusKey !== undefined) s.heliusKey = String(body.heliusKey).trim();
+  if (body.heliusKey !== undefined) {
+    // accept the bare key or any Helius URL pasted whole ("https://mainnet.helius-rpc.com/?api-key=<key>")
+    const raw = String(body.heliusKey).trim();
+    const m = /api-key=([A-Za-z0-9-]+)/.exec(raw);
+    s.heliusKey = m ? m[1] : raw.replace(/^https?:\/\/[^?]*\??/, "").trim();
+  }
   if (body.jitoEnabled !== undefined) s.jitoEnabled = !!body.jitoEnabled;
+  if (body.autoClaimRewards !== undefined) s.autoClaimRewards = !!body.autoClaimRewards;
   if (body.slippageBps !== undefined) s.slippageBps = intIn(body.slippageBps, 0, 9000, 1000, "slippageBps");
   if (body.cuPrice !== undefined) s.cuPrice = intIn(body.cuPrice, 0, 50_000_000, 2_000_000, "cuPrice");
   if (body.tipSol !== undefined) s.tipSol = solString(lamportsOf(body.tipSol, "tipSol", true));

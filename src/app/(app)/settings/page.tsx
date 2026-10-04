@@ -11,6 +11,9 @@ import { BxButton, BxInput, BxSwitch, cx } from "@/components/bx/ui";
 import { UnlockVaultModal, lockVault } from "@/components/bx/vault";
 import { KEYBINDS, KEYBIND_DEFAULTS, comboLabel, comboOf, useKeybinds, type KeybindId } from "@/lib/keybinds";
 
+/** never print an API key on screen: api-key=abcd…wxyz */
+const mask = (url: string | null | undefined) => (url ?? "").replace(/(api-key=)([A-Za-z0-9-]{8})[A-Za-z0-9-]*([A-Za-z0-9-]{4})/g, "$1$2…$3");
+
 type Tab = "appearance" | "workspace" | "notifications" | "keybinds" | "account";
 const TABS: { id: Tab; label: string; icon: React.ReactNode; desc: string }[] = [
   { id: "appearance", label: "Appearance", icon: <Palette className="h-4 w-4" />, desc: "Theme, font, and visual preferences" },
@@ -178,7 +181,7 @@ function Workspace() {
 }
 
 function WorkspaceForm({ initial }: { initial: Settings }) {
-  const [f, setF] = useState<SettingsUpdateRequest>({ cluster: initial.cluster, rpcUrl: initial.rpcUrl, sendRpcUrl: initial.sendRpcUrl, jitoEnabled: initial.jitoEnabled, slippageBps: initial.slippageBps, cuPrice: initial.cuPrice, tipSol: initial.tipSol });
+  const [f, setF] = useState<SettingsUpdateRequest>({ cluster: initial.cluster, rpcUrl: initial.rpcUrl, sendRpcUrl: initial.sendRpcUrl, jitoEnabled: initial.jitoEnabled, autoClaimRewards: initial.autoClaimRewards !== false, slippageBps: initial.slippageBps, cuPrice: initial.cuPrice, tipSol: initial.tipSol });
   const [pumpKey, setPumpKey] = useState("");
   const [heliusKey, setHeliusKey] = useState("");
   const [clearPump, setClearPump] = useState(false);
@@ -220,7 +223,7 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
           </div>
         </Row>
         <p className="text-[11px] text-text-300">
-          In use now: read <span className="font-mono text-text-200">{initial.effectiveRpcUrl}</span> · send <span className="font-mono text-text-200">{initial.effectiveSendRpcUrl}</span>
+          In use now: read <span className="font-mono text-text-200">{mask(initial.effectiveRpcUrl)}</span> · send <span className="font-mono text-text-200">{mask(initial.effectiveSendRpcUrl)}</span>
         </p>
       </div>
       <div className="space-y-3">
@@ -265,6 +268,12 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
         </Row>
         <Row title="Send through Jito by default" desc="Bundles land together or not at all (mainnet only).">
           <BxSwitch checked={!!f.jitoEnabled} onChange={(v) => set("jitoEnabled", v)} />
+        </Row>
+      </div>
+      <div className="space-y-3">
+        <H3>Rewards</H3>
+        <Row title="Auto-claim rewards → dev wallet" desc="Default of the Launch Token switch: every launch arms a watcher that claims the pump.fun creator fees to the dev wallet by itself (once ≥ 0.01 SOL, checked every 5 min). pump.fun pays the vault out to the creator account, so the SOL always lands on the dev.">
+          <BxSwitch checked={f.autoClaimRewards !== false} onChange={(v) => set("autoClaimRewards", v)} />
         </Row>
       </div>
       <div className="flex justify-end">

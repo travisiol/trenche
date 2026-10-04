@@ -195,8 +195,15 @@ export async function prepareLaunch(
   );
 }
 
+/* La création est confirmée par signature, puis — si la fenêtre du blockhash se ferme sans réponse
+   (RPC 429) — par l'EXISTENCE de la bonding curve (opts via sendAndConfirm `verify`) ; si elle n'a
+   vraiment pas atterri, re-signée avec un blockhash frais (`rebuildCreate`, 2 fois max). Les buys
+   expirés sont ensuite prouvés par leur solde de tokens, sinon renvoyés avec un blockhash frais. */
 export async function executeLaunch(t, e, r, n = {}) {
-  const a = {
+  const note = typeof n.onNote == "function" ? n.onNote : () => {},
+    mintPk = r.mint.publicKey,
+    curveExists = async () => !!(await t.getAccountInfo(bondingCurvePda(mintPk), "confirmed").catch(() => null)),
+    a = {
       lastValidBlockHeight: r.lastValidBlockHeight,
       dryRun: n.dryRun,
     },
@@ -207,7 +214,7 @@ export async function executeLaunch(t, e, r, n = {}) {
       simulateConn: t,
     });
     return {
-      mint: r.mint.publicKey.toBase58(),
+      mint: mintPk.toBase58(),
       create: h,
       buys: [],
       dryRun: !0,
@@ -223,13 +230,13 @@ export async function executeLaunch(t, e, r, n = {}) {
     if (h.value.err) {
       const g = (h.value.logs ?? []).slice(-4).join(" | ");
       return {
-        mint: r.mint.publicKey.toBase58(),
+        mint: mintPk.toBase58(),
         create: {
           signature: "",
           broadcasts: 0,
           confirmed: !1,
           ms: 0,
-          error: `simulation: ${JSON.stringify(h.value.err)}${g ? " \u2014 " + g : ""}`.slice(0, 300),
+          error: `simulation: ${JSON.stringify(h.value.err)}${g ? " — " + g : ""}`.slice(0, 300),
         },
         buys: [],
         dryRun: !1,
@@ -238,30 +245,51 @@ export async function executeLaunch(t, e, r, n = {}) {
     }
   } catch {}
   const s = o !== e && r.buyTxs.length > 0 ? o : e,
-    c = sendAndConfirm(t, o, r.createTx, a),
+    c = sendAndConfirm(t, o, r.createTx, { ...a, verify: curveExists, rebuild: n.rebuildCreate }),
     d = sendMany(t, s, r.buyTxs, {
       ...a,
       staggerMs: n.spreadMs,
     }),
-    [l, u] = await Promise.all([c, d]),
-    p = h => !h.confirmed && /IncorrectProgramId/.test(h.error ?? ""),
-    f = u.map((h, g) => (p(h) ? g : -1)).filter(h => h >= 0);
+    [l, u] = await Promise.all([c, d]);
+  if (l.recovered) note(l.recovered === "history" ? "Create found in the transaction history after the confirmation window (RPC was rate-limited)." : "Create proven by the bonding curve on chain after the confirmation window.");
+  if (l.rebuilds) note(`Create re-signed with a fresh blockhash (${l.rebuilds}×).`);
+  // buys not confirmed for a non-final reason (expired / unreadable / wrong program id before the curve existed):
+  // a wallet that already holds tokens DID buy; the others are re-sent with a fresh blockhash
+  const retryable = h => !h.confirmed && (h.expired || /IncorrectProgramId|not found|timed out|rate-limited|unreachable/i.test(h.error ?? "")),
+    f = u.map((h, g) => (retryable(h) ? g : -1)).filter(h => h >= 0);
   if (l.confirmed && f.length > 0) {
-    const h = f.map(_ => r.buyRows[_]);
-    (
-      await snipeMint(t, e, r.mint.publicKey, h, {
-        ...r.retryOpts,
-        spreadMs: n.spreadMs,
-      }).catch(_ => ({
-        buys: [],
-        error: _.message,
-      }))
-    ).buys.forEach((_, S) => {
-      u[f[S]] = _;
+    const tokenProgram = new PublicKey(TOKEN_2022_PROGRAM),
+      atas = f.map(_ => associatedTokenAddress(r.buyRows[_].signer.publicKey, mintPk, tokenProgram)),
+      infos = await t.getMultipleAccountsInfo(atas, "confirmed").catch(() => null),
+      toRetry = [];
+    f.forEach((_, S) => {
+      let held = 0n;
+      try {
+        if (infos?.[S]?.data) held = Buffer.from(infos[S].data).readBigUInt64LE(64);
+      } catch {}
+      if (held > 0n) {
+        u[_] = { ...u[_], confirmed: !0, error: void 0, recovered: "verify" };
+        note(`${r.buyRows[_].label}: buy proven by its token balance after the confirmation window.`);
+      } else toRetry.push(_);
     });
+    if (toRetry.length) {
+      note(`${toRetry.length} buy(s) never landed — re-sent with a fresh blockhash.`);
+      const h = toRetry.map(_ => r.buyRows[_]);
+      (
+        await snipeMint(t, e, mintPk, h, {
+          ...r.retryOpts,
+          spreadMs: n.spreadMs,
+        }).catch(_ => ({
+          buys: [],
+          error: _.message,
+        }))
+      ).buys.forEach((_, S) => {
+        u[toRetry[S]] = _;
+      });
+    }
   }
   return {
-    mint: r.mint.publicKey.toBase58(),
+    mint: mintPk.toBase58(),
     create: l,
     buys: u,
     dryRun: !1,
@@ -333,6 +361,8 @@ export async function launchBundle(readConn, prep, opts = {}) {
     const r = await sendBundleAndConfirm(readConn, chunks[ci], {
         timeoutMs: opts.timeoutMs ?? 45000,
         blockEngineUrl: opts.blockEngineUrl,
+        // the first bundle holds the create: after the window, the curve's existence proves it landed (RPC 429 ≠ lost)
+        verify: ci === 0 ? async () => !!(await readConn.getAccountInfo(bondingCurvePda(prep.mint.publicKey), "confirmed").catch(() => null)) : void 0,
       }),
       buyCount = chunks[ci].filter(tx => tx !== prep.createTx).length;
     (ci === 0 && (created = r.ok ? { confirmed: !0, signature: r.sigs[0] } : { confirmed: !1, error: r.error }));

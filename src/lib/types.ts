@@ -255,6 +255,9 @@ export type Settings = {
   hasHeliusKey: boolean;
   /** when true, trades/launches that carry a tip go through Jito bundles by default */
   jitoEnabled: boolean;
+  /** default of the Launch Token modal "Auto-claim rewards → dev wallet" switch (true): every launch arms an
+   *  auto-claim watcher that sends the pump.fun creator fees to the dev wallet (see AutoClaimStatus) */
+  autoClaimRewards: boolean;
   slippageBps: number;
   /** priority fee, micro-lamports per CU */
   cuPrice: number;
@@ -850,6 +853,10 @@ export type LaunchExecuteRequest = {
   autoDevSell?: { mode: "ms" | "mc"; value: number };
   /** BRIEF auto-dump: sell X % when MC ≥ Y USD or after N s (merged with sellOnExternal into one watcher) */
   autoDump?: AutoDumpConfig;
+  /** Launch Token modal "Auto-claim rewards → dev wallet": once the create confirms, a watcher reads the creator
+   *  vault every `intervalSec` (default 300) and claims to the dev wallet when pending ≥ `minSol` (default 0.01).
+   *  Omitted = `enabled: Settings.autoClaimRewards` (true by default). */
+  autoClaim?: AutoClaimRequestConfig;
   slippageBps?: number;
   cuPrice?: number;
   cashback?: boolean;
@@ -892,7 +899,7 @@ export type LaunchTaskState = {
 };
 export type LaunchStep = {
   at: number;
-  phase: "prepare" | "create" | "bundle" | "sniper" | "task" | "autodump" | "wash" | "info";
+  phase: "prepare" | "create" | "bundle" | "sniper" | "task" | "autodump" | "autoclaim" | "wash" | "info";
   ok: boolean;
   message: string;
   signature?: string | null;
@@ -917,6 +924,8 @@ export type LaunchState = {
   autoDump: AutoDumpStatus | null;
   /** "Auto Dev Sell" watcher (dev wallet only), null when not requested */
   autoDevSell: AutoDumpStatus | null;
+  /** "Auto-claim rewards → dev wallet" watcher, null when never armed on this mint */
+  autoClaim: AutoClaimStatus | null;
   /** set when the launch was restored from disk after a server restart (its loops are "stopped", resumable) */
   restored?: { at: number; note: string };
   draftId?: string | null;
@@ -949,6 +958,8 @@ export type LaunchRecord = {
   buysConfirmed: number;
   buysTotal: number;
   jobId: string;
+  /** GET /api/dev/launches only (not stored): the auto-claim watcher of this mint, null when none */
+  autoClaim?: AutoClaimStatus | null;
 };
 
 /* --------------------------------------------------------------- dev room */
@@ -1043,6 +1054,51 @@ export type AutoDumpStatus = {
   /** net external volume seen so far (SOL) when the watch has an external-volume trigger */
   externalVolumeSol: number | null;
 };
+
+/* ------------------------------------------------------------- auto-claim */
+
+/** LaunchExecuteRequest.autoClaim */
+export type AutoClaimRequestConfig = {
+  enabled: boolean;
+  /** claim once the creator vault holds at least this much (claimable + cashback), SOL decimal string; default "0.01" */
+  minSol?: string;
+  /** vault read period in seconds, 300..86400; default 300 */
+  intervalSec?: number;
+};
+export const AUTO_CLAIM_DEFAULTS = { minSol: "0.01", intervalSec: 300, minIntervalSec: 300, maxIntervalSec: 86_400 } as const;
+/** GET/POST /api/dev/autoclaim?mint= — the per-mint auto-claim watcher (runtime.json, resumable after a restart).
+ *  pump.fun's collect_creator_fee moves the vault's lamports to the CREATOR account itself (the dev wallet that
+ *  launched the token): the payer only signs the transaction, the SOL always lands on the creator. */
+export type AutoClaimStatus = {
+  mint: string;
+  /** the creator wallet (bonding curve `creator`, else the launch's dev); null until the first read */
+  creator: string | null;
+  /** true when the creator is one of the vault wallets — the watcher never claims otherwise */
+  creatorIsMine: boolean | null;
+  /** armed: the watcher ticks */
+  enabled: boolean;
+  /** true when the watcher was restored disarmed after a restart; POST {action:"resume"} re-arms it */
+  resumable?: boolean;
+  minSol: string;
+  intervalSec: number;
+  armedAt: number | null;
+  lastCheckAt: number | null;
+  lastClaimAt: number | null;
+  /** SOL claimed by this watcher (confirmed claims), decimal string */
+  claimedSol: string;
+  /** confirmed claims */
+  claims: number;
+  /** claimable + cashback at the last read, decimal string (null when unreadable) */
+  pendingSol: string | null;
+  /** last error (RPC, locked vault, creator not in vault, claim not confirmed); null when the last tick was clean */
+  error: string | null;
+  /** the running or last claim job */
+  jobId: string | null;
+  /** true while a claim transaction is in flight */
+  claiming: boolean;
+};
+/** POST /api/dev/autoclaim?mint=  (mint may also be in the body). `arm` re-arms with the new values. */
+export type AutoClaimActionRequest = { action: "arm" | "disarm" | "resume" | "tick"; mint?: string; minSol?: string; intervalSec?: number };
 
 /* --------------------------------------------------------------- trending */
 
