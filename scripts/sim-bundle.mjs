@@ -4,21 +4,36 @@
  * programs run with real balances. Nothing is broadcast. Usage: node scripts/sim-bundle.mjs [rpcUrl] */
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { prepareLaunch } from "../src/engine/solana/pump/launch.js";
-import { buildBuyTx, buildSellTx, planBuys, planSells, signWith } from "../src/engine/solana/pump/math.js";
+import { FRESH_CURVE, buildBuyTx, buildSellTx, planBuys, planSells, signWith } from "../src/engine/solana/pump/math.js";
 import { createV2Instruction } from "../src/engine/solana/pump/create.js";
 import { randomBuybackFeeRecipient, randomFeeRecipient, sellInstruction } from "../src/engine/solana/pump/instructions.js";
-import { associatedTokenAddress, bondingCurvePda, mintAuthorityPda, parseBondingCurve, TOKEN_2022_PROGRAM, tokenProgramFor } from "../src/engine/solana/pump/pdas.js";
+import { PUMP_BUYBACK_FEE_RECIPIENTS, PUMP_FEE_RECIPIENTS, associatedTokenAddress, bondingCurvePda, globalPda, mintAuthorityPda, parseBondingCurve, TOKEN_2022_PROGRAM, tokenProgramFor } from "../src/engine/solana/pump/pdas.js";
 import { ComputeBudgetProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 
 const rpc = process.argv[2] || "https://solana-rpc.publicnode.com";
 const conn = new Connection(rpc, { commitment: "confirmed", disableRetryOnRateLimit: true });
+const devnet = /devnet/i.test(rpc);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** a "keypair" whose public key is a funded mainnet wallet: signatures are invalid, simulation ignores them */
 const impersonate = (address) => ({ publicKey: new PublicKey(address), secretKey: Keypair.generate().secretKey });
-const FUNDED = {
-  dev: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM", // Binance 1
-  buyers: ["5tzFkiKscXHK5ZXCGbXZxdw7gTjjD1mBwuoFbhUvuAi9", "H8sMJSCQxfKiFTCfDR3DUMLPwcRbM61LGFJ8N4dK3WjS", "AC5RDfQFmDS1deWZos921JfqscXdByf8BKHs5ACWjtW2", "GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ"],
-};
+const FUNDED = devnet
+  ? { dev: process.env.SIM_DEV || "BxyHBF7qtLhWR7ADg1HVou28BWy6fM5EeRPoDLH5ycwH", buyers: (process.env.SIM_BUYERS || "99hqLJLWpbq9FqfD5CWcD4gVKv7n4cztP4qaXv2N9RsS,68yFSZxzLWJXkxxRGydZ63C6mHx1NLEDWmwN9Lb5yySg,BxyHBF7qtLhWR7ADg1HVou28BWy6fM5EeRPoDLH5ycwH,99hqLJLWpbq9FqfD5CWcD4gVKv7n4cztP4qaXv2N9RsS").split(",") }
+  : {
+      dev: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM", // Binance 1
+      buyers: ["5tzFkiKscXHK5ZXCGbXZxdw7gTjjD1mBwuoFbhUvuAi9", "H8sMJSCQxfKiFTCfDR3DUMLPwcRbM61LGFJ8N4dK3WjS", "AC5RDfQFmDS1deWZos921JfqscXdByf8BKHs5ACWjtW2", "GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ"],
+    };
+if (devnet && !process.env.SIM_NOSWAP) {
+  // same swap as src/server/pumpcluster.ts: devnet Global has other fee recipients and a 1 SOL fresh curve
+  const b = Buffer.from((await conn.getAccountInfo(globalPda(), "confirmed")).data);
+  const pk = (o) => new PublicKey(b.subarray(o, o + 32)).toBase58();
+  PUMP_BUYBACK_FEE_RECIPIENTS.splice(0, PUMP_BUYBACK_FEE_RECIPIENTS.length, pk(41), ...Array.from({ length: 7 }, (_, i) => pk(162 + 32 * i)));
+  PUMP_FEE_RECIPIENTS.splice(0, PUMP_FEE_RECIPIENTS.length, ...Array.from({ length: 8 }, (_, i) => pk(741 + 32 * i)));
+  FRESH_CURVE.virtualTokenReserves = b.readBigUInt64LE(73);
+  FRESH_CURVE.virtualSolReserves = b.readBigUInt64LE(81);
+  FRESH_CURVE.realTokenReserves = b.readBigUInt64LE(89);
+  console.log(`devnet constants: fee_recipient ${PUMP_BUYBACK_FEE_RECIPIENTS[0]} · fresh vSol ${Number(FRESH_CURVE.virtualSolReserves) / 1e9} SOL`);
+  await sleep(1000);
+}
 
 async function simulate(label, tx) {
   await sleep(700);
@@ -34,8 +49,9 @@ async function simulate(label, tx) {
 const results = {};
 const dev = impersonate(FUNDED.dev);
 const mintKp = Keypair.generate();
-const rows = FUNDED.buyers.map((a, i) => ({ label: `buyer-${i + 1}`, signer: impersonate(a), solIn: BigInt(300_000_000 + i * 50_000_000), cuPrice: 2_000_000 }));
-const prep = await prepareLaunch(conn, { dev, name: "TRENCH SIM", symbol: "TSIM", uri: "https://ipfs.io/ipfs/bafkreigq4mzj6jxqj3xthtp5mp4oqzkk2rl3wxfmvmsrq3lg3uc5hlerru", devBuyLamports: BigInt(500_000_000), mint: mintKp, cashback: false }, rows, { cuPrice: 2_000_000, slippageBps: 3000, tipLamports: BigInt(1_000_000) });
+const unit = devnet ? 20_000_000 : 300_000_000; // devnet whales are small
+const rows = FUNDED.buyers.map((a, i) => ({ label: `buyer-${i + 1}`, signer: impersonate(a), solIn: BigInt(unit + i * (unit / 6 | 0)), cuPrice: 2_000_000 }));
+const prep = await prepareLaunch(conn, { dev, name: "TRENCH SIM", symbol: "TSIM", uri: "https://ipfs.io/ipfs/bafkreigq4mzj6jxqj3xthtp5mp4oqzkk2rl3wxfmvmsrq3lg3uc5hlerru", devBuyLamports: BigInt(devnet ? 50_000_000 : 500_000_000), mint: mintKp, cashback: false }, rows, { cuPrice: 2_000_000, slippageBps: 3000, tipLamports: devnet ? 0n : BigInt(1_000_000) });
 console.log(`mint ${mintKp.publicKey.toBase58()} · atomic dev buy: ${prep.atomic} · createHasTip: ${prep.createHasTip} · buy txs: ${prep.buyTxs.length}`);
 results.create = await simulate("create_v2 + ATA + tip + dev buy (bundle tx 1/5)", prep.createTx);
 
@@ -80,7 +96,7 @@ if (live) {
   const plans = planBuys(rows, curve, 3000);
   const { blockhash } = await conn.getLatestBlockhash("confirmed");
   for (let i = 0; i < 4; i++) {
-    const tx = signWith(buildBuyTx({ mint: live.mint, creator: curve.creator, tokenProgram, cuPrice: 2_000_000, ataExists: false, tipLamports: BigInt(1_000_000), recentBlockhash: blockhash }, plans[i]), rows[i].signer);
+    const tx = signWith(buildBuyTx({ mint: live.mint, creator: curve.creator, tokenProgram, cuPrice: 2_000_000, ataExists: false, tipLamports: devnet ? 0n : BigInt(1_000_000), recentBlockhash: blockhash }, plans[i]), rows[i].signer);
     results[`liveBuy${i + 1}`] = await simulate(`buy on live curve ${i + 1}/4 (${rows[i].label})`, tx);
   }
   // sell layout: buy then sell 50 % of the bought tokens inside ONE transaction (simulation applies the buy first)
