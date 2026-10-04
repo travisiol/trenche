@@ -142,10 +142,10 @@ export function TaskCard({ task, wallets, groups, balances, onChange, onRemove }
                   <BxInput type="number" step="0.0001" min={0} value={task.tip} onChange={(e) => set("tip", e.target.value)} className={num} />
                 </F>
                 <F label="Trades / wallet">
-                  <BxInput type="number" min={1} max={TASK_LIMITS.maxTradesPerWallet} value={task.maxTradesPerWallet} onChange={(e) => set("maxTradesPerWallet", Number(e.target.value))} className={num} />
+                  <BxInput type="number" min={1} max={TASK_LIMITS.maxTradesPerWallet} value={task.maxTradesPerWallet} onChange={(e) => set("maxTradesPerWallet", e.target.value)} className={num} />
                 </F>
                 <F label="Duration (min)">
-                  <BxInput type="number" min={1} max={TASK_LIMITS.maxDurationMinutes} value={task.maxDurationMinutes} onChange={(e) => set("maxDurationMinutes", Number(e.target.value))} className={num} />
+                  <BxInput type="number" min={1} max={TASK_LIMITS.maxDurationMinutes} value={task.maxDurationMinutes} onChange={(e) => set("maxDurationMinutes", e.target.value)} className={num} />
                 </F>
               </div>
               <div className="flex flex-wrap items-end gap-3">

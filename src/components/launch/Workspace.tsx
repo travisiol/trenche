@@ -532,7 +532,7 @@ export function ActivityPanel({ mint, live }: { mint: string | null; live: Launc
 }
 
 /* ---------------------------------------------------------------- Right rail */
-export function RightRail({ canLaunch, onLaunch, onClaim, claimBusy, launched }: { canLaunch: boolean; onLaunch: () => void; onClaim?: () => void; claimBusy?: boolean; launched: boolean }) {
+export function RightRail({ canLaunch, onLaunch, onClaim, claimBusy, launched, launchTitle }: { canLaunch: boolean; onLaunch: () => void; onClaim?: () => void; claimBusy?: boolean; launched: boolean; launchTitle?: string }) {
   const btn = "group flex w-full flex-col items-center justify-center gap-1 rounded-md border border-line-100 bg-bg-50 px-1 py-2 text-center transition-colors hover:bg-white/[0.04] hover:text-text-100 disabled:cursor-not-allowed disabled:opacity-40";
   return (
     <aside className="flex min-h-0 shrink-0 flex-col border-l border-line-100 bg-bg-100" aria-label="Launch options" style={{ width: 72 }}>
@@ -540,7 +540,7 @@ export function RightRail({ canLaunch, onLaunch, onClaim, claimBusy, launched }:
         <span className="h-6" />
       </div>
       <div className="flex min-h-0 flex-1 flex-col px-2 py-3">
-        <button type="button" onClick={onLaunch} disabled={!canLaunch} className={btn} title={launched ? "Already launched" : canLaunch ? "Review and launch" : "Fill the token, dev wallet and unlock the vault first"}>
+        <button type="button" onClick={() => (canLaunch ? onLaunch() : launchTitle ? toast(launchTitle, "err") : null)} disabled={launched} className={cx(btn, !canLaunch && !launched ? "opacity-70" : "")} title={launched ? "Already launched" : canLaunch ? "Review and launch" : (launchTitle ?? "Open a draft first")}>
           <Rocket className="h-3.5 w-3.5 shrink-0 text-text-300 transition-colors group-hover:text-text-100" />
           <span className="max-w-full text-center text-[10px] font-medium leading-tight text-text-200">Launch</span>
         </button>
