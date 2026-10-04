@@ -109,18 +109,26 @@ function WalletActionDialog({ title, onClose, children, onSubmit }: { title: str
 }
 const walletInput = "w-full border border-line-100 bg-bg-50 px-3 py-2 text-sm text-text-100 outline-none placeholder:text-text-300 focus:border-accent";
 
-export function CreateModal({ open, onClose, groups, group: initialGroup }: { open: boolean; onClose: () => void; groups: WalletGroup[]; group?: string }) {
+export function CreateModal({ open, onClose, groups, group: initialGroup, fromGroupsTab, onCreated }: { open: boolean; onClose: () => void; groups: WalletGroup[]; group?: string; /** opened from the Groups tab: default to a new group so the wallets land where the user is looking */ fromGroupsTab?: boolean; onCreated?: (info: { group: string | null; count: number }) => void }) {
   const [count, setCount] = useState(1);
   const [label, setLabel] = useState("");
-  const [group, setGroup] = useState(initialGroup ?? "");
+  const [group, setGroup] = useState(initialGroup ?? (fromGroupsTab ? "__new" : ""));
+  const [newGroupName, setNewGroupName] = useState("");
   const s = useSubmit();
   if (!open) return null;
   const n = Math.max(1, Math.min(WALLET_LIMITS.maxCreate, count || 1));
   const submit = () =>
     s.run(async () => {
-      await post("/api/wallets/generate", { count: n, label: label.trim() || undefined, group: group || undefined });
+      let groupId: string | null = group && group !== "__new" ? group : null;
+      if (group === "__new") {
+        const name = (newGroupName.trim() || label.trim() || `Group ${groups.length + 1}`).slice(0, 32);
+        const r = await post<{ group: WalletGroup }>("/api/groups", { name });
+        groupId = r.group.id;
+      }
+      await post("/api/wallets/generate", { count: n, label: label.trim() || undefined, group: groupId || undefined });
       refreshVaultDependents();
-      toast(`${n} wallet${n > 1 ? "s" : ""} created`, "ok");
+      toast(`${n} wallet${n > 1 ? "s" : ""} created${groupId ? " in the group" : ""}`, "ok");
+      onCreated?.({ group: groupId, count: n });
       onClose();
     });
   return (
@@ -146,19 +154,22 @@ export function CreateModal({ open, onClose, groups, group: initialGroup }: { op
         </div>
         <p className="text-[11px] text-text-300">Generate up to {WALLET_LIMITS.maxCreate} new developer wallets at once.</p>
       </label>
-      {groups.length ? (
-        <label className="block space-y-1.5">
-          <span className="text-xs text-text-300">Group (optional)</span>
-          <BxSelect value={group} onChange={(e) => setGroup(e.target.value)} className="h-9 rounded-none bg-bg-50">
-            <option value="">No group</option>
-            {groups.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.name}
-              </option>
-            ))}
-          </BxSelect>
-        </label>
-      ) : null}
+      <label className="block space-y-1.5">
+        <span className="text-xs text-text-300">Group (optional)</span>
+        <BxSelect value={group} onChange={(e) => setGroup(e.target.value)} className="h-9 rounded-none bg-bg-50">
+          <option value="">No group — Developer Wallets list</option>
+          {groups.map((g) => (
+            <option key={g.id} value={g.id}>
+              {g.name}
+            </option>
+          ))}
+          <option value="__new">+ New group…</option>
+        </BxSelect>
+        {group === "__new" ? (
+          <input value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder={label.trim() || `Group ${groups.length + 1}`} maxLength={32} className={walletInput} aria-label="New group name" />
+        ) : null}
+        <p className="text-[11px] text-text-300">{group ? "The new wallets are created inside this group (Groups tab)." : "Without a group the wallets appear in the Developer Wallets tab."}</p>
+      </label>
       <Err>{s.err}</Err>
       <div className="flex justify-end gap-2 pt-1">
         <button type="button" onClick={onClose} className="px-3 py-1.5 text-xs text-text-300 hover:text-text-100 disabled:opacity-40">

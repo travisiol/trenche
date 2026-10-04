@@ -481,7 +481,24 @@ export default function PortfolioPage() {
         </div>
       </div>
 
-      <CreateModal open={modal === "create"} onClose={() => setModal(null)} groups={groups} group={curGroup?.id} />
+      <CreateModal
+        open={modal === "create"}
+        onClose={() => setModal(null)}
+        groups={groups}
+        group={curGroup?.id}
+        fromGroupsTab={tab === "groups"}
+        onCreated={({ group: g }) => {
+          if (g) {
+            setTab("groups");
+            setGroup(g);
+            setFilter("all");
+          } else if (tab === "groups") {
+            setTab("wallets");
+            setFilter("all");
+          }
+          setSelected(new Set());
+        }}
+      />
       <ImportModal open={modal === "import"} onClose={() => setModal(null)} group={curGroup?.id} />
       {modal === "export" ? <ExportModal open onClose={() => setModal(null)} {...base} /> : null}
       {modal === "move" ? <MoveModal open onClose={() => setModal(null)} {...base} /> : null}
