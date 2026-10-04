@@ -234,6 +234,29 @@ export function deleteGroup(id: string): void {
   saveWalletMeta(st);
 }
 
+export function renameGroup(id: string, name: string): WalletGroup {
+  const st = store();
+  const g = st.walletMeta.groups.find((x) => x.id === id);
+  if (!g) throw new HttpError(404, "Unknown group.");
+  const n = name.trim().slice(0, 32);
+  if (!n) throw new HttpError(400, "Group name required.");
+  g.name = n;
+  saveWalletMeta(st);
+  return g;
+}
+
+/** Move several wallets into a group (or out of every group with null) in one call. */
+export function moveWallets(addresses: string[], group: string | null): void {
+  const st = store();
+  if (group && !st.walletMeta.groups.some((g) => g.id === group)) throw new HttpError(400, "Unknown group.");
+  const known = new Set(st.sol.wallets.map((w) => w.address));
+  for (const a of addresses) {
+    if (!known.has(a)) throw new HttpError(404, `Unknown wallet ${a}.`);
+    (st.walletMeta.meta[a] ??= { group: null, archived: false, order: 0 }).group = group;
+  }
+  saveWalletMeta(st);
+}
+
 /** SOL balances of every vault wallet, one batched RPC call, 5 s cache; null entries when the RPC fails */
 export async function balances(force = false): Promise<Record<string, string | null>> {
   const st = store();

@@ -872,3 +872,7 @@ export type Position = {
   marketCapSol: number | null;
   wallets: PositionWallet[];
 };
+
+/** PATCH /api/groups/[id] {name} → WalletsResponse & { group } ; POST /api/wallets/move {addresses, group|null} → WalletsResponse */
+export type GroupRenameRequest = { name: string };
+export type WalletsMoveRequest = { addresses: string[]; group: string | null };
