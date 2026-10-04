@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { Gift, Plus, X } from "lucide-react";
-import type { ActivityResponse, CreatorFeesResponse, LaunchesResponse } from "@/lib/types";
+import type { ActivityResponse, CreatorFeesResponse, LaunchesResponse, TokenInfo } from "@/lib/types";
 import { claimFees, failureMessage, useGet } from "@/lib/api";
 import { useVault } from "@/lib/store";
 import { dateTime, isMint, short, sol } from "@/lib/format";
@@ -140,18 +140,23 @@ export default function RewardsPage() {
 
 function FeeRow({ mint, canSign, launch, onRemove }: { mint: string; canSign: boolean; launch: LaunchesResponse["launches"][number] | null; onRemove?: () => void }) {
   const fees = useGet<CreatorFeesResponse>(`/api/dev/fees/${mint}`, 10000);
+  // a tracked mint (not launched here) takes its image / symbol / name from the token metadata
+  const meta = useGet<TokenInfo>(launch ? null : `/api/token/${mint}`, 0);
+  const image = launch?.image ?? meta.data?.image ?? null;
+  const symbol = launch?.symbol ?? meta.data?.symbol ?? null;
+  const name = launch?.name ?? meta.data?.name ?? null;
   const [busy, setBusy] = useState(false);
   const claimable = Number(fees.data?.claimableSol ?? 0);
   const notMine = !!fees.data && !fees.data.isMine;
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-md border border-line-100 bg-bg-100 px-3 py-2.5">
-      <PadAvatar src={launch?.image ?? null} alt={launch?.symbol ?? "?"} size={36} />
+      <PadAvatar src={image} alt={symbol ?? "?"} size={36} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-sm">
           <Link href={`/trade/${mint}`} className="font-medium text-text-100 hover:text-accent">
-            {launch?.symbol ?? short(mint)}
+            {symbol ?? short(mint)}
           </Link>
-          <span className="truncate text-text-300">{launch?.name}</span>
+          <span className="truncate text-text-300">{name}</span>
         </div>
         <div className="font-mono text-[11px] text-text-300">
           {short(mint, 6, 6)}
