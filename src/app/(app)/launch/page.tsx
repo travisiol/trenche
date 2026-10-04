@@ -1,100 +1,98 @@
 "use client";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Icon3D } from "@/components/Icon3D";
-import { Icon } from "@/components/icons";
-import { Button, Card, CostLine, Field, Input, InlineError, Modal, Note, Page, PageHeader, Popover, Select, Spinner, StepNumber, Textarea, Toggle, cx, toast } from "@/components/ui";
-import { ImagePicker, UrlInput, urlToDataUrl } from "@/components/launch/ImageCrop";
-import { AddTaskMenu, TaskCard } from "@/components/launch/TaskEditor";
-import { LaunchLive } from "@/components/launch/LaunchLive";
-import { COST, EMPTY_FORM, TASK_META, clearDraft, fromPreset, launchNeeds, loadDraft, newTask, presetData, saveDraft, taskSentence, taskWallets, toApiTask, validateForm, type LaunchForm } from "@/components/launch/model";
-import { useBalances, useVault, useWallets } from "@/lib/store";
-import { failureMessage, get, post, useGet } from "@/lib/api";
-import { isMint, short, sol } from "@/lib/format";
-import type { LaunchExecuteRequest, LaunchExecuteResponse, LaunchPrepareResponse, LaunchPreset, LaunchTaskType, PresetsResponse, TokenInfo } from "@/lib/types";
+/** Block X /sol/launch: left rail (+ new launch, launched tokens), workspace (Chart · Tasks · Token info · Activity), right rail.
+ *  ?new=1 opens the Launch Token modal on the draft · ?open=<mint> shows a launched token · ?quick=<presetId> loads a preset and asks to confirm. */
+import { Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Plus, Rocket } from "lucide-react";
+import type { JobCreated, LaunchesResponse, LaunchExecuteRequest, LaunchExecuteResponse, LaunchPrepareResponse, LaunchPreset, PresetsResponse, TokenInfo } from "@/lib/types";
+import { claimFees, failureMessage, post, useGet } from "@/lib/api";
+import { useBalances, useSettings, useVault, useWallets } from "@/lib/store";
+import { short, sol } from "@/lib/format";
+import { toast } from "@/components/ui";
+import { BxButton, BxModal, PadAvatar, cx } from "@/components/bx/ui";
+import { BxJob } from "@/components/bx/Job";
+import { LaunchModal } from "@/components/launch/LaunchModal";
+import { ActivityPanel, ChartPanel, RightRail, TasksPanel, TokenInfoPanel } from "@/components/launch/Workspace";
+import { useLaunchState } from "@/components/launch/LaunchLive";
+import { COST, EMPTY_FORM, TASK_META, clearDraft, fromPreset, launchNeeds, loadDraft, presetData, saveDraft, taskSentence, taskWallets, toApiTask, validateForm, type LaunchForm } from "@/components/launch/model";
 
 const noop = () => () => {};
-const useHydrated = () => useSyncExternalStore(noop, () => true, () => false);
 
 export default function LaunchPage() {
-  const hydrated = useHydrated();
-  const wallets = useWallets();
-  if (!hydrated || (wallets.loading && !wallets.data)) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-text-3">
-        <Spinner />
-      </div>
-    );
-  }
-  return <LaunchEditor initial={loadDraft() ?? { ...EMPTY_FORM, devWallet: wallets.data?.active ?? "" }} />;
+  return (
+    <Suspense fallback={null}>
+      <LaunchInner />
+    </Suspense>
+  );
 }
 
-function LaunchEditor({ initial }: { initial: LaunchForm }) {
+function LaunchInner() {
+  const hydrated = useSyncExternalStore(noop, () => true, () => false);
+  const wallets = useWallets();
+  if (!hydrated || (wallets.loading && !wallets.data)) return <div className="flex flex-1 items-center justify-center text-xs text-text-300">Loading…</div>;
+  return <LaunchScreen initial={loadDraft() ?? { ...EMPTY_FORM, devWallet: wallets.data?.active ?? "" }} />;
+}
+
+function LaunchScreen({ initial }: { initial: LaunchForm }) {
+  const router = useRouter();
+  const params = useSearchParams();
   const vault = useVault();
   const wallets = useWallets();
   const balances = useBalances();
+  const settings = useSettings();
+  const launches = useGet<LaunchesResponse>("/api/dev/launches", 10000);
+  const presetsQ = useGet<PresetsResponse>("/api/presets", 0);
   const [form, setForm] = useState<LaunchForm>(initial);
-  const [clone, setClone] = useState("");
-  const [cloneBusy, setCloneBusy] = useState(false);
-  const [cloneErr, setCloneErr] = useState<string | null>(null);
-  const [summary, setSummary] = useState(false);
+  const [view, setView] = useState<"empty" | "draft" | string>(params.get("open") ? params.get("open")! : params.get("new") || params.get("quick") ? "draft" : "empty");
+  const [modal, setModal] = useState(!!params.get("new"));
+  const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [launchErr, setLaunchErr] = useState<string | null>(null);
   const [launchId, setLaunchId] = useState<string | null>(null);
-  const presetsQ = useGet<PresetsResponse>("/api/presets", 0);
-  const presets: LaunchPreset[] | null = presetsQ.data?.presets ?? null;
-  const presetsErr = presetsQ.error ? failureMessage(presetsQ.error) : null;
-  const loadPresets = presetsQ.refresh;
-  const [presetName, setPresetName] = useState("");
+  const [dumpJob, setDumpJob] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const quickDone = useRef(false);
 
   const live = (wallets.data?.wallets ?? []).filter((w) => !w.archived);
   const groups = wallets.data?.groups ?? [];
   const canSign = vault.data?.unlocked ?? false;
   const problems = validateForm(form);
-  const set = <K extends keyof LaunchForm>(k: K, v: LaunchForm[K]) => setForm((f) => ({ ...f, [k]: v }));
+  const presets = presetsQ.data?.presets ?? [];
+  const viewingMint = view !== "empty" && view !== "draft" ? view : launchId ? (launches.data?.launches.find((l) => l.mint === launchId)?.mint ?? launchId) : null;
+  const token = useGet<TokenInfo>(viewingMint ? `/api/token/${viewingMint}` : null, 4000);
+  const launchState = useLaunchState(viewingMint);
 
-  // debounced autosave of the draft
   useEffect(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => saveDraft(form), 400);
   }, [form]);
+  // ?quick=<presetId>: load the preset and open the confirmation once presets are known
+  useEffect(() => {
+    const q = params.get("quick");
+    if (!q || quickDone.current || !presetsQ.data) return;
+    const p = presetsQ.data.presets.find((x) => x.id === q);
+    quickDone.current = true;
+    if (!p) return toast("Preset not found — save one from the Tasks panel first", "err");
+    setForm((f) => fromPreset(p.data, f));
+    setView("draft");
+    setConfirm(true);
+  }, [params, presetsQ.data]);
 
-  const doClone = async () => {
-    if (!isMint(clone)) return setCloneErr("Paste a valid mint address.");
-    setCloneBusy(true);
-    setCloneErr(null);
+  const onPreset = async (action: "load" | "quick" | "save" | "delete", preset?: LaunchPreset, name?: string) => {
     try {
-      const t = await get<TokenInfo>(`/api/token/${clone.trim()}`);
-      let img = form.imageDataUrl;
-      if (t.image) {
-        try {
-          img = await urlToDataUrl(t.image);
-        } catch {
-          setCloneErr("Metadata copied; the image host blocked the download — upload the picture by hand.");
-        }
+      if (action === "save" && name) {
+        await post("/api/presets", { preset: { id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, data: presetData(form) } });
+        await presetsQ.refresh();
+        toast(`Preset “${name}” saved`, "ok");
+      } else if (action === "delete" && preset) {
+        await post("/api/presets", { remove: preset.id });
+        await presetsQ.refresh();
+      } else if ((action === "load" || action === "quick") && preset) {
+        setForm((f) => fromPreset(preset.data, f));
+        if (action === "quick") setConfirm(true);
       }
-      setForm((f) => ({ ...f, name: t.name ?? f.name, symbol: t.symbol ?? f.symbol, description: t.description ?? f.description, twitter: t.twitter ?? "", telegram: t.telegram ?? "", website: t.website ?? "", imageDataUrl: img }));
-      toast(`Cloned ${t.symbol ?? short(clone)}`, "ok");
-    } catch (e) {
-      setCloneErr(failureMessage(e));
-    } finally {
-      setCloneBusy(false);
-    }
-  };
-
-  const savePreset = async () => {
-    const name = presetName.trim();
-    if (!name) return;
-    setBusy("preset");
-    try {
-      await post("/api/presets", { preset: { id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, data: presetData(form) } });
-      setPresetName("");
-      await loadPresets();
-      toast(`Preset "${name}" saved`, "ok");
     } catch (e) {
       toast(failureMessage(e), "err");
-    } finally {
-      setBusy(null);
     }
   };
 
@@ -126,9 +124,13 @@ function LaunchEditor({ initial }: { initial: LaunchForm }) {
         cashback: form.cashback || undefined,
       };
       const r = await post<LaunchExecuteResponse>("/api/launch/execute", body);
-      setLaunchId(r.id ?? r.mint ?? prep.mint);
-      setSummary(false);
+      const id = r.id ?? r.mint ?? prep.mint;
+      setLaunchId(id);
+      setView(id);
+      setConfirm(false);
       clearDraft();
+      setForm({ ...EMPTY_FORM, devWallet: form.devWallet, tipSol: form.tipSol });
+      launches.refresh();
       toast(`Launch sent — ${short(prep.mint, 6, 6)}`, "ok");
     } catch (e) {
       setLaunchErr(failureMessage(e));
@@ -137,407 +139,199 @@ function LaunchEditor({ initial }: { initial: LaunchForm }) {
     }
   };
 
-  const taskCount = form.tasks.reduce((m, t) => ({ ...m, [t.type]: (m[t.type] ?? 0) + 1 }), {} as Record<LaunchTaskType, number>);
-  const bundleWallets = form.tasks.filter((t) => t.type === "bundle").reduce((n, t) => n + taskWallets(t, live).length, 0);
-  const devWallet = live.find((w) => w.address === form.devWallet) ?? null;
-  const devBal = Number(balances.data?.[form.devWallet] ?? devWallet?.sol ?? 0);
+  const dumpAll = async () => {
+    if (!viewingMint) return;
+    if (!confirm_(`Sell 100 % of ${token.data?.symbol ?? short(viewingMint)} on every wallet of this launch?`)) return;
+    try {
+      const r = await post<JobCreated>("/api/dev/dump", { mint: viewingMint, percent: 100, bundle: settings.data?.jitoEnabled ?? true, slippageBps: settings.data?.slippageBps ?? 2000, tipSol: settings.data?.tipSol });
+      setDumpJob(r.jobId);
+      toast("Dump sent", "info");
+    } catch (e) {
+      toast(failureMessage(e), "err");
+    }
+  };
+  const claim = async () => {
+    if (!viewingMint) return;
+    setBusy("claim");
+    try {
+      const r = await claimFees({ mint: viewingMint });
+      toast(r.error ?? `Claimed ${r.totalSol} SOL`, r.error ? "err" : "ok");
+    } catch (e) {
+      toast(failureMessage(e), "err");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const needs = launchNeeds(form, live, balances.data ?? null);
   const needed = needs.reduce((n, r) => n + r.needed, 0);
-  const available = needs.reduce((n, r) => n + r.available, 0);
   const shortRows = needs.filter((r) => r.needed > r.available);
-  const stepDone = [!!form.name.trim() && !!form.symbol.trim() && !!form.imageDataUrl, !!form.devWallet && Number(form.devBuySol) >= 0, form.tasks.length > 0 && form.tasks.every((t) => !validateFormTask(t, form)), problems.length === 0];
-
-  if (launchId) {
-    return (
-      <Page className="max-w-5xl">
-        <PageHeader icon={<Icon3D name="launch" size={40} glow />} title="Launch in progress" description="Live from the server: create, buys, tasks and every signature." />
-        <Card glow>
-          <LaunchLive
-            id={launchId}
-            onReset={() => {
-              setLaunchId(null);
-              setForm({ ...EMPTY_FORM, devWallet: form.devWallet, tasks: [] });
-            }}
-          />
-        </Card>
-      </Page>
-    );
-  }
-
-  const presetMenu = (
-    <Popover
-      width={320}
-      trigger={(open) => (
-        <Button icon="grid" className={open ? "border-accent" : ""}>
-          Presets {presets?.length ? <span className="mono text-text-3">{presets.length}</span> : null}
-        </Button>
-      )}
-    >
-      <div className="flex flex-col gap-3">
-        <div>
-          <div className="text-sm font-semibold">Presets</div>
-          <p className="hint">A preset keeps everything on this page except the image.</p>
-        </div>
-        <div className="flex gap-2">
-          <Input value={presetName} onChange={(e) => setPresetName(e.target.value)} placeholder="Save current setup as…" className="text-[13px] h-9" onKeyDown={(e) => e.key === "Enter" && savePreset()} />
-          <Button size="sm" className="h-9" busy={busy === "preset"} disabled={!presetName.trim()} onClick={savePreset}>
-            Save
-          </Button>
-        </div>
-        {presetsErr ? <p className="text-[13px] text-warn">{presetsErr}</p> : null}
-        {presets && !presets.length ? <p className="hint">No preset yet.</p> : null}
-        <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto">
-          {presets?.map((p) => (
-            <div key={p.id} className="flex items-center gap-2 min-h-10 px-2 rounded-lg bg-card border border-line text-sm">
-              <span className="font-medium truncate flex-1">{p.name}</span>
-              <Button size="xs" onClick={() => setForm((f) => fromPreset(p.data, f))}>
-                Load
-              </Button>
-              <Button
-                size="xs"
-                variant="primary"
-                disabled={!canSign}
-                onClick={() => {
-                  setForm((f) => fromPreset(p.data, f));
-                  setSummary(true);
-                }}
-                title="Load and open the launch summary"
-              >
-                Quick launch
-              </Button>
-              <button className="w-7 h-7 rounded-md text-text-3 hover:text-down hover:bg-white/5 flex items-center justify-center" onClick={() => post("/api/presets", { remove: p.id }).then(loadPresets).catch((e) => toast(failureMessage(e), "err"))} aria-label={`Delete preset ${p.name}`}>
-                <Icon name="trash" size={13} />
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-    </Popover>
-  );
+  const bundleWallets = form.tasks.filter((t) => t.type === "bundle").reduce((n, t) => n + taskWallets(t, live).length, 0);
+  const dev = live.find((w) => w.address === form.devWallet) ?? null;
+  const isDraft = view === "draft";
+  const hasDraft = !!(form.name || form.symbol || form.imageDataUrl || form.tasks.length);
 
   return (
-    <Page>
-      <PageHeader
-        icon={<Icon3D name="launch" size={40} glow />}
-        title="Launch"
-        description="Create a pump.fun token and run buys, snipes and volume around it — four steps, then one confirmation."
-        actions={
-          <>
-            {presetMenu}
-            <Button
-              variant="ghost"
-              icon="trash"
+    <div className="relative flex min-h-0 min-w-0 flex-1">
+      {/* left rail */}
+      <div className="shrink-0 overflow-hidden" style={{ width: 56 }}>
+        <aside className="launch-sidebar flex h-full shrink-0 flex-col border-r border-line-100 bg-bg-100" style={{ width: 56 }}>
+          <div className="flex flex-col gap-0.5 border-b border-line-50 p-2">
+            <button
+              type="button"
               onClick={() => {
-                setForm({ ...EMPTY_FORM, devWallet: form.devWallet });
-                clearDraft();
+                setView("draft");
+                setModal(true);
               }}
+              className={cx("flex min-w-0 flex-1 items-center justify-center rounded-md px-1 py-2 text-left text-xs text-accent transition-colors hover:bg-accent-muted/60", isDraft ? "bg-accent-muted/60" : "")}
+              aria-label="New launch"
+              title={hasDraft ? "Edit the current draft" : "New launch"}
             >
-              Clear
-            </Button>
-          </>
-        }
-      />
-
-      <div className="grid grid-cols-1 xl:grid-cols-[1fr_400px] gap-4 items-start">
-        {/* ------------------------------------------------ steps */}
-        <div className="flex flex-col gap-4 min-w-0">
-          {/* 1 — token */}
-          <Card
-            glow
-            icon={<StepNumber n={1} done={stepDone[0]} />}
-            title="Token"
-            description="Name, symbol, picture and links — what pump.fun shows. Or clone an existing token's metadata."
-            actions={
-              <div className="flex gap-2 w-full sm:w-auto">
-                <Input value={clone} onChange={(e) => setClone(e.target.value)} placeholder="Clone: paste a mint address" mono className="w-full sm:w-72 text-[13px]" onKeyDown={(e) => e.key === "Enter" && doClone()} aria-label="Mint to clone" />
-                <Button busy={cloneBusy} onClick={doClone} disabled={!clone} icon="copy">
-                  Clone
-                </Button>
-              </div>
-            }
-            bodyClassName="gap-4"
-          >
-            {cloneErr ? <InlineError>{cloneErr}</InlineError> : null}
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_200px] gap-4">
-              <div className="flex flex-col gap-4 min-w-0">
-                <div className="grid grid-cols-1 sm:grid-cols-[2fr_1fr] gap-4">
-                  <Field label="Name">
-                    <Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Token name" maxLength={32} />
-                  </Field>
-                  <Field label="Symbol" hint="Up to 10 characters.">
-                    <Input value={form.symbol} onChange={(e) => set("symbol", e.target.value.toUpperCase())} placeholder="TICKER" maxLength={10} mono />
-                  </Field>
-                </div>
-                <Field label="Description">
-                  <Textarea rows={3} value={form.description} onChange={(e) => set("description", e.target.value)} placeholder="What is it?" />
-                </Field>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <Field label="X / Twitter">
-                    <Input value={form.twitter} onChange={(e) => set("twitter", e.target.value)} placeholder="https://x.com/…" />
-                  </Field>
-                  <Field label="Telegram">
-                    <Input value={form.telegram} onChange={(e) => set("telegram", e.target.value)} placeholder="https://t.me/…" />
-                  </Field>
-                  <Field label="Website">
-                    <Input value={form.website} onChange={(e) => set("website", e.target.value)} placeholder="https://…" />
-                  </Field>
-                </div>
-              </div>
-              <Field label="Picture" hint="Square, 512 px, cropped here.">
-                <div className="flex flex-col gap-3">
-                  <ImagePicker value={form.imageDataUrl} onChange={(d) => set("imageDataUrl", d)} />
-                  <UrlInput onLoad={(d) => set("imageDataUrl", d)} />
-                </div>
-              </Field>
-            </div>
-          </Card>
-
-          {/* 2 — dev wallet */}
-          <Card icon={<StepNumber n={2} done={stepDone[1]} />} title="Dev wallet" description="The wallet that creates the token and makes the first buy. It pays the create fee." bodyClassName="gap-4">
-            <div className="grid grid-cols-1 sm:grid-cols-[1.5fr_1fr_1fr_1fr] gap-4">
-              <Field label="Wallet" hint={form.devWallet ? `${sol(devBal)} SOL available` : "Pick the creator wallet."}>
-                <Select value={form.devWallet} onChange={(e) => set("devWallet", e.target.value)}>
-                  <option value="">Choose the creator wallet</option>
-                  {live.map((w) => (
-                    <option key={w.address} value={w.address}>
-                      {w.label || short(w.address)} — {sol(balances.data?.[w.address] ?? w.sol)} SOL
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-              <Field label="Dev buy" hint="Bought in the create transaction.">
-                <Input type="number" step="0.01" min={0} value={form.devBuySol} onChange={(e) => set("devBuySol", e.target.value)} mono suffix="SOL" />
-              </Field>
-              <Field label="Slippage">
-                <Input type="number" min={0} max={100} value={form.slippageBps / 100} onChange={(e) => set("slippageBps", Math.round(Number(e.target.value) * 100))} mono suffix="%" />
-              </Field>
-              <Field label="Vanity suffix" hint="Optional; mint ends with it. Slow.">
-                <Input value={form.vanity} onChange={(e) => set("vanity", e.target.value)} placeholder="pump" mono maxLength={5} />
-              </Field>
-            </div>
-            <Toggle checked={form.cashback} onChange={(v) => set("cashback", v)} label="Cashback coin — sets pump.fun's creator cashback flag on the token" />
-          </Card>
-
-          {/* 3 — tasks */}
-          <Card
-            icon={<StepNumber n={3} done={stepDone[2]} />}
-            title="Tasks"
-            description="What your other wallets do around the create. Optional: with no task the dev wallet creates and buys alone."
-            actions={<span className="mono text-[13px] text-text-3">{form.tasks.length} task{form.tasks.length !== 1 ? "s" : ""}</span>}
-            bodyClassName="gap-4"
-          >
-            <AddTaskMenu count={taskCount} onAdd={(t) => set("tasks", [...form.tasks, newTask(t)])} />
-            {form.tasks.map((t) => (
-              <TaskCard key={t.id} task={t} wallets={live} groups={groups} balances={balances.data ?? null} onChange={(nt) => set("tasks", form.tasks.map((x) => (x.id === t.id ? nt : x)))} onRemove={() => set("tasks", form.tasks.filter((x) => x.id !== t.id))} />
-            ))}
-            {bundleWallets > 4 ? <InlineError>Jito accepts 5 transactions per bundle: the create plus 4 buys. Move the extra wallets to a Sniper task.</InlineError> : null}
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="card p-4 flex flex-col gap-3">
-                <div className="flex items-start gap-3">
-                  <Icon3D name="autodump" size={28} />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-semibold">Auto-dump</div>
-                    <p className="hint">Sell automatically once the market cap hits a target, or after a delay.</p>
-                  </div>
-                  <Toggle checked={form.autoDumpEnabled} onChange={(v) => set("autoDumpEnabled", v)} color="auto" />
-                </div>
-                {form.autoDumpEnabled ? (
-                  <div className="grid grid-cols-3 gap-3">
-                    <Field label="Sell">
-                      <Input type="number" min={1} max={100} value={form.autoDumpPercent} onChange={(e) => set("autoDumpPercent", Number(e.target.value))} mono suffix="%" />
-                    </Field>
-                    <Field label="At market cap">
-                      <Input type="number" min={0} value={form.autoDumpMcUsd} onChange={(e) => set("autoDumpMcUsd", e.target.value)} mono suffix="USD" placeholder="—" />
-                    </Field>
-                    <Field label="Or after">
-                      <Input type="number" min={0} value={form.autoDumpAfterSec} onChange={(e) => set("autoDumpAfterSec", e.target.value)} mono suffix="s" placeholder="—" />
-                    </Field>
-                  </div>
-                ) : null}
-              </div>
-              <div className="card p-4 flex flex-col gap-3">
-                <div className="flex items-start gap-3">
-                  <Icon3D name="sniper" size={28} />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-semibold">Sell on external volume</div>
-                    <p className="hint">Dump every launch wallet once buys from wallets that are not yours reach a threshold.</p>
-                  </div>
-                  <Toggle checked={form.sellOnExternalEnabled} onChange={(v) => set("sellOnExternalEnabled", v)} color="auto" />
-                </div>
-                {form.sellOnExternalEnabled ? (
-                  <Field label="External buys threshold">
-                    <Input type="number" min={0} step="0.5" value={form.sellOnExternalThreshold} onChange={(e) => set("sellOnExternalThreshold", e.target.value)} mono suffix="SOL" />
-                  </Field>
-                ) : null}
-              </div>
-            </div>
-          </Card>
-
-          {/* 4 — review */}
-          <Card icon={<StepNumber n={4} done={stepDone[3]} />} title="Review & launch" description="Everything below must be green. The summary on the right lists what will happen and what it costs." bodyClassName="gap-3">
-            <ul className="flex flex-col gap-1.5 text-sm">
-              {[
-                { ok: !!form.name.trim() && !!form.symbol.trim(), text: form.name.trim() && form.symbol.trim() ? `Token ${form.name.trim()} (${form.symbol.trim()})` : "Token name and symbol" },
-                { ok: !!form.imageDataUrl, text: form.imageDataUrl ? "Picture ready" : "A picture is required by pump.fun" },
-                { ok: !!form.devWallet, text: devWallet ? `Dev wallet ${devWallet.label || short(devWallet.address)} buys ${form.devBuySol || "0"} SOL at create` : "Pick the dev wallet" },
-                ...form.tasks.map((t) => ({ ok: validateFormTask(t, form) === null, text: `${TASK_META[t.type].label}: ${taskSentence(t, live)}` })),
-                { ok: !shortRows.length, text: shortRows.length ? `${shortRows.length} wallet${shortRows.length > 1 ? "s are" : " is"} short of SOL — fund them in Portfolio` : `Every wallet holds enough SOL (about ${sol(needed)} needed)` },
-                { ok: canSign, text: canSign ? "Vault unlocked" : "Unlock the vault to sign" },
-              ].map((r, i) => (
-                <li key={i} className="flex items-start gap-2">
-                  <span className={cx("mt-0.5 shrink-0", r.ok ? "text-up" : "text-down")}>
-                    <Icon name={r.ok ? "check" : "x"} size={15} />
-                  </span>
-                  <span className={r.ok ? "text-text-2" : "text-text"}>{r.text}</span>
-                </li>
+              <span className={cx("flex h-8 w-8 items-center justify-center rounded-full border border-dashed", hasDraft ? "border-accent text-accent" : "border-line-100 text-text-300")}>
+                <Plus className="h-3.5 w-3.5" />
+              </span>
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-2 px-2">
+            <div className="flex flex-col gap-1">
+              {(launches.data?.launches ?? []).map((l) => (
+                <button key={l.mint} type="button" onClick={() => setView(l.mint)} className={cx("flex items-center justify-center rounded-md py-1", view === l.mint ? "bg-accent-muted" : "hover:bg-white/[0.04]")} title={`${l.symbol} — ${l.name}`}>
+                  <PadAvatar src={l.image} alt={l.symbol} size={32} />
+                </button>
               ))}
-            </ul>
-            <p className="hint">Press Launch in the summary when every line is green. A confirmation lists every wallet and amount before anything is signed.</p>
-          </Card>
-        </div>
-
-        {/* ------------------------------------------------ sticky summary */}
-        <div className="xl:sticky xl:top-[72px] flex flex-col gap-4">
-          <Card glow title="What will happen" description="In order, once you confirm." bodyClassName="gap-4">
-            <div className="flex items-center gap-3">
-              {form.imageDataUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element -- local data URL
-                <img src={form.imageDataUrl} alt="" className="w-14 h-14 rounded-xl border border-line object-cover shrink-0" />
-              ) : (
-                <div className="w-14 h-14 rounded-xl border border-dashed border-line-hover flex items-center justify-center text-text-3 shrink-0">
-                  <Icon name="eye" size={18} />
-                </div>
-              )}
-              <div className="min-w-0">
-                <div className="font-semibold truncate">{form.name.trim() || <span className="text-text-3">Token name</span>}</div>
-                <div className="mono text-[13px] text-text-2">{form.symbol.trim() || <span className="text-text-3">TICKER</span>} · pump.fun · Solana</div>
-              </div>
             </div>
-            <ol className="flex flex-col gap-2 text-sm">
-              <Step n={1}>
-                <b>{devWallet ? devWallet.label || short(devWallet.address) : "The dev wallet"}</b> creates the token{Number(form.devBuySol) > 0 ? ` and buys ${form.devBuySol} SOL` : ""}
-                {bundleWallets ? ` in one Jito bundle with ${bundleWallets} bundle buy${bundleWallets > 1 ? "s" : ""}` : ""}.
-              </Step>
-              {form.tasks.map((t, i) => (
-                <Step key={t.id} n={i + 2} icon={TASK_META[t.type].icon}>
-                  <b>{TASK_META[t.type].label}:</b> {taskSentence(t, live)}
-                  {!t.autoStart ? <span className="text-text-3"> Started by hand from the dashboard.</span> : null}
-                </Step>
-              ))}
-              {form.autoDumpEnabled ? (
-                <Step n={form.tasks.length + 2} icon="autodump">
-                  <b>Auto-dump</b> sells {form.autoDumpPercent} %{Number(form.autoDumpMcUsd) > 0 ? ` when the market cap reaches $${form.autoDumpMcUsd}` : ""}
-                  {Number(form.autoDumpAfterSec) > 0 ? `${Number(form.autoDumpMcUsd) > 0 ? ", or" : ""} after ${form.autoDumpAfterSec} s` : ""}.
-                </Step>
-              ) : null}
-              {form.sellOnExternalEnabled ? (
-                <Step n={form.tasks.length + (form.autoDumpEnabled ? 3 : 2)} icon="sniper">
-                  <b>Sell on external volume:</b> every launch wallet dumps once outside buys reach {form.sellOnExternalThreshold} SOL.
-                </Step>
-              ) : null}
-            </ol>
-
-            <CostLine
-              rows={[
-                { label: `Create fee`, value: `~${COST.create} SOL` },
-                ...(Number(form.devBuySol) > 0 ? [{ label: "Dev buy", value: `${form.devBuySol} SOL` }] : []),
-                ...form.tasks
-                  .filter((t) => t.type !== "wash")
-                  .map((t) => {
-                    const addrs = taskWallets(t, live);
-                    const v = t.type === "bundle" || t.type === "sniper" ? addrs.reduce((n, a) => n + (Number(t.walletBuyAmounts[a] ?? t.buyAmount) || 0), 0) : addrs.length * (Number(t.maxTradeAmount) || 0);
-                    return { label: `${TASK_META[t.type].label} · ${addrs.length} wallet${addrs.length !== 1 ? "s" : ""}${t.type === "buy" || t.type === "volume" ? " · first trade" : ""}`, value: `${sol(v)} SOL` };
-                  }),
-                { label: "Available on those wallets", value: `${sol(available)} SOL`, tone: shortRows.length ? "down" : "up" },
-              ]}
-              total={{ label: "SOL needed", value: `≈ ${sol(needed)} SOL`, tone: shortRows.length ? "down" : undefined }}
-              note={shortRows.length ? `Short: ${shortRows.map((r) => `${r.label} needs ${sol(r.needed)}, has ${sol(r.available)}`).join(" · ")}.` : "Estimates include ~0.01 SOL per buy for rent and fees; the server re-checks every balance before sending."}
-            />
-
-            {problems.length ? (
-              <ul className="text-sm text-text-2 flex flex-col gap-1">
-                {problems.slice(0, 5).map((p) => (
-                  <li key={p} className="flex items-start gap-2">
-                    <Icon name="x" size={14} className="text-down mt-0.5 shrink-0" /> {p}
-                  </li>
-                ))}
-                {problems.length > 5 ? <li className="hint pl-6">and {problems.length - 5} more</li> : null}
-              </ul>
-            ) : null}
-            {!canSign ? <Note tone="warn">Unlock the vault to launch.</Note> : null}
-            <Button variant="primary" size="lg" className="w-full" disabled={!!problems.length || !canSign} onClick={() => setSummary(true)} title={!canSign ? "Unlock the vault first" : problems.length ? "Fix the items above first" : undefined}>
-              <Icon3D name="launch" size={22} /> Launch
-            </Button>
-            <p className="hint text-center">Nothing is signed before the confirmation. The draft autosaves on this machine.</p>
-          </Card>
-        </div>
+          </div>
+        </aside>
       </div>
 
-      <Modal open={summary} onClose={() => !busy && setSummary(false)} title="Confirm the launch" description="Real SOL leaves your wallets as soon as you confirm." width={600}>
-        <div className="flex items-center gap-3">
-          {form.imageDataUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element -- local data URL
-            <img src={form.imageDataUrl} alt="" className="w-14 h-14 rounded-xl border border-line object-cover" />
-          ) : null}
-          <div>
-            <div className="font-semibold">
-              {form.name} <span className="text-text-3 mono">{form.symbol}</span>
-            </div>
-            <div className="hint">
-              pump.fun · dev {devWallet?.label || short(form.devWallet)} · dev buy {form.devBuySol || "0"} SOL · slippage {form.slippageBps / 100} %{form.vanity ? ` · vanity …${form.vanity}` : ""}
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg-100">
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 flex-row-reverse">
+            <RightRail canLaunch={isDraft && !problems.length && canSign} onLaunch={() => setConfirm(true)} onClaim={viewingMint ? claim : undefined} claimBusy={busy === "claim"} launched={!!viewingMint} />
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              {view === "empty" ? (
+                <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+                  <span className="flex h-12 w-12 items-center justify-center rounded-full border border-dashed border-line-100 text-accent">
+                    <Rocket className="h-5 w-5" />
+                  </span>
+                  <div>
+                    <p className="text-sm font-medium text-text-100">Create a new launch</p>
+                    <p className="mt-0.5 text-xs text-text-300">Token details, developer wallet, then bundle, sniper, buy, volume and wash tasks.</p>
+                  </div>
+                  <BxButton
+                    variant="primary"
+                    onClick={() => {
+                      setView("draft");
+                      setModal(true);
+                    }}
+                  >
+                    <Plus className="h-3.5 w-3.5" /> New launch
+                  </BxButton>
+                  {hasDraft ? (
+                    <button type="button" onClick={() => setView("draft")} className="text-xs text-accent hover:underline">
+                      Continue the saved draft{form.name ? ` “${form.name}”` : ""}
+                    </button>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="workspace-grid-canvas no-scrollbar min-h-0 flex-1 overflow-auto bg-bg-100">
+                  <div className="workspace-grid-surface flex h-full min-h-[720px] min-w-[1180px] gap-4 p-4">
+                    <div className="flex w-[380px] shrink-0 flex-col gap-4">
+                      <ChartPanel mint={viewingMint} />
+                      {dumpJob ? (
+                        <div className="rounded-md border border-line-100 bg-bg-50 p-3">
+                          <BxJob jobId={dumpJob} />
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="flex min-w-0 flex-1 flex-col">
+                      <TasksPanel form={form} onChange={setForm} wallets={live} groups={groups} balances={balances.data ?? null} presets={presets} onPreset={onPreset} live={viewingMint ? launchState.state : null} launchId={viewingMint} onDump={viewingMint ? dumpAll : undefined} />
+                    </div>
+                    <div className="flex w-[400px] shrink-0 flex-col gap-4">
+                      <div className="h-[316px] shrink-0">
+                        <TokenInfoPanel form={form} token={token.data} mint={viewingMint} onEdit={isDraft ? () => setModal(true) : undefined} />
+                      </div>
+                      <div className="min-h-0 flex-1">
+                        <ActivityPanel mint={viewingMint} live={viewingMint ? launchState.state : null} />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
-        <ul className="flex flex-col gap-2">
-          {form.tasks.map((t) => (
-            <li key={t.id} className="card px-3 py-2.5 text-sm flex items-start gap-3">
-              <Icon3D name={TASK_META[t.type].icon} size={22} />
-              <span className="min-w-0 flex-1">
-                <span className="font-medium">{TASK_META[t.type].label}</span> <span className="text-text-2">{taskSentence(t, live)}</span>
-              </span>
-              <span className={cx("text-[13px] shrink-0", t.autoStart ? "text-up" : "text-text-3")}>{t.autoStart ? "auto start" : "manual"}</span>
+      </main>
+
+      <LaunchModal open={modal} onClose={() => setModal(false)} form={form} onChange={setForm} wallets={live} balances={balances.data ?? null} />
+
+      <BxModal open={confirm} onClose={() => !busy && setConfirm(false)} title="Confirm launch" width={560}>
+        <div className="flex flex-col gap-3 p-4">
+          <div className="flex items-center gap-3">
+            {form.imageDataUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element -- local data URL
+              <img src={form.imageDataUrl} alt="" className="h-12 w-12 rounded-md border border-line-100 object-cover" />
+            ) : null}
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-text-100">
+                {form.name} <span className="font-mono text-text-300">{form.symbol}</span>
+              </div>
+              <div className="text-[11px] text-text-300">
+                pump.fun · dev {dev?.label || short(form.devWallet)} · dev buy {form.devBuySol || "0"} SOL · slippage {form.slippageBps / 100}%{form.vanity ? ` · …${form.vanity} address` : ""}
+              </div>
+            </div>
+          </div>
+          <ol className="flex flex-col gap-1 text-xs text-text-200">
+            <li>
+              1. <b className="text-text-100">{dev?.label || "Dev"}</b> creates the token{Number(form.devBuySol) > 0 ? ` and buys ${form.devBuySol} SOL` : ""}
+              {bundleWallets ? ` in one Jito bundle with ${bundleWallets} bundle buy${bundleWallets > 1 ? "s" : ""}` : ""}.
             </li>
-          ))}
-          {form.autoDumpEnabled ? (
-            <li className="text-sm text-auto">
-              Auto-dump {form.autoDumpPercent} %{form.autoDumpMcUsd ? ` at $${form.autoDumpMcUsd}` : ""}
-              {form.autoDumpAfterSec ? ` after ${form.autoDumpAfterSec} s` : ""}
-            </li>
-          ) : null}
-          {form.sellOnExternalEnabled ? <li className="text-sm text-auto">Sell on external volume ≥ {form.sellOnExternalThreshold} SOL</li> : null}
-        </ul>
-        <CostLine
-          rows={needs.map((r) => ({ label: `${r.label} · ${r.role}`, value: `${sol(r.needed)} of ${sol(r.available)} SOL`, tone: r.needed > r.available ? ("down" as const) : undefined }))}
-          total={{ label: "SOL needed", value: `≈ ${sol(needed)} SOL`, tone: shortRows.length ? "down" : undefined }}
-          note={`Create + dev buy${bundleWallets ? ` + ${bundleWallets} bundle buy${bundleWallets > 1 ? "s" : ""} go out as one Jito bundle` : " go out as one transaction"}.`}
-        />
-        <InlineError>{launchErr}</InlineError>
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => setSummary(false)} disabled={!!busy}>
-            Back
-          </Button>
-          <Button variant="primary" size="lg" busy={busy === "launch"} onClick={launch} icon="rocket">
-            Confirm and launch
-          </Button>
+            {form.tasks.map((t, i) => (
+              <li key={t.id}>
+                {i + 2}. <b className="text-text-100">{TASK_META[t.type].label}:</b> {taskSentence(t, live)}
+                {!t.autoStart ? <span className="text-text-300"> Started by hand.</span> : null}
+              </li>
+            ))}
+            {form.autoDumpEnabled ? (
+              <li>
+                Auto Dev Sell: {form.autoDumpPercent}%{Number(form.autoDumpMcUsd) > 0 ? ` at $${form.autoDumpMcUsd} MC` : ""}
+                {Number(form.autoDumpAfterSec) > 0 ? ` after ${form.autoDumpAfterSec} s` : ""}.
+              </li>
+            ) : null}
+            {form.sellOnExternalEnabled ? <li>Auto Dump once external buys reach {form.sellOnExternalThreshold} SOL.</li> : null}
+          </ol>
+          <div className="flex flex-col gap-1 rounded-md border border-line-100 bg-bg-50 px-3 py-2 text-xs">
+            {needs.map((r) => (
+              <div key={r.address} className="flex justify-between gap-3">
+                <span className="text-text-300">
+                  {r.label} · {r.role}
+                </span>
+                <span className={cx("font-mono", r.needed > r.available ? "text-decrease" : "text-text-100")}>
+                  {sol(r.needed)} of {sol(r.available)} SOL
+                </span>
+              </div>
+            ))}
+            <div className="mt-1 flex justify-between border-t border-line-50 pt-1 font-medium">
+              <span className="text-text-100">SOL needed</span>
+              <span className={cx("font-mono", shortRows.length ? "text-decrease" : "text-text-100")}>≈ {sol(needed)} SOL</span>
+            </div>
+            <p className="text-[11px] text-text-300">Includes ~{COST.create} SOL for the create and ~{COST.perBuy} SOL per buy for rent and fees; the server re-checks every balance before sending{shortRows.length ? ` — ${shortRows.length} wallet${shortRows.length > 1 ? "s are" : " is"} short, it will refuse` : ""}.</p>
+          </div>
+          {launchErr ? <p className="rounded-md border border-decrease/30 bg-decrease/10 px-3 py-2 text-xs text-decrease">{launchErr}</p> : null}
         </div>
-      </Modal>
-    </Page>
+        <div className="flex items-center justify-end gap-2 border-t border-line-50 px-4 py-3">
+          <BxButton onClick={() => setConfirm(false)} disabled={!!busy}>
+            Back
+          </BxButton>
+          <BxButton variant="primary" onClick={launch} disabled={busy === "launch" || !!problems.length || !canSign}>
+            <Rocket className="h-3.5 w-3.5" /> {busy === "launch" ? "Launching…" : "Launch"}
+          </BxButton>
+        </div>
+      </BxModal>
+    </div>
   );
 }
 
-function Step({ n, icon, children }: { n: number; icon?: "bundle" | "sniper" | "buy" | "volume" | "wash" | "autodump"; children: React.ReactNode }) {
-  return (
-    <li className="flex items-start gap-2.5">
-      <span className="mono text-[13px] text-text-3 w-4 shrink-0 text-right mt-0.5">{n}.</span>
-      {icon ? <Icon3D name={icon} size={18} className="mt-0.5" /> : null}
-      <span className="text-text-2 min-w-0">{children}</span>
-    </li>
-  );
-}
-
-/** First validation problem of a task inside the form, or null when it is fine. */
-function validateFormTask(t: LaunchForm["tasks"][number], f: LaunchForm): string | null {
-  const msgs = validateForm({ ...f, name: "x", symbol: "X", imageDataUrl: "d", devWallet: f.devWallet || "w", tasks: [t], sellOnExternalEnabled: false, autoDumpEnabled: false });
-  return msgs[0] ?? null;
+function confirm_(msg: string) {
+  return typeof window !== "undefined" && window.confirm(msg);
 }

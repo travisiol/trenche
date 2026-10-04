@@ -41,6 +41,8 @@ export type LaunchForm = {
   devBuySol: string;
   slippageBps: number;
   cashback: boolean;
+  /** default tip (SOL) for new tasks — Block X "TIP (SOL)" field of the Tasks panel */
+  tipSol: string;
   tasks: FormTask[];
   sellOnExternalEnabled: boolean;
   sellOnExternalThreshold: string;
@@ -90,6 +92,7 @@ export const EMPTY_FORM: LaunchForm = {
   devBuySol: "0.5",
   slippageBps: 3000,
   cashback: false,
+  tipSol: "0.001",
   tasks: [],
   sellOnExternalEnabled: false,
   sellOnExternalThreshold: "5",
@@ -277,4 +280,23 @@ export function launchNeeds(f: LaunchForm, wallets: { address: string; label: st
     }
   }
   return [...rows.values()];
+}
+
+/* ------------------------------------------------------------- pump.fun curve math (dev buy ⇄ % of supply) */
+/** Fresh-curve constants (mainnet); the server exposes the per-cluster values on GET /api/settings.pump. */
+export const CURVE = { virtualSol: 30, virtualTokens: 1_073_000_000, supply: 1_000_000_000 };
+/** Tokens received for `sol` on a fresh curve (constant product, pump.fun fee ignored). */
+export function tokensForSol(sol: number, c = CURVE): number {
+  if (!(sol > 0)) return 0;
+  const k = c.virtualSol * c.virtualTokens;
+  return c.virtualTokens - k / (c.virtualSol + sol);
+}
+export function supplyPctForSol(sol: number, c = CURVE): number {
+  return (tokensForSol(sol, c) / c.supply) * 100;
+}
+/** SOL needed to buy `pct` % of the supply on a fresh curve. */
+export function solForSupplyPct(pct: number, c = CURVE): number {
+  const tokens = Math.min(c.virtualTokens - 1, (Math.max(0, pct) / 100) * c.supply);
+  const k = c.virtualSol * c.virtualTokens;
+  return k / (c.virtualTokens - tokens) - c.virtualSol;
 }

@@ -76,7 +76,7 @@ export function ImagePicker({ value, onChange }: { value: string; onChange: (dat
   );
 }
 
-function CropModal({ src, onClose, onDone }: { src: string; onClose: () => void; onDone: (dataUrl: string) => void }) {
+export function CropModal({ src, onClose, onDone }: { src: string; onClose: () => void; onDone: (dataUrl: string) => void }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const img = useRef<HTMLImageElement | null>(null);
   const [zoom, setZoom] = useState(1);
