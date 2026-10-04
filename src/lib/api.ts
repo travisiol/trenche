@@ -72,7 +72,7 @@ export async function api<T>(path: string, init?: RequestInit & { json?: unknown
 }
 
 export const get = <T,>(path: string) => api<T>(path);
-export const post = <T,>(path: string, json: unknown) => api<T>(path, { json, method: "POST" });
+export const post = <T,>(path: string, json: unknown, method: "POST" | "PATCH" | "PUT" = "POST") => api<T>(path, { json, method });
 export const del = <T,>(path: string) => api<T>(path, { method: "DELETE" });
 
 /* ------------------------------------------------------------------ SSE */

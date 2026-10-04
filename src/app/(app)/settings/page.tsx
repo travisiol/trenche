@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Icon3D } from "@/components/Icon3D";
 import { Icon } from "@/components/icons";
 import { ApiError, Button, Card, Field, InlineError, Input, Kbd, Note, Page, PageHeader, Segmented, Spinner, Toggle, toast } from "@/components/ui";
-import { UnlockModal } from "@/components/Navbar";
+import { UnlockVaultModal as UnlockModal } from "@/components/bx/vault";
 import { failureMessage, post } from "@/lib/api";
 import { refreshVaultDependents, settingsRes, useSettings, useVault, writeLocalPresets } from "@/lib/store";
 import type { Settings, SettingsUpdateRequest } from "@/lib/types";

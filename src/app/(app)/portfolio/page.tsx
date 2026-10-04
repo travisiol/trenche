@@ -1,29 +1,21 @@
 "use client";
-import { useState } from "react";
-import { Icon3D } from "@/components/Icon3D";
-import { ApiError, Button, Card, Empty, Loading, Page, PageHeader, Segmented, StatCard, Tabs, cx, toast } from "@/components/ui";
-import { GroupChip, WalletList } from "@/components/portfolio/WalletList";
-import { AirdropModal, ConsolidateModal, CreateModal, DepositModal, DisperseModal, ExportModal, GroupModal, ImportModal, SendModal, type ModalKind } from "@/components/portfolio/WalletModals";
-import { Activity, Holdings, usePositions } from "@/components/portfolio/Holdings";
+/** Block X /sol/portfolio: Developer Wallets / Groups tabs, toolbar, search, filter tabs, wallet table,
+ *  Activity (Disperse / Reverse Disperse jobs), right summary with PnL, actions and Privacy funding. */
+import { useMemo, useState } from "react";
+import { Archive, ArrowDownToLine, ArrowLeftRight, ArrowUpDown, ArrowUpFromLine, Calendar, Check, Copy, Droplet, FolderKanban, FolderPlus, KeyRound, Pencil, Plus, Search, Share2, Shuffle, Trash2, Undo2, Upload, Wallet, X } from "lucide-react";
+import type { ActivityResponse, DashboardResponse, JobsListResponse, PositionsResponse, WalletGroup, WalletInfo } from "@/lib/types";
+import { del, failureMessage, post, useGet } from "@/lib/api";
 import { useBalances, useSettings, useSolPrice, useVault, useWallets, walletsRes } from "@/lib/store";
-import { del, failureMessage, useGet } from "@/lib/api";
-import { signedSol, sol, usd } from "@/lib/format";
-import type { IconKind } from "@/components/icons";
-import type { DashboardResponse, Settings } from "@/lib/types";
+import { short, sol, usd } from "@/lib/format";
+import { toast } from "@/components/ui";
+import { BxButton, BxInput, cx } from "@/components/bx/ui";
+import { BxJob } from "@/components/bx/Job";
+import { PnlCalendar, dailyPnl } from "@/components/bx/PnlCalendar";
+import { AirdropModal, ConsolidateModal, CreateModal, DepositModal, DisperseModal, ExportModal, ImportModal, MoveModal, SendModal, type ModalKind } from "@/components/portfolio/BxModals";
 
-type Period = "24h" | "7d" | "30d" | "all";
-/** `cluster` is read defensively until the server contract ships it. */
-type SettingsX = Settings & { cluster?: "mainnet" | "devnet" };
-
-const ACTIONS: { kind: Exclude<ModalKind, null | "group" | "airdrop">; label: string; icon: IconKind; needs: "sign" | "wallet" | "two" }[] = [
-  { kind: "import", label: "Import", icon: "import", needs: "sign" },
-  { kind: "export", label: "Export", icon: "export", needs: "sign" },
-  { kind: "deposit", label: "Deposit", icon: "qr", needs: "wallet" },
-  { kind: "withdraw", label: "Withdraw", icon: "withdraw", needs: "sign" },
-  { kind: "disperse", label: "Disperse", icon: "disperse", needs: "two" },
-  { kind: "consolidate", label: "Consolidate", icon: "consolidate", needs: "two" },
-  { kind: "transfer", label: "Transfer", icon: "transfer", needs: "two" },
-];
+type Win = "1D" | "7D" | "30D" | "All";
+const WIN_KEY: Record<Win, "24h" | "7d" | "30d" | "all"> = { "1D": "24h", "7D": "7d", "30D": "30d", All: "all" };
+type SortKey = "sol" | "vol" | "tokens";
 
 export default function PortfolioPage() {
   const vault = useVault();
@@ -31,204 +23,529 @@ export default function PortfolioPage() {
   const balances = useBalances();
   const price = useSolPrice();
   const settings = useSettings();
+  const [tab, setTab] = useState<"wallets" | "groups">("wallets");
   const [modal, setModal] = useState<ModalKind>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [q, setQ] = useState("");
+  const [filter, setFilter] = useState<"all" | "archived" | string>("all");
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
+  const [activityTab, setActivityTab] = useState<"disperse" | "reverse">("disperse");
+  const [win, setWin] = useState<Win>("30D");
   const [unit, setUnit] = useState<"USD" | "SOL">("USD");
-  const [period, setPeriod] = useState<Period>("24h");
-  const [bottom, setBottom] = useState<"holdings" | "activity">("holdings");
-  const [showArchived, setShowArchived] = useState(false);
+  const [calendar, setCalendar] = useState(false);
 
   const canSign = vault.data?.unlocked ?? false;
   const all = wallets.data?.wallets ?? [];
   const live = all.filter((w) => !w.archived);
-  const archived = all.filter((w) => w.archived);
   const groups = wallets.data?.groups ?? [];
   const active = wallets.data?.active ?? null;
   const bal = balances.data ?? null;
-  const totalSol = live.reduce((n, w) => n + Number(bal?.[w.address] ?? w.sol ?? 0), 0);
-  const positions = usePositions(live.map((w) => w.address));
-  const held = (positions.data ?? []).filter((p) => Number(p.amount) > 0);
-  const posSol = held.reduce((n, p) => n + Number(p.valueSol), 0);
-  const openPnl = (positions.data ?? []).reduce((n, p) => n + Number(p.pnlSol), 0);
-  const dash = useGet<DashboardResponse>(live.length ? "/api/dashboard" : null, 30000);
-  const win = dash.data?.pnl[period] ?? null;
-  const winSol = win ? Number(win.realisedSol) : null;
   const solUsd = price.data?.usd ?? null;
-  const show = (s: number) => (unit === "SOL" || !solUsd ? `${sol(s)} SOL` : usd(s * solUsd, 2));
-  const showSigned = (s: number) => (unit === "SOL" || !solUsd ? `${signedSol(s)} SOL` : `${s > 0 ? "+" : ""}${usd(s * solUsd, 2)}`);
-  const cluster = (settings.data as SettingsX | null)?.cluster;
+  const cluster = settings.data?.cluster ?? "mainnet";
+  const positions = useGet<PositionsResponse>(live.length ? "/api/positions" : null, 15000);
+  const activity = useGet<ActivityResponse>("/api/activity?limit=500", 10000);
+  const dash = useGet<DashboardResponse>(live.length ? "/api/dashboard" : null, 30000);
+  const jobs = useGet<JobsListResponse>("/api/jobs", 4000);
 
-  const select = (addr: string, multi: boolean) =>
-    setSelected((s) => {
-      const n = multi ? new Set(s) : new Set<string>();
-      if (s.has(addr) && (multi || s.size === 1)) n.delete(addr);
-      else n.add(addr);
-      return n;
-    });
-  const sel = [...selected];
-  const base = { wallets: live, selected: sel, active, balances: bal };
-  const enabled = (needs: "sign" | "wallet" | "two") => (needs === "sign" ? canSign && live.length > 0 : needs === "wallet" ? live.length > 0 : canSign && live.length > 1);
+  const balanceOf = (a: string) => Number(bal?.[a] ?? all.find((w) => w.address === a)?.sol ?? 0) || 0;
+  const totalSol = live.reduce((n, w) => n + balanceOf(w.address), 0);
+  const tokensOf = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of positions.data ?? []) if (Number(r.amount) > 0) m.set(r.wallet, (m.get(r.wallet) ?? 0) + 1);
+    return m;
+  }, [positions.data]);
+  /** SOL traded per wallet from the journal: exact for single-wallet entries, split evenly otherwise. */
+  const volOf = useMemo(() => {
+    const m = new Map<string, { sol: number; approx: boolean }>();
+    for (const a of activity.data?.items ?? []) {
+      const side = a.data?.side;
+      const total = Number(a.data?.solTotal);
+      if ((side !== "buy" && side !== "sell") || !Number.isFinite(total) || !a.wallets?.length) continue;
+      for (const w of a.wallets) {
+        const cur = m.get(w) ?? { sol: 0, approx: false };
+        cur.sol += total / a.wallets.length;
+        if (a.wallets.length > 1) cur.approx = true;
+        m.set(w, cur);
+      }
+    }
+    return m;
+  }, [activity.data]);
+  const pnl = dash.data?.pnl[WIN_KEY[win]];
+  const realised = pnl ? Number(pnl.realisedSol) : null;
+  const volume = pnl ? Number(pnl.buysSol) + Number(pnl.sellsSol) : null;
+  const unrealised = (positions.data ?? []).reduce((n, r) => n + Number(r.pnlSol), 0);
+  const totalPnl = realised === null ? null : realised + unrealised;
+  const money = (s: number | null) => (s === null ? "—" : unit === "USD" && solUsd ? usd(s * solUsd, 2) : `${sol(s)} SOL`);
+  const days = dailyPnl(activity.data?.items ?? []);
+
+  const rows = useMemo(() => {
+    let list = filter === "archived" ? all.filter((w) => w.archived) : live.filter((w) => filter === "all" || w.group === filter);
+    const needle = q.trim().toLowerCase();
+    if (needle) list = list.filter((w) => w.label.toLowerCase().includes(needle) || w.address.toLowerCase().includes(needle));
+    list = [...list].sort((a, b) => a.order - b.order);
+    if (sort) {
+      const v = (w: WalletInfo) => (sort.key === "sol" ? balanceOf(w.address) : sort.key === "vol" ? (volOf.get(w.address)?.sol ?? 0) : (tokensOf.get(w.address) ?? 0));
+      list.sort((a, b) => (v(b) - v(a)) * sort.dir);
+    }
+    return list;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- balanceOf closes over bal/all
+  }, [all, live, filter, q, sort, volOf, tokensOf, bal]);
+  const sel = [...selected].filter((a) => all.some((w) => w.address === a));
+  const allChecked = rows.length > 0 && rows.every((w) => selected.has(w.address));
+  const toggleSort = (key: SortKey) => setSort((s) => (s?.key === key ? (s.dir === 1 ? { key, dir: -1 } : null) : { key, dir: 1 }));
+  const base = { wallets: live, groups, selected: sel, active, balances: bal };
+  const relayJobs = (jobs.data?.jobs ?? []).filter((j) => (activityTab === "disperse" ? j.kind === "disperse" : j.kind === "consolidate"));
+
+  const bulk = async (fn: () => Promise<void>, ok: string) => {
+    try {
+      await fn();
+      walletsRes.refresh();
+      setSelected(new Set());
+      toast(ok, "ok");
+    } catch (e) {
+      toast(failureMessage(e), "err");
+    }
+  };
 
   return (
-    <Page>
-      <PageHeader
-        icon={<Icon3D name="portfolio" size={40} glow />}
-        title="Portfolio"
-        description="Your developer wallets, their SOL and the tokens they hold. Keys never leave this machine."
-        actions={
-          <>
-            <Segmented value={unit} onChange={setUnit} options={[{ value: "USD", label: "USD" }, { value: "SOL", label: "SOL" }]} />
-            <Button variant="primary" icon="plus" onClick={() => setModal("create")} disabled={!canSign} title={canSign ? undefined : "Unlock the vault first"}>
-              Create wallets
-            </Button>
-          </>
-        }
-      />
-
-      {/* stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <StatCard label="Total balance" value={show(totalSol)} sub={unit === "USD" && solUsd ? `${sol(totalSol)} SOL across ${live.length} wallet${live.length !== 1 ? "s" : ""}` : `${live.length} wallet${live.length !== 1 ? "s" : ""}`} />
-        <StatCard label="Positions value" value={show(posSol)} sub={positions.error ? "Positions unavailable" : `${held.length} token${held.length !== 1 ? "s" : ""} held`} />
-        <StatCard label="Open PnL" value={showSigned(openPnl)} tone={openPnl > 0 ? "up" : openPnl < 0 ? "down" : undefined} sub="Unrealised, on what you still hold" />
-        <StatCard
-          label="Realised PnL"
-          value={winSol === null ? "—" : showSigned(winSol)}
-          tone={winSol !== null && winSol > 0 ? "up" : winSol !== null && winSol < 0 ? "down" : undefined}
-          sub={dash.error ? failureMessage(dash.error) : win ? `${win.trades} trades · bought ${sol(win.buysSol)} · sold ${sol(win.sellsSol)} SOL` : live.length ? "Loading…" : "No wallet yet"}
-          right={<Segmented size="xs" value={period} onChange={setPeriod} options={(["24h", "7d", "30d", "all"] as Period[]).map((p) => ({ value: p, label: p }))} />}
-        />
-      </div>
-
-      {/* toolbar */}
-      <div className="panel px-4 py-3 flex flex-wrap items-center gap-2">
-        {ACTIONS.map((a) => (
-          <Button key={a.kind} size="sm" icon={a.icon} onClick={() => setModal(a.kind)} disabled={!enabled(a.needs)} title={!enabled(a.needs) ? (a.needs === "two" ? "Needs the vault unlocked and at least two wallets" : a.needs === "sign" ? "Needs the vault unlocked" : "Create a wallet first") : undefined}>
-            {a.label}
-            {a.kind === "export" && sel.length ? ` (${sel.length})` : ""}
-          </Button>
-        ))}
-        {cluster === "devnet" ? (
-          <Button size="sm" icon="drop" variant="auto" onClick={() => setModal("airdrop")} disabled={!live.length}>
-            Airdrop
-          </Button>
-        ) : null}
-        <span className="ml-auto hint">
-          {sel.length ? (
-            <>
-              {sel.length} selected ·{" "}
-              <button className="text-accent hover:underline" onClick={() => setSelected(new Set())}>
-                clear
-              </button>
-            </>
-          ) : (
-            <span className="hidden md:inline">Click a wallet to select it, Ctrl-click for several.</span>
-          )}
-        </span>
-      </div>
-
-      <div className="flex-1 grid grid-cols-1 xl:grid-cols-[440px_1fr] gap-4 min-h-0">
-        {/* ------------------------------------------------ left: wallets */}
-        <div className="flex flex-col gap-4 min-h-0">
-          <Card
-            title="Wallets"
-            description={`${live.length} active${archived.length ? ` · ${archived.length} archived` : ""}. Drag to reorder, click a name to rename.`}
-            icon={<Icon3D name="portfolio" size={24} />}
-            actions={
-              <Button size="sm" icon="plus" onClick={() => setModal("group")}>
-                Group
-              </Button>
-            }
-            flush
-            bodyClassName="p-3 gap-3"
-          >
-            {wallets.error ? (
-              <ApiError error={wallets.error} retry={wallets.refresh} />
-            ) : wallets.loading && !wallets.data ? (
-              <Loading>Loading wallets…</Loading>
-            ) : !live.length ? (
-              <Empty
-                icon={<Icon3D name="portfolio" size={56} />}
-                title="No wallet yet"
-                action={
-                  <div className="flex gap-2">
-                    <Button size="sm" variant="primary" icon="plus" onClick={() => setModal("create")} disabled={!canSign}>
-                      Create wallets
-                    </Button>
-                    <Button size="sm" icon="import" onClick={() => setModal("import")} disabled={!canSign}>
-                      Import keys
-                    </Button>
+    <div className="flex h-full min-h-0 flex-1 flex-col">
+      <div className="flex h-full flex-col">
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          {/* ------------------------------------------------ left column */}
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <div className="flex shrink-0 overflow-hidden" style={{ height: 388, minHeight: 388 }}>
+              <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                <div className="flex items-center gap-2 border-b border-line-50 px-3 py-2 lg:gap-3 lg:px-4">
+                  <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+                    <button type="button" onClick={() => setTab("wallets")} className={cx("-mb-px flex shrink-0 items-center gap-1 border-b-2 px-3 py-2 text-sm font-medium transition-colors", tab === "wallets" ? "border-accent text-text-100" : "border-line-100 text-text-300 hover:border-line-200 hover:text-text-100")}>
+                      <Wallet className="h-3.5 w-3.5 shrink-0 lg:h-4 lg:w-4" />
+                      <span className="lg:hidden">Developer</span>
+                      <span className="hidden lg:inline">Developer Wallets</span>
+                    </button>
+                    <button type="button" onClick={() => setTab("groups")} className={cx("-mb-px flex shrink-0 items-center gap-1 border-b-2 px-3 py-2 text-sm font-medium transition-colors", tab === "groups" ? "border-accent text-text-100" : "border-line-100 text-text-300 hover:border-line-200 hover:text-text-100")}>
+                      <FolderKanban className="h-3.5 w-3.5 shrink-0 lg:h-4 lg:w-4" />
+                      Groups
+                    </button>
                   </div>
-                }
-              >
-                Generate fresh keypairs or import existing keys. Everything is encrypted into your local vault.
-              </Empty>
-            ) : (
-              <WalletList wallets={live} groups={groups} active={active} balances={bal} selected={selected} onSelect={select} canSign={canSign} />
-            )}
-
-            {groups.length || live.length ? (
-              <div className="flex flex-col gap-2 pt-3 border-t border-line">
-                <div className="flex items-center gap-2">
-                  <span className="label">Groups</span>
-                  <span className="hint">Pick a group as a set of wallets when launching.</span>
+                  <div className="relative z-10 shrink-0 bg-bg-100 pl-1 lg:hidden">
+                    <button type="button" onClick={() => setModal("create")} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-white transition-colors hover:bg-accent-hover" aria-label="Wallet actions">
+                      <Plus className="h-4 w-4" />
+                    </button>
+                  </div>
+                  <div className="hidden shrink-0 items-center lg:flex">
+                    <div className="flex items-center gap-2 text-xs text-text-300">
+                      <button type="button" disabled={!sel.length || !canSign} onClick={() => setModal("export")} className="flex items-center gap-1 hover:text-text-100 disabled:cursor-not-allowed disabled:opacity-40" title={!sel.length ? "Select wallets first" : !canSign ? "Unlock the vault" : "Export the private keys of the selection"}>
+                        <KeyRound className="h-3.5 w-3.5" />
+                        Export Keys
+                      </button>
+                      <button type="button" disabled={!sel.length} onClick={() => setModal("move")} className="flex items-center gap-1 hover:text-text-100 disabled:cursor-not-allowed disabled:opacity-40" title={!sel.length ? "Select wallets first" : "Move the selection into a group"}>
+                        <FolderPlus className="h-3.5 w-3.5" />
+                        Move
+                      </button>
+                      <button type="button" disabled={!sel.length} onClick={() => bulk(async () => { for (const a of sel) await post("/api/wallets/update", { address: a, archived: filter !== "archived" }); }, filter === "archived" ? "Unarchived" : "Archived")} className="flex items-center gap-1 hover:text-text-100 disabled:cursor-not-allowed disabled:opacity-40">
+                        <Archive className="h-3.5 w-3.5" />
+                        {filter === "archived" ? "Unarchive" : "Archive"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!sel.length || !canSign}
+                        onClick={() => {
+                          if (confirm(`Remove ${sel.length} wallet${sel.length !== 1 ? "s" : ""} from the vault? Export their keys first if they hold funds.`)) bulk(() => post("/api/wallets/remove", { addresses: sel }), "Removed from the vault");
+                        }}
+                        className="flex items-center gap-1 hover:text-decrease disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Delete
+                      </button>
+                      <button type="button" disabled={!canSign} onClick={() => setModal("import")} className="flex shrink-0 items-center gap-1 hover:text-text-100 disabled:opacity-40">
+                        <Upload className="h-3.5 w-3.5" />
+                        Import
+                      </button>
+                      <button type="button" disabled={!canSign} onClick={() => setModal("create")} className="flex shrink-0 items-center gap-1 hover:text-text-100 disabled:opacity-40">
+                        <Plus className="h-3.5 w-3.5" />
+                        Create Wallets
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                {!groups.length ? (
-                  <p className="hint">No group yet. Create one, then assign wallets from their ··· menu.</p>
+
+                {tab === "wallets" ? (
+                  <>
+                    <div className="relative border-b border-line-50 px-3 py-1.5 lg:px-4">
+                      <div className="flex h-7 w-full items-center gap-2 rounded-md border border-line-100 bg-bg-50 px-2 text-xs text-text-300">
+                        <Search className="h-3 w-3 shrink-0" />
+                        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search address or name" type="text" className="w-full bg-transparent outline-none placeholder:text-text-300" />
+                      </div>
+                    </div>
+                    <div className="flex min-w-0 items-stretch overflow-hidden border-b border-line-50">
+                      <div className="relative min-w-0 flex-1 overflow-hidden">
+                        <div className="no-scrollbar flex h-full w-full min-w-0 flex-nowrap items-center gap-0.5 overflow-x-auto overflow-y-hidden px-4">
+                          <button type="button" onClick={() => setFilter("all")} className={cx("-mb-px shrink-0 border-b-2 px-3 py-2.5 text-xs transition-colors", filter === "all" ? "border-accent text-text-100" : "border-line-100 text-text-300 hover:border-line-200 hover:text-text-100")}>
+                            All ({live.length})
+                          </button>
+                          {groups.map((g) => (
+                            <button key={g.id} type="button" onClick={() => setFilter(g.id)} className={cx("-mb-px shrink-0 border-b-2 px-3 py-2.5 text-xs transition-colors", filter === g.id ? "border-accent text-text-100" : "border-line-100 text-text-300 hover:border-line-200 hover:text-text-100")}>
+                              {g.name} ({live.filter((w) => w.group === g.id).length})
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-0 border-l border-line-50 bg-bg-100 px-4">
+                        <button type="button" onClick={() => setFilter("archived")} className={cx("-mb-px shrink-0 border-b-2 px-3 py-2.5 text-xs transition-colors", filter === "archived" ? "border-accent text-text-100" : "border-line-100 text-text-300 hover:border-line-200 hover:text-text-100")}>
+                          Archived ({all.length - live.length})
+                        </button>
+                      </div>
+                    </div>
+                    <div className="min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-auto">
+                      <table className="w-full min-w-[760px] table-fixed border-collapse">
+                        <colgroup>
+                          <col />
+                          <col className="w-28" />
+                          <col className="w-28" />
+                          <col className="w-28" />
+                          <col className="w-32" />
+                        </colgroup>
+                        <thead className="sticky top-0 z-10 bg-bg-100">
+                          <tr className="border-b border-line-50 text-[11px] text-text-300">
+                            <th className="px-3 py-2 text-left font-normal">
+                              <div className="flex items-center gap-2">
+                                <label className="flex items-center gap-1">
+                                  <input type="checkbox" className="pi-checkbox" checked={allChecked} onChange={(e) => setSelected(e.target.checked ? new Set(rows.map((w) => w.address)) : new Set())} />
+                                  Select All
+                                </label>
+                                <button type="button" onClick={() => balances.refresh()} className="rounded border border-line-100 px-1.5 py-0.5 text-[10px] text-text-300 transition-colors hover:border-line-200 hover:text-text-100" title="Refresh SOL balances">
+                                  SOL Bal
+                                </button>
+                              </div>
+                            </th>
+                            <SortTh label="Vol" onClick={() => toggleSort("vol")} on={sort?.key === "vol"} />
+                            <SortTh label="Tokens" onClick={() => toggleSort("tokens")} on={sort?.key === "tokens"} />
+                            <SortTh label="SOL" onClick={() => toggleSort("sol")} on={sort?.key === "sol"} />
+                            <th className="px-2 py-2 text-right font-normal" />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {wallets.error ? (
+                            <tr>
+                              <td colSpan={5} className="px-4 py-8 text-center text-xs text-decrease">
+                                {failureMessage(wallets.error)}
+                              </td>
+                            </tr>
+                          ) : !rows.length ? (
+                            <tr>
+                              <td colSpan={5} className="px-4 py-8 text-center text-xs text-text-300">
+                                {wallets.loading && !wallets.data ? "Loading wallets…" : filter === "archived" ? "No archived wallet." : q ? "No wallet matches." : "No developer wallets yet. Create one to manage launches."}
+                              </td>
+                            </tr>
+                          ) : (
+                            rows.map((w) => (
+                              <WalletRow key={w.address} w={w} groups={groups} active={w.address === active} checked={selected.has(w.address)} onCheck={(v) => setSelected((s) => { const n = new Set(s); if (v) n.add(w.address); else n.delete(w.address); return n; })} balance={balanceOf(w.address)} tokens={tokensOf.get(w.address) ?? 0} vol={volOf.get(w.address) ?? null} canSign={canSign} />
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
                 ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {groups.map((g) => (
-                      <GroupChip
-                        key={g.id}
-                        g={g}
-                        count={live.filter((w) => w.group === g.id).length}
-                        onRemove={() =>
-                          del(`/api/groups/${g.id}`)
-                            .then(() => walletsRes.refresh())
-                            .catch((e) => toast(failureMessage(e), "err"))
-                        }
-                      />
-                    ))}
-                  </div>
+                  <GroupsTab groups={groups} wallets={live} />
                 )}
-              </div>
-            ) : null}
-
-            {archived.length ? (
-              <div className="pt-3 border-t border-line flex flex-col gap-2">
-                <button className="flex items-center gap-2 text-sm text-text-2 hover:text-text" onClick={() => setShowArchived((s) => !s)}>
-                  <span className={cx("transition-transform", showArchived ? "rotate-90" : "")}>▸</span>
-                  Archived wallets <span className="mono text-text-3">{archived.length}</span>
+              </section>
+            </div>
+            <div className="group relative z-10 -my-1.5 flex h-[15px] w-full shrink-0 cursor-row-resize items-center justify-center" role="separator" aria-label="Resize wallet list and activity">
+              <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-line-100 transition-colors group-hover:bg-line-200" />
+              <div className="relative z-[1] flex h-[3px] w-10 flex-row items-center justify-center gap-[2px] rounded-sm bg-line-100 transition-colors group-hover:bg-line-200" />
+            </div>
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4">
+              <div className="mb-2 flex items-center gap-1 border-b border-line-50 pb-2">
+                <button type="button" className="rounded bg-accent-muted px-2.5 py-1 text-xs font-medium text-accent">
+                  Activity
                 </button>
-                {showArchived ? <WalletList wallets={archived} groups={groups} active={active} balances={bal} selected={selected} onSelect={select} canSign={canSign} /> : null}
               </div>
-            ) : null}
-          </Card>
-        </div>
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                  {(["disperse", "reverse"] as const).map((t) => (
+                    <button key={t} type="button" onClick={() => setActivityTab(t)} className={cx("rounded border px-2.5 py-1 text-xs font-medium transition-colors", activityTab === t ? "border-accent/40 bg-accent/15 text-accent" : "border-line-100 bg-bg-50 text-text-200 hover:border-accent/35 hover:text-text-100")}>
+                      {t === "disperse" ? "Disperse" : "Reverse Disperse"}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+                  {!relayJobs.length ? <p className="px-1 py-6 text-sm text-text-300">{activityTab === "disperse" ? "No disperse tasks yet. Use Disperse in the summary panel to start one." : "No reverse disperse yet. Use Reverse Disperse in the summary panel to sweep a group back."}</p> : relayJobs.map((j) => <div key={j.id} className="rounded-md border border-line-100 bg-bg-50 p-3"><BxJob jobId={j.id} /></div>)}
+                </div>
+              </div>
+            </div>
+          </div>
 
-        {/* ------------------------------------------------ right: holdings / activity */}
-        <Card className="min-h-[360px]" flush>
-          <Tabs
-            value={bottom}
-            onChange={setBottom}
-            tabs={[
-              { value: "holdings", label: "Holdings", count: held.length || undefined },
-              { value: "activity", label: "Activity" },
-            ]}
-          />
-          <div className="flex-1 overflow-auto">{bottom === "holdings" ? <Holdings wallets={live.map((w) => w.address)} /> : <Activity />}</div>
-        </Card>
+          <div className="group relative z-10 -mx-1.5 flex w-[15px] shrink-0 cursor-col-resize items-center justify-center" role="separator" aria-label="Resize wallet summary">
+            <div className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line-100 transition-colors group-hover:bg-line-200" />
+            <div className="relative z-[1] flex h-10 w-[3px] flex-col items-center justify-center gap-[2px] rounded-sm bg-line-100 transition-colors group-hover:bg-line-200" />
+          </div>
+
+          {/* ------------------------------------------------ right summary */}
+          <section className="flex h-full min-h-0 shrink-0 flex-col overflow-hidden" style={{ width: 500, minWidth: 500, maxWidth: 500 }}>
+            <div className="flex items-center justify-between gap-2 border-b border-line-50 px-3 py-2 sm:gap-3 sm:px-4">
+              <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+                <h2 className="min-w-0 truncate text-sm font-medium text-text-100">Developer Wallets ({live.length})</h2>
+                <div className="flex items-center gap-1">
+                  {(["1D", "7D", "30D", "All"] as Win[]).map((w) => (
+                    <button key={w} type="button" onClick={() => setWin(w)} className={cx("rounded px-2 py-0.5 text-xs transition-colors", win === w ? "bg-accent-muted text-accent" : "text-text-300 hover:text-text-100")}>
+                      {w}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <button type="button" onClick={() => setCalendar((c) => !c)} className={cx("flex shrink-0 items-center gap-1 text-xs hover:text-text-100", calendar ? "text-accent" : "text-text-300")}>
+                <Calendar className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">PNL Calendar</span>
+                <span className="sm:hidden">PNL</span>
+              </button>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="flex min-h-0 flex-col overflow-y-auto px-3 pb-4 sm:px-4">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-text-300">Total Balance</span>
+                </div>
+                <div className="flex flex-wrap items-end gap-x-8 gap-y-2">
+                  <div className="mt-1 flex h-9 items-baseline gap-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- static asset */}
+                    <img src="/solana.svg" alt="" width={24} height={24} className="h-6 w-6 shrink-0 self-center object-contain" />
+                    <div className="text-[28px] font-semibold leading-9 text-text-100 lg:text-[32px]">{sol(totalSol)}</div>
+                    <div className="translate-y-[-1px] text-base font-medium text-text-100">{solUsd ? usd(totalSol * solUsd, 2) : "—"}</div>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-row flex-wrap justify-between gap-y-2">
+                  <div className="flex h-[18px] min-w-[calc(50%-16px)] items-center gap-2">
+                    <span className="whitespace-nowrap text-sm text-text-300">{win} Total Volume</span>
+                    <span className="text-sm font-medium text-text-100">{money(volume)}</span>
+                  </div>
+                  <div className="flex h-[18px] min-w-[calc(50%-16px)] items-center gap-2">
+                    <span className="whitespace-nowrap text-sm text-text-300">{win} Realized Profit</span>
+                    <span className={cx("text-sm font-medium", realised === null ? "text-text-100" : realised > 0 ? "text-increase" : realised < 0 ? "text-decrease" : "text-text-100")}>{money(realised)}</span>
+                  </div>
+                  <div className="flex h-[18px] min-w-[calc(50%-16px)] items-center">
+                    <span className="whitespace-nowrap text-sm text-text-300">Total PnL</span>
+                    <button type="button" onClick={() => setUnit((u) => (u === "USD" ? "SOL" : "USD"))} className="ml-1 flex items-center gap-1 rounded px-1 text-[13px] text-text-300 hover:bg-white/[0.04] hover:text-text-100" title={unit === "USD" ? "Display PnL in SOL" : "Display PnL in USD"}>
+                      <span>{unit}</span>
+                    </button>
+                    <span className={cx("ml-1 whitespace-nowrap text-sm font-medium", totalPnl === null ? "text-text-100" : totalPnl > 0 ? "text-increase" : totalPnl < 0 ? "text-decrease" : "text-text-100")}>{money(totalPnl)}</span>
+                  </div>
+                  <div className="flex h-[18px] min-w-[calc(50%-16px)] items-center gap-2">
+                    <span className="whitespace-nowrap text-sm text-text-300">Unrealized Profits</span>
+                    <span className={cx("text-sm font-medium", unrealised > 0 ? "text-increase" : unrealised < 0 ? "text-decrease" : "text-text-100")}>{positions.data ? money(unrealised) : "—"}</span>
+                  </div>
+                </div>
+                <div className="mt-3.5 grid grid-cols-2 gap-2 lg:grid-cols-3">
+                  <Action icon={<ArrowDownToLine className="h-4 w-4 shrink-0" />} label="Deposit" onClick={() => setModal("deposit")} disabled={!live.length} />
+                  <Action icon={<ArrowUpFromLine className="h-4 w-4 shrink-0" />} label="Withdraw" onClick={() => setModal("withdraw")} disabled={!canSign || !live.length} />
+                  <Action icon={<Shuffle className="h-4 w-4 shrink-0" />} label="Consolidate" onClick={() => setModal("consolidate")} disabled={!canSign || live.length < 2} />
+                  <Action icon={<Share2 className="h-4 w-4 shrink-0" />} label="Distribute" onClick={() => setModal("distribute")} disabled={!canSign || live.length < 2} />
+                  <Action icon={<ArrowLeftRight className="h-4 w-4 shrink-0" />} label="Transfer" onClick={() => setModal("transfer")} disabled={!canSign || live.length < 2} />
+                  {cluster === "devnet" ? <Action icon={<Droplet className="h-4 w-4 shrink-0" />} label="Airdrop" onClick={() => setModal("airdrop")} disabled={!live.length} /> : null}
+                </div>
+                <div className="mt-3.5 border-t border-line-50 pt-3.5">
+                  <p className="mb-2 text-[13px] font-medium text-text-100">Privacy funding</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Action icon={<Share2 className="h-4 w-4 shrink-0" />} label="Disperse" onClick={() => setModal("disperse")} disabled={!canSign || live.length < 2} />
+                    <Action icon={<Undo2 className="h-4 w-4 shrink-0" />} label="Reverse Disperse" onClick={() => setModal("reverse")} disabled={!canSign || live.length < 2} />
+                  </div>
+                  <p className="mt-2 text-[11px] text-text-300">Disperse: one dev wallet funds a group through fresh relay wallets (keys never stored, two signatures per target). Reverse Disperse sweeps the group back.</p>
+                </div>
+                {calendar ? (
+                  <div className="mt-3.5 flex h-[420px] flex-col border-t border-line-50 pt-2">
+                    <PnlCalendar days={days} solUsd={solUsd} unit={unit} />
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </section>
+        </div>
       </div>
 
       <CreateModal open={modal === "create"} onClose={() => setModal(null)} groups={groups} />
       <ImportModal open={modal === "import"} onClose={() => setModal(null)} />
-      <GroupModal open={modal === "group"} onClose={() => setModal(null)} />
       {modal === "export" ? <ExportModal open onClose={() => setModal(null)} {...base} /> : null}
+      {modal === "move" ? <MoveModal open onClose={() => setModal(null)} {...base} /> : null}
       {modal === "deposit" ? <DepositModal open onClose={() => setModal(null)} {...base} /> : null}
       {modal === "withdraw" ? <SendModal kind="withdraw" open onClose={() => setModal(null)} {...base} /> : null}
       {modal === "transfer" ? <SendModal kind="transfer" open onClose={() => setModal(null)} {...base} /> : null}
-      {modal === "disperse" ? <DisperseModal open onClose={() => setModal(null)} {...base} /> : null}
-      {modal === "consolidate" ? <ConsolidateModal open onClose={() => setModal(null)} {...base} /> : null}
+      {modal === "distribute" ? <DisperseModal privacy={false} open onClose={() => setModal(null)} {...base} /> : null}
+      {modal === "disperse" ? <DisperseModal privacy open onClose={() => setModal(null)} {...base} /> : null}
+      {modal === "consolidate" ? <ConsolidateModal privacy={false} open onClose={() => setModal(null)} {...base} /> : null}
+      {modal === "reverse" ? <ConsolidateModal privacy open onClose={() => setModal(null)} {...base} /> : null}
       {modal === "airdrop" ? <AirdropModal open onClose={() => setModal(null)} {...base} /> : null}
-    </Page>
+    </div>
+  );
+}
+
+function SortTh({ label, onClick, on }: { label: string; onClick: () => void; on: boolean }) {
+  return (
+    <th className="px-2 py-2 text-left font-normal">
+      <button type="button" onClick={onClick} className={cx("inline-flex items-center gap-0.5 transition-colors hover:text-text-100", on ? "text-text-100" : "text-text-300")} title={`Sort by ${label}`}>
+        <span>{label}</span>
+        <ArrowUpDown className="h-3 w-3 shrink-0 opacity-50" />
+      </button>
+    </th>
+  );
+}
+
+function Action({ icon, label, onClick, disabled }: { icon: React.ReactNode; label: string; onClick: () => void; disabled?: boolean }) {
+  return (
+    <button type="button" onClick={onClick} disabled={disabled} className="inline-flex h-9 w-full items-center justify-center gap-2 rounded border border-line-100 bg-bg-50 px-2.5 text-[13px] font-medium text-text-200 transition-colors hover:border-accent/35 hover:bg-white/[0.04] hover:text-text-100 disabled:cursor-not-allowed disabled:opacity-40">
+      {icon}
+      <span className="truncate">{label}</span>
+    </button>
+  );
+}
+
+function WalletRow({ w, groups, active, checked, onCheck, balance, tokens, vol, canSign }: { w: WalletInfo; groups: WalletGroup[]; active: boolean; checked: boolean; onCheck: (v: boolean) => void; balance: number; tokens: number; vol: { sol: number; approx: boolean } | null; canSign: boolean }) {
+  const [editing, setEditing] = useState(false);
+  const [label, setLabel] = useState(w.label);
+  const [copied, setCopied] = useState(false);
+  const group = w.group ? groups.find((g) => g.id === w.group)?.name : null;
+  const commit = async () => {
+    setEditing(false);
+    if (label.trim() === w.label) return;
+    try {
+      await post("/api/wallets/update", { address: w.address, label: label.trim() });
+      walletsRes.refresh();
+    } catch (e) {
+      toast(failureMessage(e), "err");
+    }
+  };
+  return (
+    <tr className={cx("border-b border-line-50 text-xs transition-colors hover:bg-hover-100", checked ? "bg-accent-muted/40" : "")}>
+      <td className="px-3 py-2">
+        <div className="flex items-center gap-2">
+          <input type="checkbox" className="pi-checkbox" checked={checked} onChange={(e) => onCheck(e.target.checked)} aria-label={`Select ${w.label}`} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              {editing ? (
+                <input autoFocus value={label} onChange={(e) => setLabel(e.target.value)} onBlur={commit} onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") { setLabel(w.label); setEditing(false); } }} className="h-6 w-36 rounded border border-line-100 bg-input-100 px-1.5 text-xs text-text-100 outline-none focus:border-accent" />
+              ) : (
+                <button type="button" onClick={() => setEditing(true)} className="group/name inline-flex items-center gap-1 truncate font-medium text-text-100 hover:text-accent" title="Rename">
+                  {w.label || short(w.address)}
+                  <Pencil className="h-2.5 w-2.5 opacity-0 group-hover/name:opacity-100" />
+                </button>
+              )}
+              {active ? <span className="rounded bg-accent px-1 text-[10px] font-semibold uppercase text-white">Active</span> : null}
+              {group ? <span className="rounded border border-line-100 px-1 text-[10px] text-text-300">{group}</span> : null}
+              {w.archived ? <span className="rounded border border-line-100 px-1 text-[10px] text-text-300">archived</span> : null}
+            </div>
+            <button type="button" onClick={() => navigator.clipboard?.writeText(w.address).then(() => (setCopied(true), setTimeout(() => setCopied(false), 1000)))} className="inline-flex items-center gap-1 font-mono text-[11px] text-text-300 hover:text-text-100" title="Copy address">
+              {short(w.address, 6, 6)} {copied ? <Check className="h-3 w-3 text-green-100" /> : <Copy className="h-3 w-3" />}
+            </button>
+          </div>
+        </div>
+      </td>
+      <td className="px-2 py-2 font-mono tabular-nums text-text-200">{vol ? `${vol.approx ? "≈" : ""}${sol(vol.sol)}` : "—"}</td>
+      <td className="px-2 py-2 font-mono tabular-nums text-text-200">{tokens}</td>
+      <td className="px-2 py-2 font-mono tabular-nums text-text-100">{sol(balance)}</td>
+      <td className="px-2 py-2 text-right">
+        <div className="flex items-center justify-end gap-1">
+          {!active ? (
+            <button type="button" onClick={() => post("/api/wallets/active", { address: w.address }).then(() => walletsRes.refresh()).catch((e) => toast(failureMessage(e), "err"))} className="rounded border border-line-100 px-1.5 py-0.5 text-[10px] text-text-300 transition-colors hover:border-line-200 hover:text-text-100" title="Use as the active wallet for quick buys">
+              Set active
+            </button>
+          ) : null}
+          <button type="button" onClick={() => post("/api/wallets/update", { address: w.address, archived: !w.archived }).then(() => walletsRes.refresh()).catch((e) => toast(failureMessage(e), "err"))} className="flex h-6 w-6 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-text-100" title={w.archived ? "Unarchive" : "Archive"}>
+            <Archive className="h-3 w-3" />
+          </button>
+          <button type="button" disabled={!canSign} onClick={() => confirm(`Remove ${w.label || short(w.address)} from the vault? Export its key first if it holds funds.`) && post("/api/wallets/remove", { addresses: [w.address] }).then(() => walletsRes.refresh()).catch((e) => toast(failureMessage(e), "err"))} className="flex h-6 w-6 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-decrease disabled:opacity-40" title="Delete">
+            <Trash2 className="h-3 w-3" />
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+/** Groups tab: create, rename, delete; members with remove; the Move toolbar button adds wallets. */
+function GroupsTab({ groups, wallets }: { groups: WalletGroup[]; wallets: WalletInfo[] }) {
+  const [name, setName] = useState("");
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const run = async (fn: () => Promise<unknown>, ok?: string) => {
+    setBusy(true);
+    try {
+      await fn();
+      walletsRes.refresh();
+      if (ok) toast(ok, "ok");
+    } catch (e) {
+      toast(failureMessage(e), "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <form
+        className="flex items-center gap-2 border-b border-line-50 px-3 py-2 lg:px-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!name.trim()) return;
+          run(() => post("/api/groups", { name: name.trim() }), `Group “${name.trim()}” created`).then(() => setName(""));
+        }}
+      >
+        <BxInput value={name} onChange={(e) => setName(e.target.value)} placeholder="New group name" className="h-7 text-xs" />
+        <BxButton type="submit" size="sm" variant="primary" disabled={!name.trim() || busy}>
+          <Plus className="h-3.5 w-3.5" /> Create group
+        </BxButton>
+      </form>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {!groups.length ? <p className="px-4 py-8 text-center text-xs text-text-300">No group yet. Create one here, then select wallets in the Developer Wallets tab and press Move.</p> : null}
+        {groups.map((g) => {
+          const members = wallets.filter((w) => w.group === g.id);
+          return (
+            <div key={g.id} className="border-b border-line-50 px-3 py-2 lg:px-4">
+              <div className="flex items-center gap-2">
+                <FolderKanban className="h-3.5 w-3.5 text-text-300" />
+                {renaming === g.id ? (
+                  <input
+                    autoFocus
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onBlur={() => {
+                      setRenaming(null);
+                      if (draft.trim() && draft.trim() !== g.name) run(() => post(`/api/groups/${g.id}`, { name: draft.trim() }, "PATCH"), "Group renamed");
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                      if (e.key === "Escape") setRenaming(null);
+                    }}
+                    className="h-6 w-40 rounded border border-line-100 bg-input-100 px-1.5 text-xs text-text-100 outline-none focus:border-accent"
+                  />
+                ) : (
+                  <button type="button" onClick={() => { setRenaming(g.id); setDraft(g.name); }} className="group/g inline-flex items-center gap-1 text-sm font-medium text-text-100 hover:text-accent" title="Rename">
+                    {g.name}
+                    <Pencil className="h-3 w-3 opacity-0 group-hover/g:opacity-100" />
+                  </button>
+                )}
+                <span className="font-mono text-[11px] text-text-300">{members.length} wallet{members.length !== 1 ? "s" : ""}</span>
+                <span className="ml-auto flex items-center gap-1">
+                  <button type="button" disabled={busy} onClick={() => confirm(`Delete group “${g.name}”? Its wallets stay in the vault.`) && run(() => del(`/api/groups/${g.id}`), "Group deleted")} className="flex h-6 w-6 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-decrease" title="Delete group">
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </span>
+              </div>
+              {members.length ? (
+                <div className="mt-1.5 flex flex-wrap gap-1.5 pl-6">
+                  {members.map((w) => (
+                    <span key={w.address} className="inline-flex h-6 items-center gap-1 rounded border border-line-100 bg-bg-50 pl-2 pr-1 text-[11px] text-text-200">
+                      {w.label || short(w.address)}
+                      <button type="button" disabled={busy} onClick={() => run(() => post("/api/wallets/move", { addresses: [w.address], group: null }))} className="flex h-4 w-4 items-center justify-center rounded text-text-300 hover:text-decrease" title="Remove from group">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-1 pl-6 text-[11px] text-text-300">Empty — select wallets in the Developer Wallets tab and press Move.</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }

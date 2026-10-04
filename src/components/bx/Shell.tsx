@@ -6,20 +6,18 @@
  */
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Bell, BookOpen, ChevronDown, Columns3, History, Menu, Search, Settings, SlidersHorizontal, TrendingUp } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { Bell, BookOpen, ChevronDown, History, Menu, Search, Settings, SlidersHorizontal } from "lucide-react";
 import { useRecent, clearRecent } from "./recent";
 import { VaultPill } from "./vault";
 import { cx } from "./ui";
 import { useSolPrice, useSettings } from "@/lib/store";
 import { useGet } from "@/lib/api";
 import { usd } from "@/lib/format";
-import type { FeedSnapshot, FeedCard, PresetsResponse } from "@/lib/types";
+import type { LaunchesResponse, PresetsResponse } from "@/lib/types";
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard" },
-  { href: "/trenches", label: "Trenches" },
-  { href: "/trending", label: "Trending" },
   { href: "/launch", label: "Launch" },
   { href: "/portfolio", label: "Portfolio" },
   { href: "/rewards", label: "Rewards" },
@@ -63,7 +61,7 @@ export function Shell({ children }: { children: ReactNode }) {
               </Link>
               <nav className="hidden min-w-0 items-center gap-0.5 min-[1600px]:gap-1 xl:flex">
                 {NAV.map((n) => {
-                  const on = path === n.href || path.startsWith(n.href + "/") || (n.href === "/trenches" && path.startsWith("/trade/"));
+                  const on = path === n.href || path.startsWith(n.href + "/") || (n.href === "/dashboard" && path.startsWith("/trade/"));
                   return (
                     <Link key={n.href} href={n.href} className={cx("rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-white/[0.04] min-[1600px]:px-2.5", on ? "text-accent" : "text-text-200 hover:text-text-100")}>
                       {n.label}
@@ -215,15 +213,6 @@ function BottomBar() {
   return (
     <footer className="relative z-[100] flex h-[calc(2.25rem+env(safe-area-inset-bottom))] max-w-full shrink-0 items-center justify-between border-t border-line-100 bg-bg-50 px-1.5 pb-[env(safe-area-inset-bottom)] text-sm font-medium">
       <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-        <div className="hidden items-center gap-1 md:flex">
-          <Link href="/trenches" className="flex min-w-6 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-[7px] border-[0.5px] border-transparent px-1.5 py-1 text-sm font-normal leading-4 text-text-300 transition-colors hover:bg-hover-200 hover:text-text-100" aria-label="Trenches" title="Show Trenches">
-            <Columns3 className="h-3.5 w-3.5" />
-          </Link>
-          <Link href="/trending" className="flex min-w-6 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-[7px] border-[0.5px] border-transparent px-1.5 py-1 text-sm font-normal leading-4 text-text-300 transition-colors hover:bg-hover-200 hover:text-text-100" aria-label="Trending" title="Show Trending">
-            <TrendingUp className="h-3.5 w-3.5" />
-          </Link>
-          <div className="mx-0.5 h-4 w-px shrink-0 bg-line-50" />
-        </div>
         <div className="flex shrink-0 items-center">
           <button
             type="button"
@@ -279,33 +268,35 @@ function BottomBar() {
   );
 }
 
-/** "/" search: name, ticker or CA across the feed snapshot; Enter opens the trade page. */
+/** "/" search: paste a mint address (opens its trade page) or pick one of your launches / recently viewed tokens. */
 function SearchModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  if (!open) return null;
+  return <SearchBody onClose={onClose} />;
+}
+function SearchBody({ onClose }: { onClose: () => void }) {
   const router = useRouter();
-  const feed = useGet<FeedSnapshot>(open ? "/api/feed" : null, 0);
+  const launches = useGet<LaunchesResponse>("/api/dev/launches", 0);
+  const recent = useRecent();
   const [q, setQ] = useState("");
   const [idx, setIdx] = useState(0);
-  const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (open) setTimeout(() => ref.current?.focus(), 0);
-    else setQ("");
-  }, [open]);
-  if (!open) return null;
-  const all: FeedCard[] = feed.data ? [...feed.data.columns.new, ...feed.data.columns.almost, ...feed.data.columns.migrated] : [];
   const needle = q.trim().toLowerCase();
   const isCa = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q.trim());
-  const hits = needle ? all.filter((c) => c.mint.toLowerCase().includes(needle) || (c.symbol ?? "").toLowerCase().includes(needle) || (c.name ?? "").toLowerCase().includes(needle)).slice(0, 8) : all.slice(0, 8);
+  const pool = [
+    ...(launches.data?.launches ?? []).map((l) => ({ mint: l.mint, symbol: l.symbol, name: l.name, image: l.image, kind: "launch" as const })),
+    ...recent.filter((r) => !(launches.data?.launches ?? []).some((l) => l.mint === r.mint)).map((r) => ({ mint: r.mint, symbol: r.symbol, name: r.name, image: r.image, kind: "recent" as const })),
+  ];
+  const hits = needle ? pool.filter((c) => c.mint.toLowerCase().includes(needle) || (c.symbol ?? "").toLowerCase().includes(needle) || (c.name ?? "").toLowerCase().includes(needle)).slice(0, 8) : pool.slice(0, 8);
   const go = (mint: string) => {
     onClose();
     router.push(`/trade/${mint}`);
   };
   return (
-    <div className="fixed inset-0 z-[200] flex items-start justify-center bg-modal-overlay px-4 pt-[12vh]" style={{ background: "var(--modal-overlay)" }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="fixed inset-0 z-[200] flex items-start justify-center px-4 pt-[12vh]" style={{ background: "var(--modal-overlay)" }} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="w-full max-w-[560px] overflow-hidden rounded-lg border border-line-100 bg-bg-50 shadow-2xl">
         <div className="flex h-11 items-center gap-2 border-b border-line-100 px-3">
           <Search className="h-4 w-4 text-text-300" />
           <input
-            ref={ref}
+            autoFocus
             value={q}
             onChange={(e) => {
               setQ(e.target.value);
@@ -316,8 +307,8 @@ function SearchModal({ open, onClose }: { open: boolean; onClose: () => void }) 
               if (e.key === "ArrowDown") setIdx((i) => Math.min(hits.length - 1, i + 1));
               if (e.key === "ArrowUp") setIdx((i) => Math.max(0, i - 1));
               if (e.key === "Enter") {
-                if (hits[idx]) go(hits[idx].mint);
-                else if (isCa) go(q.trim());
+                if (isCa) go(q.trim());
+                else if (hits[idx]) go(hits[idx].mint);
               }
             }}
             placeholder="Search name, ticker, CA"
@@ -326,27 +317,30 @@ function SearchModal({ open, onClose }: { open: boolean; onClose: () => void }) 
           <kbd className="rounded border border-line-100 px-1.5 text-[11px] text-text-300">Esc</kbd>
         </div>
         <ul className="max-h-[360px] overflow-y-auto p-1">
-          {isCa && !hits.length ? (
+          {isCa ? (
             <li>
-              <button type="button" onClick={() => go(q.trim())} className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-text-200 hover:bg-white/[0.04]">
-                Open <span className="font-mono text-text-100">{q.trim()}</span>
+              <button type="button" onClick={() => go(q.trim())} className="flex w-full items-center gap-2.5 rounded-md bg-white/[0.04] px-2 py-1.5 text-left text-sm text-text-200">
+                Open <span className="font-mono text-text-100">{q.trim().slice(0, 6)}…{q.trim().slice(-6)}</span> <span className="ml-auto text-[11px] text-text-300">Enter</span>
               </button>
             </li>
           ) : null}
           {hits.map((c, i) => (
             <li key={c.mint}>
-              <button type="button" onMouseEnter={() => setIdx(i)} onClick={() => go(c.mint)} className={cx("flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors", i === idx ? "bg-white/[0.04]" : "")}>
+              <button type="button" onMouseEnter={() => setIdx(i)} onClick={() => go(c.mint)} className={cx("flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors", i === idx && !isCa ? "bg-white/[0.04]" : "")}>
                 {/* eslint-disable-next-line @next/next/no-img-element -- token image */}
                 {c.image ? <img src={c.image} alt="" className="h-7 w-7 rounded-md object-cover" /> : <span className="h-7 w-7 rounded-md border border-line-100 bg-bg-100" />}
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[14px] font-medium text-text-100">{c.symbol ?? c.mint.slice(0, 6)}</span>
                   <span className="block truncate text-[12px] text-text-300">{c.name}</span>
                 </span>
-                <span className="font-mono text-[12px] text-text-300">{c.mint.slice(0, 4)}…{c.mint.slice(-4)}</span>
+                <span className="text-[11px] text-text-300">{c.kind === "launch" ? "your launch" : "recent"}</span>
+                <span className="font-mono text-[12px] text-text-300">
+                  {c.mint.slice(0, 4)}…{c.mint.slice(-4)}
+                </span>
               </button>
             </li>
           ))}
-          {!hits.length && !isCa ? <li className="px-3 py-6 text-center text-[13px] text-text-300">{feed.loading ? "Loading the feed…" : needle ? "No token in the live feed matches. Paste a full mint address to open it." : "The feed is empty for now."}</li> : null}
+          {!hits.length && !isCa ? <li className="px-3 py-6 text-center text-[13px] text-text-300">{needle ? "No launch or recent token matches. Paste a full mint address to open it." : "Paste a mint address, or type the name of one of your launches."}</li> : null}
         </ul>
       </div>
     </div>

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { Activity, BookOpen, ChartLine, Columns3, Gift, Rocket } from "lucide-react";
+import { Activity, BookOpen, ChartLine, Gift, Rocket } from "lucide-react";
 import { BxCard, BxSeg, PadAvatar, cx } from "@/components/bx/ui";
 import { DOCS_URL } from "@/components/bx/Shell";
 import { PnlCalendar, dailyPnl } from "@/components/bx/PnlCalendar";
@@ -12,7 +12,7 @@ import { useGet } from "@/lib/api";
 import { useSolPrice, useWallets } from "@/lib/store";
 import { groupPositions } from "@/lib/positions";
 import { age, usd } from "@/lib/format";
-import type { ActivityResponse, CreatorFeesResponse, DashboardResponse, FeedSnapshot, PositionsResponse } from "@/lib/types";
+import type { ActivityResponse, CreatorFeesResponse, DashboardResponse, PositionsResponse } from "@/lib/types";
 
 type Win = "1D" | "7D" | "30D" | "All";
 const WIN_KEY: Record<Win, "24h" | "7d" | "30d" | "all"> = { "1D": "24h", "7D": "7d", "30D": "30d", All: "all" };
@@ -27,7 +27,6 @@ function money(sol: number, solUsd: number | null, unit: "USD" | "SOL", signed =
 export default function DashboardPage() {
   const router = useRouter();
   const dash = useGet<DashboardResponse>("/api/dashboard", 5000);
-  const feed = useGet<FeedSnapshot>("/api/feed", 4000);
   const positions = useGet<PositionsResponse>("/api/positions", 10000);
   const activity = useGet<ActivityResponse>("/api/activity?limit=500", 10000);
   const price = useSolPrice();
@@ -45,7 +44,6 @@ export default function DashboardPage() {
   const total = realised + unrealised;
   const basis = pnl ? Number(pnl.buysSol) : 0;
   const pct = basis > 0 ? (total / basis) * 100 : 0;
-  const newOnChain = (feed.data?.columns.new ?? []).slice(0, 8);
   const launches = d?.recentLaunches ?? [];
   const pnlByMint = new Map(grouped.map((p) => [p.mint, Number(p.pnlSol)]));
   const days = dailyPnl(activity.data?.items ?? []);
@@ -58,7 +56,7 @@ export default function DashboardPage() {
           <section className="hidden shrink-0 items-center justify-between gap-3 lg:flex">
             <div className="min-w-0">
               <h1 className="truncate text-xl font-semibold tracking-[-0.02em] text-text-100">Welcome back</h1>
-              <p className="mt-0.5 text-[13px] text-text-300">Solana overview — launches, portfolio PnL and the live feed.</p>
+              <p className="mt-0.5 text-[13px] text-text-300">Solana overview — launches, portfolio PnL and rewards.</p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <a href={DOCS_URL} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-1.5 rounded-md border border-line-100 bg-bg-50 px-3.5 text-[13px] font-medium text-text-200 transition-colors hover:border-accent/35 hover:text-text-100">
@@ -72,41 +70,10 @@ export default function DashboardPage() {
             </div>
           </section>
 
-          <section className="grid grid-cols-1 items-stretch gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)_minmax(0,1fr)] lg:grid-rows-[minmax(0,1.05fr)_minmax(0,1fr)] lg:overflow-hidden">
-            {/* New on chain */}
-            <BxCard
-              className="hidden min-h-[360px] lg:order-none lg:col-start-1 lg:row-start-1 lg:block lg:min-h-0"
-              title="New on chain"
-              icon={<Columns3 className="h-4 w-4 text-accent" />}
-              right={
-                <Link href="/trenches" className="text-[13px] font-medium text-accent transition-colors hover:text-accent-hover">
-                  Trenches
-                </Link>
-              }
-            >
-              <ul className="flex min-h-0 flex-1 flex-col gap-0.5 px-3 pb-3 max-lg:overflow-visible lg:overflow-y-auto">
-                {newOnChain.map((c) => (
-                  <li key={c.mint}>
-                    <Link href={`/trade/${c.mint}`} title={c.mint} className="group/peek flex items-center gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-white/[0.04]">
-                      <PadAvatar src={c.image ?? c.imageCdn} alt={c.symbol ?? "?"} size={32} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[14px] font-medium tracking-[-0.02em] text-text-100 transition-colors group-hover/peek:text-accent">{c.symbol ?? c.mint.slice(0, 6)}</span>
-                        <span className="block truncate text-[12px] text-text-300">{c.name}</span>
-                      </span>
-                      <span className="flex shrink-0 flex-col items-end gap-0.5">
-                        <span className="text-[12px] font-medium tabular-nums text-accent">{age(c.createdAt)}</span>
-                        <span className="text-[12px] tabular-nums text-text-200">{c.marketCapUsd !== null ? usd(c.marketCapUsd) : "—"}</span>
-                      </span>
-                    </Link>
-                  </li>
-                ))}
-                {!newOnChain.length ? <li className="px-2 py-6 text-center text-[13px] text-text-300">{feed.error ? "Feed unreachable." : feed.loading ? "Waiting for the feed…" : "Nothing new yet — open Trenches to start the feed."}</li> : null}
-              </ul>
-            </BxCard>
-
+          <section className="grid grid-cols-1 items-stretch gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] lg:grid-rows-[minmax(0,1.05fr)_minmax(0,1fr)] lg:overflow-hidden">
             {/* Latest launches */}
             <BxCard
-              className="order-2 flex min-h-[360px] lg:order-none lg:col-start-3 lg:row-start-1 lg:min-h-0"
+              className="order-2 flex min-h-[360px] lg:order-none lg:col-start-2 lg:row-start-1 lg:min-h-0"
               title="Latest launches"
               icon={<Rocket className="h-4 w-4 text-accent" />}
               right={
@@ -162,7 +129,7 @@ export default function DashboardPage() {
             </BxCard>
 
             {/* Portfolio PnL */}
-            <div className="order-1 min-w-0 lg:order-none lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:min-h-0">
+            <div className="order-1 min-w-0 lg:order-none lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:min-h-0">
               <div className="flex min-h-[520px] flex-col overflow-hidden rounded-lg border border-line-100 bg-bg-50 lg:h-full lg:min-h-0">
                 <div className="flex h-full min-h-0 flex-col overflow-hidden">
                   <div className="flex h-[52px] shrink-0 items-center justify-between gap-3 px-5 xl:h-[56px]">
@@ -204,16 +171,19 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* Active tasks (Block X shows the KOL signal here — no X API, so the running tasks take the slot) */}
-            <BxCard className="hidden min-h-[360px] lg:order-none lg:col-start-1 lg:row-start-2 lg:block lg:min-h-0" title="Active tasks" icon={<Activity className="h-4 w-4 text-accent" />} right={<span className="text-[13px] font-medium tabular-nums text-text-300">{d ? d.activeTasks.length : "—"}</span>}>
-              <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-4 pb-4">
-                {d?.activeTasks.length ? d.activeTasks.map((t) => <TaskRowCompact key={`${t.launchId}-${t.task.id}`} launchId={t.launchId} t={t.task} symbol={t.symbol} />) : <p className="px-1 py-6 text-center text-[13px] text-text-300">No task running. Buy, volume and sniper tasks from your launches show up here with pause and stop.</p>}
-              </div>
-            </BxCard>
-
             {/* Rewards */}
-            <BxCard className="order-3 flex min-h-[320px] lg:order-none lg:col-start-3 lg:row-start-2 lg:min-h-0" title="Rewards" icon={<Gift className="h-4 w-4 text-accent" />}>
+            <BxCard className="order-3 flex min-h-[320px] lg:order-none lg:col-start-2 lg:row-start-2 lg:min-h-0" title="Rewards" icon={<Gift className="h-4 w-4 text-accent" />}>
               <RewardsSummary mints={launches.map((l) => l.mint)} walletCount={walletCount} />
+              {d?.activeTasks.length ? (
+                <div className="flex flex-col gap-1.5 border-t border-line-50 px-4 py-3">
+                  <div className="flex items-center gap-2 text-[13px] font-medium text-text-100">
+                    <Activity className="h-3.5 w-3.5 text-accent" /> Active tasks <span className="font-mono text-text-300">{d.activeTasks.length}</span>
+                  </div>
+                  {d.activeTasks.map((t) => (
+                    <TaskRowCompact key={`${t.launchId}-${t.task.id}`} launchId={t.launchId} t={t.task} symbol={t.symbol} />
+                  ))}
+                </div>
+              ) : null}
             </BxCard>
           </section>
         </div>

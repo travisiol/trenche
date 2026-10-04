@@ -5,14 +5,13 @@ import { ApiError, Card, KV, Loading, Page, Segmented, Spinner, Tabs, cx } from 
 import { CandleChart } from "@/components/trade/Chart";
 import { TradePanel } from "@/components/trade/TradePanel";
 import { DevRoom, TokenHeader } from "@/components/dev/DevRoom";
-import { useGet, useSSE } from "@/lib/api";
+import { useGet } from "@/lib/api";
 import { useWallets } from "@/lib/store";
 import { groupPositions } from "@/lib/positions";
 import { age, pct, short, sol, solscanAccount, solscanTx, time } from "@/lib/format";
 import type { Candle, CandleTf, FeedTrade, PositionsResponse, TokenCandlesResponse, TokenHoldersResponse, TokenInfo, TokenTradesResponse } from "@/lib/types";
 
 const TF: CandleTf[] = ["1s", "15s", "1m"];
-const TF_SEC: Record<CandleTf, number> = { "1s": 1, "15s": 15, "1m": 60 };
 
 export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
   const { mint } = use(params);
@@ -20,30 +19,12 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
   const [tf, setTf] = useState<CandleTf>("15s");
   const candles = useGet<TokenCandlesResponse>(`/api/token/${mint}/candles?tf=${tf}`, 5000);
   const [tab, setTab] = useState<"trades" | "holders" | "positions">("trades");
-  const [liveTrades, setLiveTrades] = useState<FeedTrade[]>([]);
-  const [liveCandle, setLiveCandle] = useState<Candle | null>(null);
+  const liveTrades: FeedTrade[] = [];
+  const liveCandle: Candle | null = null;
   const wallets = useWallets();
   const mine = new Set((wallets.data?.wallets ?? []).map((w) => w.address));
   const positions = useGet<PositionsResponse>(`/api/positions?mints=${mint}`, 5000);
   const myValue = groupPositions(positions.data).find((p) => p.mint === mint)?.valueSol;
-
-  // live trades from the feed stream (only real PumpPortal trade events carry this mint reliably)
-  useSSE("/api/feed/stream", {
-    trade: (d) => {
-      const t = d as FeedTrade;
-      if (t.mint !== mint) return;
-      setLiveTrades((l) => [t, ...l].slice(0, 200));
-      if (t.marketCapSol === null) return;
-      const price = t.tokenAmount ? t.solAmount / t.tokenAmount : null;
-      if (!price) return;
-      const bucket = Math.floor(t.at / 1000 / TF_SEC[tf]) * TF_SEC[tf];
-      setLiveCandle((c) =>
-        c && c.time === bucket
-          ? { ...c, high: Math.max(c.high, price), low: Math.min(c.low, price), close: price, volume: c.volume + t.solAmount }
-          : { time: bucket, open: c?.close ?? price, high: price, low: price, close: price, volume: t.solAmount },
-      );
-    },
-  });
 
   const t = token.data;
   return (
