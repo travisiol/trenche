@@ -98,9 +98,9 @@ export function Holdings({ wallets }: { wallets: string[] }) {
   );
 }
 
-export function Activity({ limit = 50 }: { limit?: number }) {
-  const act = useGet<ActivityResponse>(`/api/activity?limit=${limit}`, 5000);
-  const items = act.data?.items ?? [];
+export function Activity({ limit = 50, mint }: { limit?: number; mint?: string }) {
+  const act = useGet<ActivityResponse>(`/api/activity?limit=${mint ? 500 : limit}`, 5000);
+  const items = (act.data?.items ?? []).filter((a) => !mint || a.mint === mint).slice(0, limit);
   return (
     <div className="flex flex-col min-h-0">
       {act.error ? <ApiError error={act.error} retry={act.refresh} compact /> : null}

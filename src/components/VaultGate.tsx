@@ -21,19 +21,14 @@ export function VaultGate({ children }: { children: ReactNode }) {
       </div>
     );
   }
-  if (vault.error) {
-    return (
-      <div className="flex-1 flex items-center justify-center dots">
-        <div className="glow-frame w-full max-w-md">
-          <ApiError error={vault.error} retry={vault.refresh} />
-        </div>
-      </div>
-    );
-  }
   if (vault.data && !vault.data.exists) return <CreateVault />;
   return (
     <>
-      {vault.data && !vault.data.unlocked ? (
+      {vault.error ? (
+        <div className="shrink-0 px-4 py-1.5 border-b border-warn/30 bg-warn-soft">
+          <ApiError error={vault.error} retry={vault.refresh} compact />
+        </div>
+      ) : vault.data && !vault.data.unlocked ? (
         <div className="shrink-0 flex items-center gap-3 px-4 h-10 bg-warn-soft border-b border-warn/30 text-warn text-xs">
           <Icon3D name="portfolio" size={18} />
           <span className="font-medium">Vault locked</span>
