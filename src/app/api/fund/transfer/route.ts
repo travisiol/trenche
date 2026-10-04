@@ -5,8 +5,8 @@ import type { FundTransferRequest, JobCreated } from "@/lib/types";
 export const dynamic = "force-dynamic";
 
 export const POST = route(async (req: Request) => {
-  const body = await readBody<FundTransferRequest>(req);
-  const job = sendSol("transfer", requireAddress(body.from, "from"), requireAddress(body.to, "to"), lamportsOf(body.sol, "sol"), !!(body as { viaRelay?: boolean }).viaRelay);
+  const body = (await readBody<FundTransferRequest>(req)) as Extract<FundTransferRequest, { from: string }>;
+  const job = sendSol("transfer", requireAddress(body.from, "from"), requireAddress(body.to, "to"), lamportsOf(body.sol, "sol"), !!body.viaRelay);
   const res: JobCreated = { jobId: job.id };
   return json(res);
 });

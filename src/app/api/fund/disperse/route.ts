@@ -1,11 +1,11 @@
 import { intIn, json, lamportsOf, readBody, requireAddress, requireAddresses, route } from "@/server/api";
 import { disperse } from "@/server/funds";
-import type { FundDisperseRequest, JobCreated } from "@/lib/types";
+import type { FundDisperseLegacyRequest, JobCreated } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 export const POST = route(async (req: Request) => {
-  const body = await readBody<FundDisperseRequest>(req);
+  const body = await readBody<FundDisperseLegacyRequest>(req);
   const job = disperse(
     requireAddress(body.from, "from"),
     requireAddresses(body.to, "to"),

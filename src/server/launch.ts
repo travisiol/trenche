@@ -75,7 +75,7 @@ export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<Laun
   }
   saveRuntimeSoon();
   logActivity(st, { kind: "launch", ok: true, message: `Launch prepared: ${symbol} · metadata ${uri}`, mint, data: { uri } });
-  return { uri, mint, name, symbol };
+  return { uri, mint, name, symbol, mintSource: vanity ? "vanity" : "generated" };
 }
 
 /* ------------------------------------------------------------------ runtime */
@@ -414,6 +414,7 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
       startedAt: Date.now(),
       sellOnExternal: req.sellOnExternalEnabled ? { enabled: true, threshold: String(req.sellOnExternalThreshold ?? "0"), externalVolumeSol: 0, fired: false } : null,
       autoDump: null,
+      autoDevSell: null,
     },
     job,
     subs: new Set(),

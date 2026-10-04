@@ -44,10 +44,13 @@ export type WalletsResponse = {
   active: string | null;
   unlocked: boolean;
 };
+/** Block X "Create Wallets": `label` = label prefix ("Sniper" → Sniper 1, Sniper 2…), count 1..WALLET_LIMITS.maxCreate (400 above) */
 export type WalletsGenerateRequest = { count: number; label?: string; group?: string };
 export type WalletsGenerateResponse = WalletsResponse & { addresses: string[] };
-/** one base58 secret (or JSON byte array) per line, optional "label, key" */
-export type WalletsImportRequest = { lines: string[] };
+/** one base58 secret (or JSON byte array) per line, optional "label, key"; `prefix` labels the imported wallets
+ *  ("Imported 1", "Imported 2"…); more than WALLET_LIMITS.maxImport keys → 400 */
+export type WalletsImportRequest = { lines: string[]; prefix?: string };
+export const WALLET_LIMITS = { maxCreate: 50, maxImport: 50 } as const;
 export type WalletsImportResponse = WalletsResponse & { added: number; errors: string[] };
 export type WalletsUpdateRequest = {
   address: string;
@@ -110,14 +113,22 @@ export type JobView = {
 export type JobCreated = { jobId: string };
 /** GET /api/jobs */
 export type JobsListResponse = { jobs: JobView[] };
+/** POST /api/jobs/[id]/stop → JobView: sets the cooperative stop flag (a waiting disperse/deposit job ends at its
+ *  next check; a trade in flight is never cancelled). 409 when the job already ended. */
+export type JobStopResponse = JobView;
 
 /* ------------------------------------------------------------------ funds */
 
-export type FundWithdrawRequest = { from: string; to: string; sol: string };
+export type FundWithdrawRequest = { from: string; to: string; sol: string; viaRelay?: boolean };
 /** viaRelay: source → fresh in-memory relay wallet → destination (two signatures per transfer; the relay key is
- *  never stored; on a hop-2 failure the relay sweeps back to the source). The job shows both hops. */
-export type FundTransferRequest = { from: string; to: string; sol: string; viaRelay?: boolean };
-export type FundDisperseRequest = {
+ *  never stored; on a hop-2 failure the relay sweeps back to the source). The job shows both hops.
+ *  Block X drag-and-drop shape: `{ sources, targets, sol? }` — pairs sources[i] → targets[i % targets.length];
+ *  without `sol` each source sends its whole balance minus fees. */
+export type FundTransferRequest =
+  | { from: string; to: string; sol: string; viaRelay?: boolean }
+  | { sources: string[]; targets: string[]; sol?: string; viaRelay?: boolean; delayMinutes?: number };
+/** Legacy shape (min/max per wallet, delays in ms) — still accepted. */
+export type FundDisperseLegacyRequest = {
   from: string;
   to: string[];
   minSol: string;
@@ -128,6 +139,54 @@ export type FundDisperseRequest = {
   /** one fresh relay wallet per destination (see FundTransferRequest) */
   viaRelay?: boolean;
 };
+/** Block X Disperse drawer. Either `from` (an existing vault wallet) or `createDeposit: true` (a fresh vault wallet
+ *  "Deposit N" is generated, returned in the response for the QR, and the job WAITS until it holds the planned
+ *  total + fees — up to `waitMinutes`, default 120 — before sending; POST /api/jobs/[id]/stop cancels the wait).
+ *  Amounts: `totalSol` split across `to` ("Split equal"), or `amounts` per wallet (rows the user edited), or
+ *  `amountSol` per wallet. `variationPct` 0..100 randomises each row around the equal share while the sum still
+ *  matches the total (0 = equal). `delayMinutes` between wallets (0 = ASAP). */
+export type FundDisperseRequest = {
+  from?: string;
+  createDeposit?: boolean;
+  to: string[];
+  totalSol?: string;
+  amountSol?: string;
+  amounts?: Record<string, string>;
+  variationPct?: number;
+  delayMinutes?: number;
+  waitMinutes?: number;
+  viaRelay?: boolean;
+  /** optional saved-preset name for the activity journal */
+  presetName?: string;
+};
+export type FundDisperseResponse = JobCreated & {
+  /** the funding wallet (the fresh deposit wallet when createDeposit) */
+  from: { address: string; label: string; isDeposit: boolean };
+  plan: { address: string; label: string; sol: string }[];
+  /** SOL the source must hold before anything is sent (sum + fees) */
+  needSol: string;
+  totalSol: string;
+};
+/** POST /api/fund/distribute — Block X "Distribute" drop zone: ONE source → many targets, equal split of
+ *  `totalSol` (default: the source's whole balance minus fees), same variation/delay options as Disperse. */
+export type FundDistributeRequest = { sources: string[]; targets: string[]; totalSol?: string; variationPct?: number; delayMinutes?: number; viaRelay?: boolean };
+/** Reverse Disperse / Consolidate: every source sweeps its whole balance to `to` (any address, e.g. the deposit
+ *  wallet). Block X shapes also accepted: `{ sources, targets: [to] }` and `{ groupId, to }`. `delayMinutes`
+ *  between wallets (0 = ASAP). */
+export type FundConsolidateRequest = {
+  from?: string[];
+  sources?: string[];
+  groupId?: string;
+  to?: string;
+  targets?: string[];
+  /** each source empties itself through its own fresh relay wallet (2 signatures per source) */
+  viaRelay?: boolean;
+  delayMinutes?: number;
+};
+/** Saved Disperse presets (Preset select / Save as / Update / Delete in the drawer): GET/POST /api/fund/disperse/presets */
+export type DispersePreset = { id: string; name: string; totalSol: string; variationPct: number; delayMinutes: number; viaRelay: boolean; createdAt: number };
+export type DispersePresetsResponse = { presets: DispersePreset[] };
+export type DispersePresetsUpdateRequest = { preset: Omit<DispersePreset, "createdAt" | "id"> & { id?: string } } | { remove: string };
 /** POST /api/dev/airdrop — devnet only (409 on mainnet); 429 when the faucet refuses, 504 when not confirmed in 60 s */
 export type AirdropRequest = { wallet: string; sol?: string };
 export type AirdropResponse = {
@@ -141,11 +200,38 @@ export type AirdropResponse = {
   /** wallet balance after the airdrop, null when unreadable */
   balance: string | null;
 };
-export type FundConsolidateRequest = { from: string[]; to: string; /** each source empties itself through its own fresh relay wallet (2 signatures per source) */ viaRelay?: boolean };
-
 /* --------------------------------------------------------------- settings */
 
 export type Cluster = "mainnet" | "devnet";
+
+/** Block X "Trading Presets" dialog (Buy Settings / Sell Settings / slippage + tip per preset / Multi wallet trading) */
+export type TradingPreset = {
+  /** Buy Settings → Native amounts (SOL, decimal strings), the 4 round buttons of Instant Trade / order rail */
+  buyAmounts: [string, string, string, string];
+  /** Buy Settings → Percent of native balance (0..100) */
+  buyPercents: [number, number, number, number];
+  /** Sell Settings → percent of the token balance (0..100) */
+  sellPercents: [number, number, number, number];
+  /** 0..100 */
+  slippagePercent: number;
+  /** Jito/priority tip in SOL (decimal string) */
+  tipSol: string;
+  /** Multi wallet trading → "Buys value spread" 0..100: each wallet buy is randomised around the average,
+   *  the total still matches the input amount × wallets */
+  buysValueSpreadPct: number;
+  /** Multi wallet trading → "Buys delay" 0..1 s between wallet buys */
+  buysDelaySec: number;
+};
+export type TradingPresets = [TradingPreset, TradingPreset, TradingPreset];
+/** Block X defaults, observed 2026-10-04 */
+export const TRADING_PRESET_DEFAULTS: TradingPresets = [
+  { buyAmounts: ["0.1", "0.15", "0.22", "0.5"], buyPercents: [10, 25, 50, 100], sellPercents: [5, 10, 20, 50], slippagePercent: 30, tipSol: "0.0002", buysValueSpreadPct: 0, buysDelaySec: 0 },
+  { buyAmounts: ["0.2", "0.35", "0.5", "1"], buyPercents: [15, 30, 50, 75], sellPercents: [10, 25, 50, 75], slippagePercent: 30, tipSol: "0.0002", buysValueSpreadPct: 0, buysDelaySec: 0 },
+  { buyAmounts: ["0.5", "1", "2", "5"], buyPercents: [25, 50, 75, 100], sellPercents: [25, 50, 75, 100], slippagePercent: 30, tipSol: "0.0002", buysValueSpreadPct: 0, buysDelaySec: 0 },
+];
+export const TRADING_PRESET_LIMITS = { maxSpreadPct: 100, maxDelaySec: 1, maxSlippagePercent: 100 } as const;
+/** Settings → default tip everywhere (tasks, trades, presets) — Block X ships 0.0002 SOL */
+export const DEFAULT_TIP_SOL = "0.0002";
 export type Settings = {
   /** "mainnet" (default) or "devnet". On devnet: reads/sends on api.devnet.solana.com (or a saved RPC whose
    *  URL names devnet), Jito and the Helius Sender are disabled (bundles fall back to sequential sends, the job
@@ -170,22 +256,26 @@ export type Settings = {
   slippageBps: number;
   /** priority fee, micro-lamports per CU */
   cuPrice: number;
-  /** default Jito tip in SOL (decimal string) */
+  /** default Jito tip in SOL (decimal string) — DEFAULT_TIP_SOL (0.0002) */
   tipSol: string;
-  /** quick-buy presets P1..P3 in SOL (decimal strings) */
+  /** legacy quick-buy amounts P1..P3 in SOL (decimal strings) = tradingPresets[n].buyAmounts[0]; kept for the old UI */
   presets: [string, string, string];
+  /** Block X Trading Presets P1..P3 (see TradingPreset) */
+  tradingPresets: TradingPresets;
   keybinds: { quickBuy: [string, string, string]; close: string };
   theme: "dark";
   /** pump.fun constants in use for this cluster (null until the first trade/launch read them on devnet) */
   pump: { cluster: Cluster; feeRecipients: string[]; secondRecipients: string[]; initialVirtualSol: string; initialVirtualTokens: string; initialRealTokens: string; at: number } | null;
 };
-/** POST /api/settings — partial; `pumpportalKey: ""` clears the key, omit to keep */
+/** POST /api/settings — partial; `pumpportalKey: ""` clears the key, omit to keep.
+ *  `tradingPresets`: 3 entries, each a PARTIAL TradingPreset merged over the saved one (omit a field to keep it). */
 export type SettingsUpdateRequest = Partial<
-  Omit<Settings, "hasPumpportalKey" | "hasHeliusKey" | "theme" | "explorerSuffix" | "effectiveRpcUrl" | "effectiveSendRpcUrl" | "pump">
+  Omit<Settings, "hasPumpportalKey" | "hasHeliusKey" | "theme" | "explorerSuffix" | "effectiveRpcUrl" | "effectiveSendRpcUrl" | "pump" | "tradingPresets">
 > & {
   pumpportalKey?: string;
   /** "" clears, omit keeps */
   heliusKey?: string;
+  tradingPresets?: [Partial<TradingPreset>, Partial<TradingPreset>, Partial<TradingPreset>];
 };
 
 /* ----------------------------------------------------------------- market */
@@ -388,27 +478,80 @@ export type Candle = {
 /** GET /api/token/[mint]/candles?tf= */
 export type TokenCandlesResponse = { mint: string; tf: CandleTf; candles: Candle[]; trades: number };
 
+/** Block X trading page "window stats" (5m +25.9% · Vol · Buys · Sells · Net Vol.) */
+export type StatsWindow = "5m" | "1h" | "6h" | "24h";
+export type WindowStats = {
+  /** SOL traded inside the window (buys + sells) */
+  volumeSol: number;
+  buysSol: number;
+  sellsSol: number;
+  /** buys − sells */
+  netSol: number;
+  buys: number;
+  sells: number;
+  /** price change over the window in %, null when no trade old enough */
+  priceChangePct: number | null;
+  /** seconds of trade history actually covered (≤ window; shorter when the history was truncated) */
+  coverageSec: number;
+  /** true when the window reaches past the oldest trade the server could read (numbers are a lower bound) */
+  partial: boolean;
+};
+/** GET /api/token/[mint]/stats — computed from curveTradeHistory (last 600 curve trades; nothing from third parties) */
+export type TokenStatsResponse = {
+  mint: string;
+  at: number;
+  /** last trade price, SOL per token (null without trades) */
+  lastPriceSol: number | null;
+  tradesRead: number;
+  windows: Record<StatsWindow, WindowStats>;
+};
+
+/** Holdings strip "Recently viewed": server-side list, newest first, 20 max */
+export type RecentToken = { mint: string; symbol: string | null; name: string | null; image: string | null; at: number };
+/** GET /api/recent · POST /api/recent {mint} (upserts to the front, resolves metadata) · DELETE /api/recent (clear) */
+export type RecentResponse = { recent: RecentToken[] };
+export type RecentAddRequest = { mint: string };
+export const RECENT_MAX = 20;
+
 /* ------------------------------------------------------------------ trade */
 
+/** Market buy from the order rail / Instant Trade / Trenches "Buy" chip.
+ *  Amount: `sol` (explicit SOL per wallet) · or `preset` + `amountIndex` (tradingPresets[preset-1].buyAmounts[i]) ·
+ *  or `preset` + `percentIndex` (buyPercents[i] % of each wallet's SOL balance) · or `percentOfBalance`.
+ *  With `preset`, slippage/tip/spread/delay default to that preset's values (explicit fields win).
+ *  spreadPct > 0 randomises each wallet's amount around the average (total unchanged); delaySec > 0 sends the
+ *  wallets one after the other with that pause (0 = all at once). */
 export type TradeBuyRequest = {
   mint: string;
   wallets: string[];
   /** SOL per wallet */
-  sol: string;
+  sol?: string;
+  preset?: 1 | 2 | 3;
+  amountIndex?: 0 | 1 | 2 | 3;
+  percentIndex?: 0 | 1 | 2 | 3;
+  /** 1..100 % of each wallet's SOL balance (fees kept aside) */
+  percentOfBalance?: number;
   slippageBps?: number;
   cuPrice?: number;
   /** > 0 sends through a Jito bundle with this tip (SOL) */
   tipSol?: string;
+  spreadPct?: number;
+  delaySec?: number;
 };
+/** `percent` explicit, or `preset` + `percentIndex` (tradingPresets[preset-1].sellPercents[i]) */
 export type TradeSellRequest = {
   mint: string;
   wallets: string[];
   /** 1..100 */
-  percent: number;
+  percent?: number;
+  preset?: 1 | 2 | 3;
+  percentIndex?: 0 | 1 | 2 | 3;
   slippageBps?: number;
   cuPrice?: number;
   tipSol?: string;
 };
+/** POST /api/trade/buy|sell → the job plus the resolved per-wallet plan (what the job will send) */
+export type TradeCreated = JobCreated & { plan: { address: string; sol?: string; percent?: number }[]; slippageBps: number; tipSol: string; spreadPct: number; delaySec: number };
 
 /* ----------------------------------------------------------------- launch */
 
@@ -423,10 +566,77 @@ export type LaunchMetadata = {
 export type LaunchPrepareRequest = LaunchMetadata & {
   /** data:image/png;base64,… */
   imageDataUrl: string;
-  /** optional vanity suffix for the mint (searched up to 200k keypairs) */
+  /** legacy alias of vanitySuffix */
   vanity?: string;
+  /** mint address must end with this (case-insensitive), e.g. "pump". Ground in worker processes (≤ 90 s); when
+   *  `mint`/`mintSecret` are given it only VALIDATES them (400 when the address does not end with it). */
+  vanitySuffix?: string;
+  /** "Fetch mint address": use a mint reserved earlier by POST /api/launch/mint (its address) */
+  mint?: string;
+  /** "Import your own mint keypair": base58 secret key or JSON byte array; stored server-side (runtime.json)
+   *  and signs the create tx. 400 when it is not a valid keypair / does not end with vanitySuffix. */
+  mintSecret?: string;
+  /** only "SOL" is supported here — anything else → 400 (Block X offers USDC/xStocks, DONCHAIN does not) */
+  quote?: string;
+  launchpad?: string;
 };
-export type LaunchPrepareResponse = { uri: string; mint: string; name: string; symbol: string };
+export type LaunchPrepareResponse = { uri: string; mint: string; name: string; symbol: string; /** "generated" | "vanity" | "reserved" | "imported" */ mintSource: "generated" | "vanity" | "reserved" | "imported" };
+
+/** POST /api/launch/mint — Block X "Fetch mint address": grinds a keypair whose address ends with `suffix`
+ *  (default "pump") in worker processes and reserves it server-side (runtime.json). Returns a job; when the job is
+ *  done `job.extra.mint` is the address, to pass as LaunchPrepareRequest.mint. */
+export type MintReserveRequest = { suffix?: string; caseSensitive?: boolean; /** default 90 000 */ timeoutMs?: number };
+export type ReservedMint = { mint: string; suffix: string; at: number; /** set once used by /api/launch/prepare */ usedAt: number | null };
+/** GET /api/launch/mint */
+export type ReservedMintsResponse = { mints: ReservedMint[]; /** grind jobs still running */ grinding: { jobId: string; suffix: string; startedAt: number }[] };
+/** POST /api/launch/mint/[address]/release → { ok: true } (drops an unused reserved mint) */
+
+/** GET /api/launch/calc?devBuySol=1&buys=0.5,0.5,0.25 — Block X "Bundle calculator — Pump.fun curve".
+ *  Rows land in this order on a FRESH curve of the active cluster (engine planBuys / FRESH_CURVE): the dev buy
+ *  first, then each bundle buy. supplyPct = tokens / total supply (1 B). */
+export type LaunchCalcRow = {
+  index: number;
+  /** "Dev buy" or "Buy n" */
+  label: string;
+  solIn: string;
+  /** tokens received (decimal string, 6 decimals applied) */
+  tokens: string;
+  supplyPct: number;
+  cumulativeSupplyPct: number;
+  cumulativeSol: string;
+  /** SOL actually paid into the curve after the 1.25 % pump.fun fee */
+  solToCurve: string;
+};
+export type LaunchCalcResponse = {
+  cluster: Cluster;
+  rows: LaunchCalcRow[];
+  total: { solIn: string; tokens: string; supplyPct: number };
+  /** market cap after all buys, SOL and USD (null without a SOL price) */
+  marketCapSol: number;
+  marketCapUsd: number | null;
+  curve: { virtualSol: string; virtualTokens: string; realTokens: string; totalSupply: string; feeBps: number };
+};
+
+/** Launch drafts (Block X sidebar "Draft" tab): server-side JSON, autosaved by the modal on every close.
+ *  `form` is UI-owned (same shape the launch modal keeps in memory); the server only indexes name/symbol/image. */
+export type LaunchDraft = {
+  id: string;
+  /** indexed from form.name / form.symbol / form.imageDataUrl for the sidebar row (null when empty) */
+  name: string | null;
+  symbol: string | null;
+  image: string | null;
+  form: Record<string, unknown>;
+  createdAt: number;
+  updatedAt: number;
+  /** set when the draft was launched: the mint (the row moves to the Launched tab) */
+  launchedMint: string | null;
+};
+/** GET /api/launch/drafts */
+export type LaunchDraftsResponse = { drafts: LaunchDraft[] };
+/** POST /api/launch/drafts {id?, form} → { draft } (upsert; a missing id creates "d_…"); DELETE /api/launch/drafts/[id] → { ok: true } */
+export type LaunchDraftSaveRequest = { id?: string; form: Record<string, unknown> };
+export type LaunchDraftResponse = { draft: LaunchDraft };
+export const DRAFT_LIMITS = { max: 200, maxFormBytes: 6_000_000 } as const;
 
 export type AutoDumpConfig = {
   /** % of each wallet's balance to sell, 1..100 */
@@ -461,12 +671,19 @@ export type VolumeConfig = {
   slippageBps?: number;
   cuPrice?: number;
 };
-/* Block X task model (observed in its bundle), reproduced 1:1.
- *   bundle  = wallets bought inside the Jito bundle with the create tx (max 4 wallets = 5 txs)
- *   sniper  = wallets that buy right after the create confirms (sendMany), autoRetryCount retries
- *   buy     = periodic buys from the wallets (pausable)
- *   volume  = periodic buys AND sells (tradeMode/buyRatioPercent, pausable)
- *   wash    = move every token of the listed wallets to FRESH wallets (SPL transfer)
+/* Block X task model (BEHAVIOUR.md §4.4 task setup dialogs), reproduced 1:1.
+ *   bundle  = ≤ 4 wallets buying inside the Jito bundle with the create tx (one tx each → distinct buyers);
+ *             runs with the create, no start/pause/stop; "Sell all on external" = sell 100 % of the bundle wallets
+ *             when net external SOL reaches the threshold
+ *   sniper  = wallets that buy right after the create confirms, min/max delay between wallet buys, retry on/off +
+ *             max retries, "Stop on activity" = cancel the task once net external volume hits the threshold
+ *   buy     = periodic buys from the wallets (pausable), interval/amount ranges, duration limit, max trades per
+ *             wallet, auto-start, "Stop on activity"
+ *   volume  = same + mode Buy only / Sell only / Buy + Sell, buy ratio
+ *   wash    = source → wash-wallet PAIRING: each source's tokens move to its 1–3 wash wallets by SPL transfer in
+ *             random slices, random delay between pairs; wash wallets auto-paired from a group, any vault wallet
+ *             or fresh generated wallets
+ * "external volume" = curve volume minus the SOL this app's own wallets traded (an approximation, see autodump.ts).
  */
 export type LaunchTaskType = "bundle" | "sniper" | "buy" | "volume" | "wash";
 export type TradeMode = "buy" | "sell" | "both";
@@ -475,7 +692,7 @@ export type LaunchTaskBase = {
   /** client id, optional — the server assigns `t<n>` when missing */
   id?: string;
   type: LaunchTaskType;
-  /** wallet addresses */
+  /** wallet addresses (wash: the SOURCE wallets) */
   walletIds: string[];
   /** group ids, expanded server-side (archived wallets skipped) */
   walletGroupIds?: string[];
@@ -484,51 +701,95 @@ export type LaunchTaskBase = {
   buyAmount?: string;
 };
 export type BundleTask = LaunchTaskBase & {
-  type: "bundle" | "sniper";
+  type: "bundle";
   /** default 30 */
   slippagePercent?: number;
-  /** priority/Jito tip in SOL, decimal string. Block X ships "1"; TRENCH defaults to 0.001 SOL */
+  /** Jito tip in SOL, decimal string; default DEFAULT_TIP_SOL (0.0002) */
   tip?: string;
-  /** ignored for now (0) */
-  startBlock?: number;
-  /** 0..5, default 0 */
+  /** "Sell all on external": sell 100 % of THESE wallets when net external SOL ≥ threshold */
+  sellOnExternalEnabled?: boolean;
+  sellOnExternalThreshold?: string;
+  /** bundle resend attempts when it does not land, 0..5 (default 0) */
   autoRetryCount?: number;
+  autoStart?: boolean;
+};
+export type SniperTask = LaunchTaskBase & {
+  type: "sniper";
+  /** "Delay between wallet buys · 0 = all instant", seconds 0..1 (TASK_LIMITS.maxSniperDelaySec) */
+  minDelaySec?: number;
+  maxDelaySec?: number;
+  /** default 30 */
+  slippagePercent?: number;
+  tip?: string;
+  /** Retry On/Off (default on) + Max retries (default 1, ≤ TASK_LIMITS.maxAutoRetryCount) */
+  retry?: boolean;
+  maxRetries?: number;
+  /** legacy alias of maxRetries (retry is implied when > 0) */
+  autoRetryCount?: number;
+  /** "Stop on activity": cancel the task once net external volume ≥ threshold SOL */
+  stopOnActivityEnabled?: boolean;
+  stopOnActivityThreshold?: string;
   autoStart?: boolean;
 };
 export type TradeTask = LaunchTaskBase & {
   type: "buy" | "volume";
+  /** Min (s) / Max (s) between trades */
   minIntervalSec?: number;
   maxIntervalSec?: number;
+  /** Min (SOL) / Max (SOL) per trade */
   minTradeAmount?: string;
   maxTradeAmount?: string;
   /** default 20 */
   slippagePercent?: number;
   tip?: string;
+  /** volume only: Buy only / Sell only / Buy + Sell (buy tasks are always "buy") */
   tradeMode?: TradeMode;
   /** % of trades that are buys when tradeMode = "both", default 50 */
   buyRatioPercent?: number;
-  /** total trades per wallet, max 10000; default = maxTradesPerWallet */
+  /** "Max Trades per Wallet", 1..10000; empty = unbounded until duration/stop */
   maxTradesPerWallet?: number;
-  /** stop after this many minutes, max 1440 */
+  /** "Duration Limit (min)", 1..1440; empty = no limit */
   maxDurationMinutes?: number;
+  /** "Auto-Start": fire as soon as the mint is known (default true) */
+  autoStart?: boolean;
+  /** "Stop on activity" + SOL threshold */
+  stopOnActivityEnabled?: boolean;
+  stopOnActivityThreshold?: string;
+};
+/** one source wallet → its wash wallets */
+export type WashPair = { source: string; wash: string[] };
+export type WashTask = LaunchTaskBase & {
+  type: "wash";
+  /** explicit pairs (the dialog's "Mark source wallets above to pair them"); when omitted the server auto-pairs
+   *  every source in walletIds/walletGroupIds with `perSource` wallets from `autoPairFrom` */
+  pairs?: WashPair[];
+  /** wash wallets per source, 1..3 (default 1) */
+  perSource?: 1 | 2 | 3;
+  /** "Auto-pair from": "any" = any vault wallet not already used by this launch, "fresh" = generate new vault
+   *  wallets (label wash-n, group "wash"), or a group id */
+  autoPairFrom?: "any" | "fresh" | string;
+  /** "Delay between pairs — random, in seconds. 0 = no delay." */
+  minDelaySec?: number;
+  maxDelaySec?: number;
   autoStart?: boolean;
 };
-export type WashTask = LaunchTaskBase & { type: "wash"; autoStart?: boolean };
-export type LaunchTask = BundleTask | TradeTask | WashTask;
+export type LaunchTask = BundleTask | SniperTask | TradeTask | WashTask;
 
 export const TASK_DEFAULTS = {
-  bundle: { slippagePercent: 30, tip: "0.001", startBlock: 0, autoRetryCount: 0, autoStart: true },
-  sniper: { slippagePercent: 30, tip: "0.001", startBlock: 0, autoRetryCount: 0, autoStart: true },
+  bundle: { slippagePercent: 30, tip: DEFAULT_TIP_SOL, autoRetryCount: 0, autoStart: true, sellOnExternalEnabled: false, sellOnExternalThreshold: "0" },
+  sniper: { slippagePercent: 30, tip: DEFAULT_TIP_SOL, minDelaySec: 0, maxDelaySec: 1, retry: true, maxRetries: 1, autoRetryCount: 1, autoStart: true, stopOnActivityEnabled: false, stopOnActivityThreshold: "0" },
   buy: {
     minIntervalSec: 0,
     maxIntervalSec: 1,
     minTradeAmount: "0.1",
     maxTradeAmount: "0.2",
     slippagePercent: 20,
-    tip: "0.001",
+    tip: DEFAULT_TIP_SOL,
     tradeMode: "buy" as TradeMode,
     buyRatioPercent: 50,
     autoStart: true,
+    stopOnActivityEnabled: false,
+    stopOnActivityThreshold: "0",
   },
   volume: {
     minIntervalSec: 0,
@@ -536,12 +797,14 @@ export const TASK_DEFAULTS = {
     minTradeAmount: "0.1",
     maxTradeAmount: "0.2",
     slippagePercent: 20,
-    tip: "0.001",
+    tip: DEFAULT_TIP_SOL,
     tradeMode: "both" as TradeMode,
     buyRatioPercent: 50,
     autoStart: true,
+    stopOnActivityEnabled: false,
+    stopOnActivityThreshold: "0",
   },
-  wash: { autoStart: true },
+  wash: { perSource: 1 as 1 | 2 | 3, autoPairFrom: "any" as "any" | "fresh" | string, minDelaySec: 0, maxDelaySec: 0, autoStart: true },
 } as const;
 
 export const TASK_LIMITS = {
@@ -550,9 +813,14 @@ export const TASK_LIMITS = {
   maxWalletsPerBundleTask: 4,
   maxSlippagePercent: 100,
   maxIntervalSec: 86400,
+  /** sniper "Delay between wallet buys" input: 0..1 s */
+  maxSniperDelaySec: 1,
   maxDurationMinutes: 1440,
   maxTradesPerWallet: 10000,
   maxAutoRetryCount: 5,
+  /** wash wallets per source */
+  maxWashPerSource: 3,
+  maxWashDelaySec: 3600,
 } as const;
 export const PAUSABLE_TASKS: LaunchTaskType[] = ["buy", "volume"];
 
@@ -566,15 +834,20 @@ export type LaunchExecuteRequest = {
   devBuySol: string;
   quote: "SOL";
   tasks: LaunchTask[];
-  /** auto-dump every launch wallet (100 %) once EXTERNAL buy volume ≥ threshold SOL
+  /** Launch Token modal "Auto Dump": dump ALL launch wallets (100 %) once net EXTERNAL volume ≥ threshold SOL
    *  (external = curve volume minus the SOL this app's own wallets traded — an approximation) */
   sellOnExternalEnabled?: boolean;
   sellOnExternalThreshold?: string;
-  /** BRIEF auto-dump: sell X % when MC ≥ Y USD or after N s */
+  /** Launch Token modal "Auto Dev Sell": sell 100 % of the DEV wallet this many milliseconds after the token goes
+   *  live (`mode: "ms"`) or once market cap ≥ `value` USD (`mode: "mc"`). Independent of autoDump. */
+  autoDevSell?: { mode: "ms" | "mc"; value: number };
+  /** BRIEF auto-dump: sell X % when MC ≥ Y USD or after N s (merged with sellOnExternal into one watcher) */
   autoDump?: AutoDumpConfig;
   slippageBps?: number;
   cuPrice?: number;
   cashback?: boolean;
+  /** the draft this launch came from: marked launched (row moves to the Launched tab) once the create confirms */
+  draftId?: string;
 };
 export type LaunchExecuteResponse = JobCreated & {
   /** launch id (= mint) for /api/launch/[id]/* */
@@ -605,6 +878,10 @@ export type LaunchTaskState = {
   steps: JobStep[];
   /** true when the task was restored after a server restart: status is "stopped" and POST …/resume restarts it */
   resumable?: boolean;
+  /** wash: the resolved source → wash-wallet pairs */
+  pairs?: WashPair[];
+  /** sniper/buy/volume "Stop on activity" and bundle "Sell all on external": the watcher's view */
+  activity?: { thresholdSol: string; externalVolumeSol: number; fired: boolean };
 };
 export type LaunchStep = {
   at: number;
@@ -631,8 +908,11 @@ export type LaunchState = {
   /** external volume watcher */
   sellOnExternal: { enabled: boolean; threshold: string; externalVolumeSol: number; fired: boolean } | null;
   autoDump: AutoDumpStatus | null;
+  /** "Auto Dev Sell" watcher (dev wallet only), null when not requested */
+  autoDevSell: AutoDumpStatus | null;
   /** set when the launch was restored from disk after a server restart (its loops are "stopped", resumable) */
   restored?: { at: number; note: string };
+  draftId?: string | null;
 };
 /** SSE on GET /api/launch/[id]/stream: `state` (full snapshot first), then `step`, `task_status`,
  *  `done`, `error` */
@@ -876,3 +1156,103 @@ export type Position = {
 /** PATCH /api/groups/[id] {name} → WalletsResponse & { group } ; POST /api/wallets/move {addresses, group|null} → WalletsResponse */
 export type GroupRenameRequest = { name: string };
 export type WalletsMoveRequest = { addresses: string[]; group: string | null };
+
+/* -------------------------------------------------------------------- CTO */
+
+/** Block X "New CTO": run tasks on a token someone else deploys. Nothing is deployed. The address can be a token
+ *  mint (known now) or a DEV wallet (the token is not created yet): the record is WATCHED for 1 hour; when the
+ *  feed sees a create by that dev the mint is filled in and the tasks with autoStart fire. Kept in runtime.json. */
+export type CtoStatus = "watching" | "ready" | "running" | "expired" | "stopped";
+export type CtoCreateRequest = {
+  /** mint or dev wallet, optional ("add it later" with PATCH) */
+  address?: string;
+  addressIs?: "token" | "dev";
+  /** ≤ 64 chars, replaced by the token's name once known */
+  name?: string;
+  /** Global Task Preset id (presets.json) whose tasks are copied */
+  presetId?: string;
+  /** tasks to run on the token (sniper → immediate buys, buy/volume → loops, wash → pairing) */
+  tasks?: LaunchTask[];
+};
+export type CtoRecord = {
+  id: string;
+  name: string;
+  mint: string | null;
+  devWallet: string | null;
+  status: CtoStatus;
+  createdAt: number;
+  /** createdAt + 1 h while watching for a dev's token; null once the mint is known */
+  expiresAt: number | null;
+  /** when the mint became known */
+  foundAt: number | null;
+  symbol: string | null;
+  image: string | null;
+  tasks: LaunchTask[];
+  taskStates: LaunchTaskState[];
+  autoDump: AutoDumpStatus | null;
+};
+export const CTO_WATCH_MS = 3_600_000;
+/** GET /api/cto */
+export type CtoListResponse = { ctos: CtoRecord[] };
+/** POST /api/cto → { cto } · GET/DELETE /api/cto/[id] · PATCH /api/cto/[id] { address?, addressIs?, name?, tasks? } ·
+ *  POST /api/cto/[id]/start (run the tasks now, mint must be known) · POST /api/cto/[id]/stop */
+export type CtoResponse = { cto: CtoRecord };
+export type CtoUpdateRequest = { address?: string; addressIs?: "token" | "dev"; name?: string; tasks?: LaunchTask[] };
+
+/* ----------------------------------------------------------------- search */
+
+export type SearchSort = "mc" | "age" | "volume";
+export type SearchResultKind = "launch" | "draft" | "cto" | "recent" | "position" | "mint";
+/** one row of the "Search tokens" dialog */
+export type SearchResult = {
+  kind: SearchResultKind;
+  mint: string | null;
+  /** for kind "draft" / "cto" */
+  id: string | null;
+  name: string | null;
+  symbol: string | null;
+  image: string | null;
+  marketCapSol: number | null;
+  marketCapUsd: number | null;
+  /** seconds since creation when known */
+  ageSec: number | null;
+  /** SOL volume observed (feed / stats) when known */
+  volumeSol: number | null;
+  progress: number | null;
+  /** where a click should go: /launch/<id>, /trading/<mint>… */
+  href: string;
+  /** which fields matched (name, symbol, mint, label) */
+  matched: string[];
+};
+/** GET /api/search?q=&sort=mc|age|volume&limit= — matches launches, drafts, CTOs, recently viewed, vault positions;
+ *  when q is a full mint, the token itself (RPC read). `tokenInfo` is set for a full-mint query. */
+export type SearchResponse = { q: string; sort: SearchSort; results: SearchResult[]; tokenInfo: TokenInfo | null; at: number };
+
+/* ------------------------------------------------------------ fees summary */
+
+/** GET /api/dev/fees/summary — pending creator fees over every launched mint (one call for the Dashboard Rewards
+ *  card). Fees accrue per CREATOR vault: launches sharing a dev wallet share one row. */
+export type FeesSummaryCreator = {
+  wallet: string;
+  label: string;
+  vault: string | null;
+  pendingSol: string | null;
+  claimableSol: string | null;
+  cashbackSol: string | null;
+  ammPendingSol: string | null;
+  mints: string[];
+};
+export type FeesSummaryResponse = {
+  at: number;
+  /** sum over creators, null when every vault was unreadable */
+  pendingSol: string | null;
+  claimableSol: string | null;
+  cashbackSol: string | null;
+  ammPendingSol: string | null;
+  /** SOL claimed through this app (activity journal, all time) */
+  claimedSol: string;
+  launches: number;
+  creators: FeesSummaryCreator[];
+  /** creators whose vault could not be read (RPC) */
+  unreadable: string[];
+};
