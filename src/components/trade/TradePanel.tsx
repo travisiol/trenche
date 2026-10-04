@@ -1,7 +1,7 @@
 "use client";
 /** Buy / Sell panel (right side of /trade and the quick-buy modal). */
 import { useState } from "react";
-import type { JobCreated, WalletInfo } from "@/lib/ui-types";
+import type { JobCreated } from "@/lib/ui-types";
 import { failureMessage, post } from "@/lib/api";
 import { DEFAULT_PRESETS, readLocalPresets, useBalances, useSettings, useVault, useWallets } from "@/lib/store";
 import { short, sol } from "@/lib/format";
