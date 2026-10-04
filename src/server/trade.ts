@@ -3,7 +3,7 @@
  * "Multi wallet trading" options (value spread across wallets, delay between wallet buys). */
 import { PublicKey } from "@solana/web3.js";
 import type { TradeBuyRequest, TradeCreated, TradeSellRequest, TradingPreset } from "@/lib/types";
-import { TRADING_PRESET_LIMITS } from "@/lib/types";
+import { TRADING_PRESET_DEFAULTS, TRADING_PRESET_LIMITS } from "@/lib/types";
 import { HttpError, intIn, lamportsOf, numIn, sleep, solString } from "./api";
 import { buyWithWallets, getAccountsChunked, readConn, requireUnlocked, sellWithWallets, tipLamportsFor, vaultWallets } from "./engine";
 import { jobNew, jobNote, jobPush, jobRun, jobWait } from "./jobs";
@@ -16,7 +16,7 @@ function presetOf(n: unknown): TradingPreset | null {
   if (n === undefined || n === null || n === "") return null;
   const i = Number(n);
   if (i !== 1 && i !== 2 && i !== 3) throw new HttpError(400, "preset must be 1, 2 or 3.");
-  return store().settings.tradingPresets[i - 1];
+  return (store().settings.tradingPresets ?? TRADING_PRESET_DEFAULTS)[i - 1];
 }
 
 function index4(v: unknown, what: string): 0 | 1 | 2 | 3 {

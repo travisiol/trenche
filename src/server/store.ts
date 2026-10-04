@@ -320,7 +320,8 @@ export function publicSettings(s: StoredSettings): Settings {
     cuPrice: s.cuPrice,
     tipSol: s.tipSol,
     presets: s.presets,
-    tradingPresets: s.tradingPresets,
+    // a Store singleton built by an older version of this module (HMR) has no tradingPresets yet
+    tradingPresets: s.tradingPresets ?? TRADING_PRESET_DEFAULTS,
     keybinds: s.keybinds,
     theme: "dark",
   };

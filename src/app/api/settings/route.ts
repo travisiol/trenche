@@ -3,7 +3,7 @@ import { publicSettings, saveSettings, store } from "@/server/store";
 import { syncPumpCluster } from "@/server/pumpcluster";
 import { normalizeSolanaRpc, isHeliusSender } from "@/engine/solana/config.js";
 import type { SettingsUpdateRequest, TradingPreset, TradingPresets } from "@/lib/types";
-import { TRADING_PRESET_LIMITS } from "@/lib/types";
+import { TRADING_PRESET_DEFAULTS, TRADING_PRESET_LIMITS } from "@/lib/types";
 import { HttpError } from "@/server/api";
 
 export const dynamic = "force-dynamic";
@@ -72,7 +72,8 @@ export const POST = route(async (req: Request) => {
   }
   if (body.tradingPresets !== undefined) {
     if (!Array.isArray(body.tradingPresets) || body.tradingPresets.length !== 3) throw new HttpError(400, "tradingPresets: exactly 3 presets (P1, P2, P3), each a partial TradingPreset.");
-    s.tradingPresets = body.tradingPresets.map((p, i) => validTradingPreset(p, s.tradingPresets[i], i + 1)) as TradingPresets;
+    const base = s.tradingPresets ?? TRADING_PRESET_DEFAULTS;
+    s.tradingPresets = body.tradingPresets.map((p, i) => validTradingPreset(p, base[i], i + 1)) as TradingPresets;
     // legacy quick-buy amounts follow the presets' first amount
     s.presets = s.tradingPresets.map((p) => p.buyAmounts[0]) as [string, string, string];
   }
