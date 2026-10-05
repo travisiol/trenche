@@ -4,7 +4,7 @@
  * the dev wallet's mint present in that transaction's accounts; a DECREASE is a claim. Lamport deltas, not pump.fun's
  * logged events: trades routed through bots often have their logs truncated or emit no log event at all.
  * Incremental (newest signature per creator), persisted next to the ledger in creator-revenue.json. */
-import { PublicKey, type VersionedTransactionResponse } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { creatorVaultPda } from "@/engine/solana/pump/pdas.js";
 import { readConn } from "./engine";
 import { readJson, store, writeJson } from "./store";
@@ -66,11 +66,28 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R
   return out;
 }
 
-function accountKeys(tx: VersionedTransactionResponse): string[] {
-  const keys = tx.transaction.message.staticAccountKeys.map((k) => k.toBase58());
-  const loaded = tx.meta?.loadedAddresses;
-  if (loaded) keys.push(...loaded.writable.map((k) => k.toBase58()), ...loaded.readonly.map((k) => k.toBase58()));
-  return keys;
+/** what the scan needs of a transaction, read as raw JSON: bot trades already use the version-1 transaction format,
+ *  which web3.js refuses ("Transaction version (1) is not supported") — a raw call with maxSupportedTransactionVersion 1
+ *  returns the account keys and balances all the same */
+type RawTx = { blockTime: number | null; keys: string[]; pre: number[]; post: number[] } | null;
+async function rawTransaction(endpoint: string, sig: string): Promise<RawTx | undefined> {
+  try {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getTransaction", params: [sig, { maxSupportedTransactionVersion: 1, commitment: "confirmed", encoding: "json" }] }),
+    });
+    if (!res.ok) return undefined;
+    const data = (await res.json()) as { error?: unknown; result?: { blockTime: number | null; transaction: { message: { accountKeys: string[] } }; meta: { preBalances: number[]; postBalances: number[]; loadedAddresses?: { writable: string[]; readonly: string[] } } | null } | null };
+    if (data.error) return undefined;
+    const r = data.result;
+    if (!r) return null;
+    if (!r.meta) return null;
+    const keys = [...r.transaction.message.accountKeys, ...(r.meta.loadedAddresses?.writable ?? []), ...(r.meta.loadedAddresses?.readonly ?? [])];
+    return { blockTime: r.blockTime, keys, pre: r.meta.preBalances, post: r.meta.postBalances };
+  } catch {
+    return undefined;
+  }
 }
 
 async function scanCreator(creator: string, mints: Set<string>, prev: CreatorScan | undefined, budget: { left: number }): Promise<CreatorScan> {
@@ -102,17 +119,17 @@ async function scanCreator(creator: string, mints: Set<string>, prev: CreatorSca
   // 2. read the queued transactions (budgeted across creators), oldest first so a partial run stays consistent
   const todo = st.pending.slice(-Math.max(0, budget.left)).reverse();
   budget.left -= todo.length;
-  const got = await mapLimit(todo, 6, (sig) => conn.getTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => undefined));
+  const got = await mapLimit(todo, 6, (sig) => rawTransaction(conn.rpcEndpoint, sig));
   const done = new Set<string>();
   todo.forEach((sig, i) => {
     const tx = got[i];
     if (tx === undefined) return; // retry next run
     done.add(sig);
-    if (!tx?.meta) return;
-    const keys = accountKeys(tx);
+    if (!tx) return;
+    const keys = tx.keys;
     const idx = keys.indexOf(vaultStr);
     if (idx < 0) return;
-    const delta = BigInt(tx.meta.postBalances[idx] ?? 0) - BigInt(tx.meta.preBalances[idx] ?? 0);
+    const delta = BigInt(tx.post[idx] ?? 0) - BigInt(tx.pre[idx] ?? 0);
     if (delta > BigInt(0)) {
       const mint = keys.find((k) => mints.has(k)) ?? "?";
       const cur = st.perMint[mint] ?? { lamports: "0", trades: 0 };
