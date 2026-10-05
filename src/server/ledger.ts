@@ -19,6 +19,7 @@ import type { FeeBreakdown, LedgerStatus, MintPnl, PnlWindow } from "@/lib/types
 import { isPublicRpc, readConn } from "./engine";
 import { feedCard } from "./feed";
 import { metaCached } from "./metadata";
+import { creatorRevenueByMint } from "./creatorRevenue";
 import { readJson, store, writeJson } from "./store";
 
 export type LedgerTx = {
@@ -410,7 +411,7 @@ function safeCurve(mint: string): string | null {
 
 const f9 = (lam: bigint) => (Number(lam) / 1e9).toFixed(9).replace(/\.?0+$/, "") || "0";
 
-type MintAcc = MintPnl & { gross: bigint; net: bigint; buys: bigint; sells: bigint };
+type MintAcc = MintPnl & { gross: bigint; net: bigint; buys: bigint; sells: bigint; pumpFees: bigint; launch: bigint; txFees: bigint; rentL: bigint };
 export type LedgerPnl = {
   window: PnlWindow;
   mints: Map<string, MintAcc>;
@@ -454,8 +455,12 @@ export function ledgerPnl(since: number, until = Number.POSITIVE_INFINITY, pendi
       if (e.kind === "trade" || e.kind === "create") {
         trades += e.grossBuy > BigInt(0) || e.grossSell > BigInt(0) ? 1 : 0;
         if (e.mint) {
-          const m = mints.get(e.mint) ?? { mint: e.mint, symbol: null, netSol: "0", buysSol: "0", sellsSol: "0", trades: 0, firstAt: e.at, lastAt: e.at, gross: BigInt(0), net: BigInt(0), buys: BigInt(0), sells: BigInt(0) };
+          const m = mints.get(e.mint) ?? { mint: e.mint, symbol: null, netSol: "0", buysSol: "0", sellsSol: "0", tradingSol: "0", costsSol: "0", launchSol: "0", txFeesSol: "0", rentSol: "0", creatorFeesSol: "0", creatorFeesComplete: true, trades: 0, firstAt: e.at, lastAt: e.at, gross: BigInt(0), net: BigInt(0), buys: BigInt(0), sells: BigInt(0), pumpFees: BigInt(0), launch: BigInt(0), txFees: BigInt(0), rentL: BigInt(0) };
           m.net += e.delta;
+          m.pumpFees += e.pumpFee;
+          m.launch += e.launchRent;
+          m.txFees += e.base + e.priority + e.tip;
+          m.rentL += e.rent;
           m.gross += e.grossSell - e.grossBuy;
           m.buys += e.grossBuy;
           m.sells += e.grossSell;
@@ -480,7 +485,19 @@ export function ledgerPnl(since: number, until = Number.POSITIVE_INFINITY, pendi
   const gross = sells - buys;
   const net = gross - total + claims + other;
   let wins = 0, losses = 0;
+  const revenue = creatorRevenueByMint();
   for (const m of mints.values()) {
+    const fees = revenue.byMint.get(m.mint) ?? BigInt(0);
+    const costs = m.launch + m.txFees + m.rentL;
+    m.tradingSol = f9(m.gross - m.pumpFees);
+    m.costsSol = f9(costs);
+    m.launchSol = f9(m.launch);
+    m.txFeesSol = f9(m.txFees);
+    m.rentSol = f9(m.rentL);
+    m.creatorFeesSol = f9(fees);
+    m.creatorFeesComplete = revenue.complete;
+    // the on-chain SOL result of its transactions (= trading − costs, plus rounding/refunds) + the fees it produced
+    m.net += fees;
     m.netSol = f9(m.net);
     m.buysSol = f9(m.buys);
     m.sellsSol = f9(m.sells);
@@ -534,6 +551,6 @@ export function ledgerDays(): { date: string; sol: number; trades: number }[] {
 export function ledgerMints(): MintPnl[] {
   const { mints } = ledgerPnl(0);
   return [...mints.values()]
-    .map(({ mint, symbol, netSol, buysSol, sellsSol, trades, firstAt, lastAt }) => ({ mint, symbol, netSol, buysSol, sellsSol, trades, firstAt, lastAt }))
+    .map(({ mint, symbol, netSol, buysSol, sellsSol, tradingSol, costsSol, launchSol, txFeesSol, rentSol, creatorFeesSol, creatorFeesComplete, trades, firstAt, lastAt }) => ({ mint, symbol, netSol, buysSol, sellsSol, tradingSol, costsSol, launchSol, txFeesSol, rentSol, creatorFeesSol, creatorFeesComplete, trades, firstAt, lastAt }))
     .sort((a, b) => b.lastAt - a.lastAt);
 }

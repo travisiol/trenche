@@ -1241,10 +1241,21 @@ export type PnlWindow = {
 export type MintPnl = {
   mint: string;
   symbol: string | null;
-  /** net SOL result of every trade/create transaction on this mint (fees inside those transactions deducted) */
+  /** result of the launch: trading − costs + creator fees earned (claimed or pending) — what this token made you */
   netSol: string;
   buysSol: string;
   sellsSol: string;
+  /** sells − buys on the curve, after pump.fun's trade fees */
+  tradingSol: string;
+  /** what the launch's transactions cost besides the trades: creation rent, priority fees, tips, network, token accounts */
+  costsSol: string;
+  launchSol: string;
+  txFeesSol: string;
+  rentSol: string;
+  /** creator fees this token produced (every trader's trades), claimed or still in the creator vault */
+  creatorFeesSol: string;
+  /** false while the creator-vault history of its dev wallet is still being read */
+  creatorFeesComplete: boolean;
   trades: number;
   /** epoch ms of the first / last transaction */
   firstAt: number;

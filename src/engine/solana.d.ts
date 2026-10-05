@@ -383,6 +383,14 @@ declare module "@/engine/solana/pump/metadata.js" {
 declare module "@/engine/solana/pump/fees.js" {
   import type { Connection, Keypair } from "@solana/web3.js";
   import type { SendResult } from "@/engine/solana/send.js";
+  /** creator-vault history of one creator: creator fees per mint (from trade events) + claims; incremental from `prev` */
+  export interface FeesHistory {
+    newest: string | null;
+    complete: boolean;
+    claims: { ts: number; sig: string; amount: string }[];
+    perMint: Record<string, { revenue: string; trades: number }>;
+  }
+  export function scanFeesHistory(conn: Connection, creator: string, prev: FeesHistory | null, opts?: { maxSignatures?: number }): Promise<FeesHistory>;
   export interface CreatorFee {
     label: string;
     owner: string;

@@ -54,6 +54,22 @@ export default function DashboardPage() {
   /** per-launch result = net ledger result on the mint + current value of what is still held */
   const heldByMint = new Map(grouped.map((p) => [p.mint, Number(p.amount) > 0 ? Number(p.valueSol) : 0]));
   const pnlByMint = new Map((d?.mints ?? []).map((m) => [m.mint, Number(m.netSol) + (heldByMint.get(m.mint) ?? 0)]));
+  /** hover breakdown of a launch row — the same lines as the PnL next to "Tasks" on the launch page */
+  const breakdownByMint = new Map(
+    (d?.mints ?? []).map((m) => {
+      const held = heldByMint.get(m.mint) ?? 0;
+      const s = (n: number) => `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(4)} SOL`;
+      return [
+        m.mint,
+        [
+          `Trades ${s(Number(m.tradingSol) + held)} — sold ${Number(m.sellsSol).toFixed(4)} − bought ${Number(m.buysSol).toFixed(4)}${held ? ` + still held ${held.toFixed(4)}` : ""} (pump.fun fees inside)`,
+          `Launch costs −${Number(m.costsSol).toFixed(4)} SOL — creation ${Number(m.launchSol).toFixed(4)} · priority/tips/network ${Number(m.txFeesSol).toFixed(4)} · token accounts ${Number(m.rentSol).toFixed(4)}`,
+          `Creator fees +${Number(m.creatorFeesSol).toFixed(4)} SOL — produced by every trade on this token, claimed or pending${m.creatorFeesComplete ? "" : " (still being read)"}`,
+          `= Net ${s(Number(m.netSol) + held)}`,
+        ].join("\n"),
+      ] as const;
+    }),
+  );
   const days = new Map<string, DayPnl>((d?.days ?? []).map((x) => [x.date, x]));
   const walletCount = (wallets.data?.wallets ?? []).filter((w) => !w.archived).length;
 
@@ -110,7 +126,7 @@ export default function DashboardPage() {
                   const p = pnlByMint.get(l.mint);
                   return (
                     <li key={l.mint}>
-                      <Link href={`/launch?open=${l.mint}`} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-white/[0.04]">
+                      <Link href={`/launch?open=${l.mint}`} title={breakdownByMint.get(l.mint)} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-white/[0.04]">
                         <PadAvatar src={l.image} alt={l.symbol} size={32} />
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-[14px] font-medium tracking-[-0.02em] text-text-100">{l.symbol}</span>

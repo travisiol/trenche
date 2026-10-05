@@ -2,7 +2,7 @@
 /** Block X launch workspace: Chart · Tasks · Token info · Activity panels + the right rail (Launch · Claim Rewards). */
 import { useState } from "react";
 import { ChevronDown, ClipboardPlus, Flame, Gift, GripVertical, Maximize2, Minimize2, MoreHorizontal, Pencil, Rocket, Settings, SlidersHorizontal, Square } from "lucide-react";
-import { CANDLE_TFS, type AutoClaimStatus, type CandleTf, type LaunchPreset, type LaunchState, type LaunchTaskType, type PositionsResponse, type TokenCandlesResponse, type TokenInfo, type TokenTradesResponse, type WalletGroup, type WalletInfo } from "@/lib/types";
+import { CANDLE_TFS, type AutoClaimStatus, type CandleTf, type LaunchPreset, type LaunchState, type LaunchTaskType, type MintPnl, type PositionsResponse, type TokenCandlesResponse, type TokenInfo, type TokenTradesResponse, type WalletGroup, type WalletInfo } from "@/lib/types";
 import { failureMessage, post, useGet } from "@/lib/api";
 import { useSolPrice, useWallets } from "@/lib/store";
 import { tradeRowStyle } from "@/components/trade/tradeRowStyle";
@@ -240,12 +240,14 @@ export function ChartPanel({ mint, frame, className }: { mint: string | null; fr
 }
 
 /* --------------------------------------------------------------- live PnL */
-type PositionPnl = { cost: number; realised: number; value: number; pnl: number; pct: number | null; holding: boolean };
+type PositionPnl = { cost: number; realised: number; value: number; trading: number; costs: number; creatorFees: number; net: number; pct: number | null; holding: boolean; feesKnown: boolean };
+type MintPnlResponse = { mint: string; row: MintPnl | null };
 
-/** PnL of the launch wallets on this mint: sold (realised) + what the tokens still held fetch now − what was spent.
- *  The value comes from the position read (curve sell quote), moved with the last trade price between reads. */
-export function positionPnl(rows: { costSol: string; realisedSol: string; valueSol: string; amount: string; marketCapSol: number | null; onCurve?: boolean }[], lastPriceSol: number): PositionPnl | null {
-  if (!rows.length) return null;
+/** What this launch made, every launch wallet on the token, the same breakdown as the dashboard row:
+ *  trading = sold + tokens still held (curve quote, moved with the last trade price) − spent (pump.fun fees inside);
+ *  costs = creation rent + priority fees + tips + token accounts (on-chain ledger); + creator fees the token produced. */
+export function positionPnl(rows: { costSol: string; realisedSol: string; valueSol: string; amount: string; marketCapSol: number | null; onCurve?: boolean }[], lastPriceSol: number, ledger: MintPnl | null): PositionPnl | null {
+  if (!rows.length && !ledger) return null;
   let cost = 0, realised = 0, value = 0, holding = false;
   for (const r of rows) {
     cost += Number(r.costSol) || 0;
@@ -256,29 +258,36 @@ export function positionPnl(rows: { costSol: string; realisedSol: string; valueS
     value += v;
     if (Number(r.amount) > 0) holding = true;
   }
-  const pnl = realised + value - cost;
-  return { cost, realised, value, pnl, pct: cost > 0 ? (pnl / cost) * 100 : null, holding };
+  const trading = realised + value - cost;
+  const costs = Number(ledger?.costsSol ?? 0) || 0;
+  const creatorFees = Number(ledger?.creatorFeesSol ?? 0) || 0;
+  const net = trading - costs + creatorFees;
+  const basis = cost + costs;
+  return { cost, realised, value, trading, costs, creatorFees, net, pct: basis > 0 ? (net / basis) * 100 : null, holding, feesKnown: !!ledger };
 }
+
+const signed = (n: number, d = 4) => `${n > 0.0000005 ? "+" : n < -0.0000005 ? "−" : ""}${Math.abs(n).toFixed(d)}`;
 
 function PnlBadge({ pnl, solUsd, loading }: { pnl: PositionPnl | null; solUsd: number | null; loading: boolean }) {
   if (!pnl) return <span className="ml-2 text-[11px] text-text-300">{loading ? "PnL…" : "PnL — no position yet"}</span>;
-  const up = pnl.pnl > 0.0000005, down = pnl.pnl < -0.0000005;
+  const up = pnl.net > 0.0000005, down = pnl.net < -0.0000005;
   const tone = up ? "text-increase" : down ? "text-decrease" : "text-text-200";
-  const sign = up ? "+" : down ? "−" : "";
-  const abs = Math.abs(pnl.pnl);
+  const usdOf = (n: number) => (solUsd ? ` (${n > 0.0000005 ? "+" : n < -0.0000005 ? "−" : ""}$${Math.abs(n * solUsd).toFixed(2)})` : "");
+  const title = [
+    `Trades ${signed(pnl.trading)} SOL — sold ${pnl.realised.toFixed(4)} + still held ${pnl.value.toFixed(4)} − spent ${pnl.cost.toFixed(4)} (pump.fun fees inside)`,
+    `Launch costs −${pnl.costs.toFixed(4)} SOL — creation rent, priority fees, tips, token accounts${pnl.feesKnown ? "" : " (being read from the chain)"}`,
+    `Creator fees +${pnl.creatorFees.toFixed(4)} SOL — produced by every trade on this token, claimed or pending`,
+    `= Net ${signed(pnl.net)} SOL${usdOf(pnl.net)} — same figure as this token's row on the Dashboard`,
+  ].join("\n");
   return (
-    <span
-      className="ml-2 flex min-w-0 items-center gap-1.5 truncate text-[11px] font-medium"
-      title={`Spent ${pnl.cost.toFixed(4)} SOL · sold ${pnl.realised.toFixed(4)} SOL · still held ${pnl.value.toFixed(4)} SOL (at the last trade price) — PnL = sold + held − spent, every launch wallet on this token`}
-      data-testid="tasks-pnl"
-    >
+    <span className="ml-2 flex min-w-0 items-center gap-1.5 truncate text-[11px] font-medium" title={title} data-testid="tasks-pnl">
       <span className="text-text-300">PnL</span>
-      <span className={cx("font-mono tabular-nums", tone)}>
-        {sign}
-        {abs.toFixed(4)} SOL
+      <span className={cx("font-mono tabular-nums", tone)}>{signed(pnl.net)} SOL</span>
+      {solUsd ? <span className={cx("font-mono tabular-nums", tone)}>{usdOf(pnl.net).trim()}</span> : null}
+      {pnl.pct !== null ? <span className={cx("rounded px-1 font-mono tabular-nums", up ? "bg-increase/15" : down ? "bg-decrease/15" : "bg-hover-200", tone)}>{signed(pnl.pct, 1)}%</span> : null}
+      <span className="hidden truncate font-normal text-text-300 xl:inline">
+        trades {signed(pnl.trading)} · costs −{pnl.costs.toFixed(4)} · fees +{pnl.creatorFees.toFixed(4)}
       </span>
-      {solUsd ? <span className={cx("font-mono tabular-nums", tone)}>({sign}${(abs * solUsd).toFixed(2)})</span> : null}
-      {pnl.pct !== null ? <span className={cx("rounded px-1 font-mono tabular-nums", up ? "bg-increase/15" : down ? "bg-decrease/15" : "bg-hover-200", tone)}>{sign}{Math.abs(pnl.pct).toFixed(1)}%</span> : null}
       {pnl.holding ? <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" title="Still holding: moves with the price" /> : <span className="text-text-300">closed</span>}
     </span>
   );
@@ -340,7 +349,8 @@ export function TasksPanel({
   // same key + interval as the Activity panel: one shared poll, the last trade price moves the PnL between position reads
   const trades = useGet<TokenTradesResponse>(mint ? `/api/token/${mint}/trades?limit=100` : null, 2000);
   const price = useSolPrice();
-  const pnl = positionPnl([...posMap.values()], Number(trades.data?.trades?.[0]?.priceSol ?? 0));
+  const mintPnl = useGet<MintPnlResponse>(mint ? `/api/pnl/mint?mint=${mint}` : null, 10000);
+  const pnl = positionPnl([...posMap.values()], Number(trades.data?.trades?.[0]?.priceSol ?? 0), mintPnl.data?.row ?? null);
   const ctx: TradeCtx = { mint, wallets, balances, positions: posMap, tp, presetIndex, unit, sortBy, onTraded: positions.refresh };
   const dumpAll = () => {
     if (!live || !onDump) return toast("Dump All failed — No launch wallets to sell.", "err");

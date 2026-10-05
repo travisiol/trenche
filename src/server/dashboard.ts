@@ -5,6 +5,7 @@ import { curveMetrics, fetchCurve, readConn } from "./engine";
 import { feedCard, feedSolUsd } from "./feed";
 import { readCreatorFees } from "./fees";
 import { launchGet } from "./launch";
+import { refreshCreatorRevenue } from "./creatorRevenue";
 import { ledgerDays, ledgerEntries, ledgerMints, ledgerPnl, ledgerStatus, refreshLedger } from "./ledger";
 import { positions } from "./positions";
 import { reconcileLaunches } from "./reconcile";
@@ -37,6 +38,7 @@ export async function dashboard(): Promise<DashboardResponse> {
   const usd = feedSolUsd() ?? (await solPrice().catch(() => null))?.usd ?? null;
   // the ledger refreshes in the background (budgeted); the figures below use what is on disk right now
   void refreshLedger().catch(() => null);
+  void refreshCreatorRevenue().catch(() => null);
   void reconcileLaunches().catch(() => 0);
   const recent = st.launches.slice(0, 10);
   const recentLaunches: DashboardLaunch[] = await Promise.all(
