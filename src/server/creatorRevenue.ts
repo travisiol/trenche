@@ -20,7 +20,7 @@ type CreatorScan = {
   fees: { at: number; mint: string; lamports: string }[];
   scannedAt: number;
 };
-type RevenueFile = { v: 3; creators: Record<string, CreatorScan> };
+type RevenueFile = { v: 4; creators: Record<string, CreatorScan> };
 
 const MAX_NEW_SIGNATURES = 2000;
 const FETCH_BUDGET = 300;
@@ -34,8 +34,8 @@ function path(): string {
 function file(): RevenueFile {
   const p = path();
   if (S.file && S.path === p) return S.file;
-  const raw = readJson<RevenueFile | { v: number }>(p, { v: 3, creators: {} });
-  const f: RevenueFile = raw.v === 3 ? (raw as RevenueFile) : { v: 3, creators: {} }; // v1 counted logged events only, v2 had no dates: rescanned
+  const raw = readJson<RevenueFile | { v: number }>(p, { v: 4, creators: {} });
+  const f: RevenueFile = raw.v === 4 ? (raw as RevenueFile) : { v: 4, creators: {} }; // v3 counted the vault's rent deposit as a fee // v1 counted logged events only, v2 had no dates: rescanned
   f.creators ??= {};
   S.file = f;
   S.path = p;
@@ -94,6 +94,9 @@ async function rawTransaction(endpoint: string, sig: string): Promise<RawTx | un
 
 async function scanCreator(creator: string, mints: Set<string>, prev: CreatorScan | undefined, budget: { left: number }): Promise<CreatorScan> {
   const conn = readConn();
+  // the vault is funded with its rent-exempt minimum when it is created (paid by the dev, locked for good — the ledger
+  // counts it as a launch cost): that part of the first deposit is not a fee
+  const rentMin = BigInt(await conn.getMinimumBalanceForRentExemption(0).catch(() => 0));
   const vault = creatorVaultPda(new PublicKey(creator));
   const vaultStr = vault.toBase58();
   const st: CreatorScan = prev ? { ...prev, pending: [...prev.pending], perMint: { ...prev.perMint }, claims: [...prev.claims], fees: [...(prev.fees ?? [])] } : { newest: null, pending: [], perMint: {}, claims: [], fees: [], scannedAt: 0 };
@@ -131,7 +134,8 @@ async function scanCreator(creator: string, mints: Set<string>, prev: CreatorSca
     const keys = tx.keys;
     const idx = keys.indexOf(vaultStr);
     if (idx < 0) return;
-    const delta = BigInt(tx.post[idx] ?? 0) - BigInt(tx.pre[idx] ?? 0);
+    let delta = BigInt(tx.post[idx] ?? 0) - BigInt(tx.pre[idx] ?? 0);
+    if (BigInt(tx.pre[idx] ?? 0) === BigInt(0) && delta > BigInt(0)) delta = delta > rentMin ? delta - rentMin : BigInt(0);
     if (delta > BigInt(0)) {
       const mint = keys.find((k) => mints.has(k)) ?? "?";
       const cur = st.perMint[mint] ?? { lamports: "0", trades: 0 };
