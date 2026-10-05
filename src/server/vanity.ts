@@ -94,7 +94,13 @@ export function grindVanity(suffix: string, o: { caseSensitive?: boolean; timeou
 
 /* ------------------------------------------------------------------ reserved mints (runtime.json) */
 
-type Reserved = ReservedMint & { secret: string };
+/** `pool`: ground in the background, not handed to any draft yet (Fetch mint address takes one instantly) */
+type Reserved = ReservedMint & { secret: string; pool?: boolean };
+
+/** how many ready …pump addresses the background keeps, and how many CPU workers it may use (the machine stays usable) */
+const POOL_TARGET = 3;
+const POOL_SUFFIX = "pump";
+const POOL_WORKERS = Math.max(1, Math.min(6, Math.floor(cpus().length / 4)));
 type Bag = { mints: Map<string, Reserved>; grinding: Map<string, { jobId: string; suffix: string; startedAt: number; signal: { stopped: boolean } }> };
 
 function bag(): Bag {
@@ -110,7 +116,31 @@ function bag(): Bag {
 
 export function reservedMints(): { mints: ReservedMint[]; grinding: { jobId: string; suffix: string; startedAt: number }[] } {
   const b = bag();
-  return { mints: [...b.mints.values()].map(({ secret: _s, ...m }) => m).sort((a, c) => c.at - a.at), grinding: [...b.grinding.values()].map(({ jobId, suffix, startedAt }) => ({ jobId, suffix, startedAt })) };
+  ensurePool();
+  return { mints: [...b.mints.values()].filter((m) => !m.pool).map(({ secret: _s, pool: _p, ...m }) => m).sort((a, c) => c.at - a.at), grinding: [...b.grinding.values()].map(({ jobId, suffix, startedAt }) => ({ jobId, suffix, startedAt })) };
+}
+
+/* background pool: keeps POOL_TARGET unused …pump keypairs ready, one low-CPU grind at a time, paused while a
+   user-requested grind runs */
+const poolState = (globalThis as unknown as { __trenchMintPool?: { running: boolean } }).__trenchMintPool ?? ((globalThis as unknown as { __trenchMintPool?: { running: boolean } }).__trenchMintPool = { running: false });
+export function ensurePool(): void {
+  if (poolState.running) return;
+  const b = bag();
+  const ready = [...b.mints.values()].filter((m) => m.pool && !m.usedAt && m.suffix === POOL_SUFFIX).length;
+  if (ready >= POOL_TARGET || b.grinding.size > 0) return;
+  poolState.running = true;
+  void grindVanity(POOL_SUFFIX, { caseSensitive: true, timeoutMs: 600_000, workers: POOL_WORKERS })
+    .then((r) => {
+      if (!r) return;
+      const mint = r.keypair.publicKey.toBase58();
+      b.mints.set(mint, { mint, suffix: POOL_SUFFIX, at: Date.now(), usedAt: null, secret: Buffer.from(r.keypair.secretKey).toString("base64"), pool: true });
+      saveRuntimeSoon();
+    })
+    .catch(() => null)
+    .finally(() => {
+      poolState.running = false;
+      setTimeout(ensurePool, 2_000);
+    });
 }
 
 /** start a grind job; job.extra.mint is set when found */
@@ -118,6 +148,23 @@ export function reserveMint(suffix: string, o: { caseSensitive?: boolean; timeou
   const s = suffix.trim() || "pump";
   if (!/^[1-9A-HJ-NP-Za-km-z]{1,6}$/.test(s)) throw new HttpError(400, "suffix: 1–6 base58 characters (no 0, O, I, l).");
   const b = bag();
+  // a ready address from the background pool: handed over at once (same job shape, already done)
+  const ready = s === POOL_SUFFIX && o.caseSensitive !== false ? [...b.mints.values()].find((m) => m.pool && !m.usedAt) : undefined;
+  if (ready) {
+    ready.pool = false;
+    ready.at = Date.now();
+    saveRuntimeSoon();
+    const job = jobNew("vanity", 1, `Fetch mint address …${s}`);
+    job.extra = { suffix: s, caseSensitive: true, tries: 0, mint: ready.mint, fromPool: true };
+    jobRun(job, async (j) => {
+      j.steps.push({ ok: true, at: Date.now(), address: ready.mint, note: "ready address from the background pool (instant)" });
+      j.completed = 1;
+      j.sent = 1;
+      logActivity(store(), { kind: "launch", ok: true, message: `Mint address reserved: ${ready.mint} (…${s}, from the pool)`, mint: ready.mint, jobId: j.id });
+    });
+    setTimeout(ensurePool, 500);
+    return { jobId: job.id };
+  }
   if (b.grinding.size >= 2) throw new HttpError(429, "Two mint grinds already run — wait for one to finish.");
   const timeoutMs = Math.max(1000, Math.min(600_000, Number(o.timeoutMs) || 90_000));
   const job = jobNew("vanity", 1, `Fetch mint address …${s}`);
@@ -131,6 +178,7 @@ export function reserveMint(suffix: string, o: { caseSensitive?: boolean; timeou
     const mint = r.keypair.publicKey.toBase58();
     const rec: Reserved = { mint, suffix: s, at: Date.now(), usedAt: null, secret: Buffer.from(r.keypair.secretKey).toString("base64") };
     b.mints.set(mint, rec);
+    setTimeout(ensurePool, 2_000);
     if (b.mints.size > 50) {
       const oldest = [...b.mints.values()].filter((m) => m.usedAt).sort((a, c) => a.at - c.at)[0];
       if (oldest) b.mints.delete(oldest.mint);
@@ -171,6 +219,8 @@ export function releaseReserved(mint: string): void {
   const r = b.mints.get(mint);
   if (!r) throw new HttpError(404, "Unknown reserved mint.");
   if (r.usedAt) throw new HttpError(409, "This mint was used by a launch: it cannot be released.");
-  b.mints.delete(mint);
+  // never used: back into the ready pool (a …pump address costs minutes of grinding)
+  if (r.suffix === POOL_SUFFIX) r.pool = true;
+  else b.mints.delete(mint);
   saveRuntimeSoon();
 }
