@@ -502,7 +502,10 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   const cuPrice = intIn(req.cuPrice, 0, 50_000_000, st.settings.cuPrice);
   const devnet = isDevnet(st.settings);
   const bundleTip = devnet ? BigInt(0) : mode === "bundle" ? (bundleTasks[0].tipLamports > BigInt(0) ? bundleTasks[0].tipLamports : tipLamportsFor(st.settings.tipSol)) : tipLamportsFor(undefined);
-  if (mode === "bundle" && !devnet && bundleTip < BigInt(1000)) throw new HttpError(400, "A Jito bundle needs a tip (bundle task `tip` or Settings → default tip).");
+  // Settings → Jito off: the bundle wallets snipe the dev — create + their buys sent together through the normal sender
+  // (same path as snipers, not atomic); Jito on: one atomic Jito bundle
+  const jito = mode === "bundle" && !devnet && st.settings.jitoEnabled === true;
+  if (jito && bundleTip < BigInt(1000)) throw new HttpError(400, "A Jito bundle needs a tip (bundle task `tip` or Settings → default tip).");
 
   // balance pre-checks: a readable refusal instead of a failed broadcast — a reserved …pump address goes back to the pool
   // (the draft keeps pointing at it, so the next Launch click can use it again)
@@ -579,11 +582,11 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   saveLaunches(st);
   track(st, mint);
   job.extra = { mint, mode, phase: "preparing" };
-  jobRun(job, async () => runLaunch(run, { pendingKeypair: pending.keypair, uri: pending.uri, devBuyLamports, slippageBps, cuPrice, bundleTip, cashback: false, autoClaim, req })); // pump.fun rejects cashback coins since 2026-10 (create_v2 error 6082 CashbackDeprecated): the flag is never sent
+  jobRun(job, async () => runLaunch(run, { pendingKeypair: pending.keypair, uri: pending.uri, devBuyLamports, slippageBps, cuPrice, bundleTip, jito, cashback: false, autoClaim, req })); // pump.fun rejects cashback coins since 2026-10 (create_v2 error 6082 CashbackDeprecated): the flag is never sent
   return { jobId: job.id, id: mint, mint, mode, tasks: tasks.map((t) => ({ id: t.id, type: t.type })) };
 }
 
-type RunOpts = { pendingKeypair: import("@solana/web3.js").Keypair; uri: string; devBuyLamports: bigint; slippageBps: number; cuPrice: number; bundleTip: bigint; cashback: boolean; autoClaim: { minSol: string; intervalSec: number } | null; req: LaunchExecuteRequest };
+type RunOpts = { pendingKeypair: import("@solana/web3.js").Keypair; uri: string; devBuyLamports: bigint; slippageBps: number; cuPrice: number; bundleTip: bigint; /** atomic Jito bundle (Settings → Jito on) */ jito: boolean; cashback: boolean; autoClaim: { minSol: string; intervalSec: number } | null; req: LaunchExecuteRequest };
 
 async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   const st = store();
@@ -595,6 +598,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   const retries = bundleTasks.length ? Math.max(...bundleTasks.map((t) => t.autoRetryCount)) : 0;
   const devnet = isDevnet(st.settings);
   step(run, "prepare", true, `Preparing ${run.state.mode} launch · dev buy ${solString(o.devBuyLamports)} SOL · ${bundleRows.length} bundle wallet(s)${devnet ? " · devnet" : ""}`);
+  if (!devnet && run.state.mode === "bundle" && !o.jito) step(run, "info", true, "Jito off (Settings): the bundle wallets buy right behind the dev — create and buys sent together, not atomic.");
   if (devnet && run.state.mode === "bundle") step(run, "info", true, "Devnet: Jito is mainnet-only — the bundle is sent as sequential transactions (create first, then the buys), no tip, not atomic.");
   run.state.status = "sending";
   emit(run, { type: "state", data: launchStateOf(run) });
@@ -608,14 +612,14 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
         conn,
         { dev: st.sol.keypair(dev), name: run.state.name, symbol: run.state.symbol, uri: o.uri, devBuyLamports: o.devBuyLamports, mint: o.pendingKeypair, cashback: o.cashback },
         bundleRows,
-        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? o.bundleTip : tipLamportsFor(undefined), jitoTip: !devnet && run.state.mode === "bundle" },
+        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? o.bundleTip : tipLamportsFor(undefined), jitoTip: o.jito },
       );
     } catch (e) {
       created = { confirmed: false, error: e instanceof Error ? e.message : String(e) };
       break;
     }
     if (attempt === 0) step(run, "prepare", true, prep.atomic ? "Dev buy is atomic with the creation (guaranteed first buyer)." : o.devBuyLamports > BigInt(0) ? "Name/URI too long for an atomic dev buy: the dev buy goes in a separate transaction." : "No dev buy.");
-    if (run.state.mode === "bundle" && !devnet) {
+    if (o.jito) {
       const r = await launchBundle(conn, prep, {
         timeoutMs: 45_000,
         onStep: (s) => {
