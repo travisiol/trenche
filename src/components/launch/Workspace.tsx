@@ -23,13 +23,14 @@ import { DevTable, TaskSection, sectionDanger, type TradeCtx } from "./WalletRow
 /** maximize / restore + "Reset layout" of one workspace panel (see layout.ts); absent on panels outside the workspace */
 export type PanelFrame = { maximized: boolean; onMaximize: () => void; onResetLayout: () => void };
 
-export function Panel({ title, right, children, className, frame }: { title: string; right?: React.ReactNode; children: React.ReactNode; className?: string; frame?: PanelFrame }) {
+export function Panel({ title, titleExtra, right, children, className, frame }: { title: string; /** shown right after the title (Tasks: live PnL) */ titleExtra?: React.ReactNode; right?: React.ReactNode; children: React.ReactNode; className?: string; frame?: PanelFrame }) {
   const [menu, setMenu] = useState(false);
   return (
     <div className={cx("flex flex-col overflow-hidden border border-line-100 bg-bg-100 shadow-[0_8px_24px_rgba(0,0,0,0.28)]", className)}>
       <div className="flex h-7 shrink-0 select-none items-center gap-1.5 border-b border-line-100 bg-surface-muted px-2 text-xs font-medium text-text-300">
         <GripVertical className="h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">{title}</span>
+        <span className={cx("truncate", titleExtra ? "shrink-0" : "min-w-0 flex-1")}>{title}</span>
+        {titleExtra ? <div className="flex min-w-0 flex-1 items-center overflow-hidden">{titleExtra}</div> : null}
         {right ? <div className="ml-auto shrink-0">{right}</div> : null}
         {frame ? (
           <div className={cx("flex shrink-0 items-center gap-0.5", right ? "" : "ml-auto")}>
@@ -238,6 +239,51 @@ export function ChartPanel({ mint, frame, className }: { mint: string | null; fr
   );
 }
 
+/* --------------------------------------------------------------- live PnL */
+type PositionPnl = { cost: number; realised: number; value: number; pnl: number; pct: number | null; holding: boolean };
+
+/** PnL of the launch wallets on this mint: sold (realised) + what the tokens still held fetch now − what was spent.
+ *  The value comes from the position read (curve sell quote), moved with the last trade price between reads. */
+export function positionPnl(rows: { costSol: string; realisedSol: string; valueSol: string; amount: string; marketCapSol: number | null; onCurve?: boolean }[], lastPriceSol: number): PositionPnl | null {
+  if (!rows.length) return null;
+  let cost = 0, realised = 0, value = 0, holding = false;
+  for (const r of rows) {
+    cost += Number(r.costSol) || 0;
+    realised += Number(r.realisedSol) || 0;
+    let v = Number(r.valueSol) || 0;
+    const readPrice = r.marketCapSol ? r.marketCapSol / 1e9 : 0;
+    if (v > 0 && r.onCurve !== false && readPrice > 0 && lastPriceSol > 0) v *= lastPriceSol / readPrice;
+    value += v;
+    if (Number(r.amount) > 0) holding = true;
+  }
+  const pnl = realised + value - cost;
+  return { cost, realised, value, pnl, pct: cost > 0 ? (pnl / cost) * 100 : null, holding };
+}
+
+function PnlBadge({ pnl, solUsd, loading }: { pnl: PositionPnl | null; solUsd: number | null; loading: boolean }) {
+  if (!pnl) return <span className="ml-2 text-[11px] text-text-300">{loading ? "PnL…" : "PnL — no position yet"}</span>;
+  const up = pnl.pnl > 0.0000005, down = pnl.pnl < -0.0000005;
+  const tone = up ? "text-increase" : down ? "text-decrease" : "text-text-200";
+  const sign = up ? "+" : down ? "−" : "";
+  const abs = Math.abs(pnl.pnl);
+  return (
+    <span
+      className="ml-2 flex min-w-0 items-center gap-1.5 truncate text-[11px] font-medium"
+      title={`Spent ${pnl.cost.toFixed(4)} SOL · sold ${pnl.realised.toFixed(4)} SOL · still held ${pnl.value.toFixed(4)} SOL (at the last trade price) — PnL = sold + held − spent, every launch wallet on this token`}
+      data-testid="tasks-pnl"
+    >
+      <span className="text-text-300">PnL</span>
+      <span className={cx("font-mono tabular-nums", tone)}>
+        {sign}
+        {abs.toFixed(4)} SOL
+      </span>
+      {solUsd ? <span className={cx("font-mono tabular-nums", tone)}>({sign}${(abs * solUsd).toFixed(2)})</span> : null}
+      {pnl.pct !== null ? <span className={cx("rounded px-1 font-mono tabular-nums", up ? "bg-increase/15" : down ? "bg-decrease/15" : "bg-hover-200", tone)}>{sign}{Math.abs(pnl.pct).toFixed(1)}%</span> : null}
+      {pnl.holding ? <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" title="Still holding: moves with the price" /> : <span className="text-text-300">closed</span>}
+    </span>
+  );
+}
+
 /* ------------------------------------------------------------------ Tasks */
 export function TasksPanel({
   form,
@@ -289,8 +335,12 @@ export function TasksPanel({
   const mint = live?.mint ?? launchId ?? null;
   // one positions read for the dev + every task wallet (walks wallet trade history on the RPC: 15 s is plenty)
   const rowWallets = Array.from(new Set([devAddr, ...(live ? live.tasks.flatMap((t) => t.wallets) : form.tasks.flatMap((t) => taskWallets(t, wallets)))].filter(Boolean))).sort();
-  const positions = useGet<PositionsResponse>(mint && rowWallets.length ? `/api/positions?mints=${mint}&wallets=${rowWallets.join(",")}` : null, 15000);
+  const positions = useGet<PositionsResponse>(mint && rowWallets.length ? `/api/positions?mints=${mint}&wallets=${rowWallets.join(",")}` : null, 8000);
   const posMap = new Map((positions.data ?? []).filter((r) => r.mint === mint).map((r) => [r.wallet, r] as const));
+  // same key + interval as the Activity panel: one shared poll, the last trade price moves the PnL between position reads
+  const trades = useGet<TokenTradesResponse>(mint ? `/api/token/${mint}/trades?limit=100` : null, 2000);
+  const price = useSolPrice();
+  const pnl = positionPnl([...posMap.values()], Number(trades.data?.trades?.[0]?.priceSol ?? 0));
   const ctx: TradeCtx = { mint, wallets, balances, positions: posMap, tp, presetIndex, unit, sortBy, onTraded: positions.refresh };
   const dumpAll = () => {
     if (!live || !onDump) return toast("Dump All failed — No launch wallets to sell.", "err");
@@ -308,6 +358,7 @@ export function TasksPanel({
   return (
     <Panel
       title="Tasks"
+      titleExtra={mint ? <PnlBadge pnl={pnl} solUsd={price.data?.usd ?? null} loading={positions.loading && !positions.data} /> : null}
       frame={frame}
       className={className}
       right={
