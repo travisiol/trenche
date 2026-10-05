@@ -351,7 +351,7 @@ export async function buyWithWallets(opts: TradeOpts & { lamportsEach: bigint | 
   const build = (i: number, recentBlockhash: string) => {
     const ataExists = !!snap.bal.get(active[i].address)?.ataExists;
     return signWith(
-      buildBuyTx({ mint: mintPk, creator: curve.creator, tokenProgram, cuPrice: fees.cuPrice, cuLimit: ataExists ? CU_LIMITS.buyAtaExists : CU_LIMITS.buyNewAta, ataExists, tipLamports: tip, recentBlockhash }, plans[i]),
+      buildBuyTx({ mint: mintPk, creator: curve.creator, tokenProgram, cuPrice: fees.cuPrice, cuLimit: ataExists ? CU_LIMITS.buyAtaExists : CU_LIMITS.buyNewAta, ataExists, tipLamports: tip, jitoTip: opts.bundle, recentBlockhash }, plans[i]),
       rows[i].signer,
     );
   };
@@ -426,7 +426,7 @@ export async function sellWithWallets(opts: TradeOpts & { percent: number }): Pr
   const tip = opts.bundle || fees.tipLamports > BigInt(0) ? fees.tipLamports : BigInt(0);
   const build = (i: number, recentBlockhash: string) =>
     signWith(
-      buildSellTx({ mint: mintPk, creator: curve.creator, tokenProgram, cuPrice: fees.cuPrice, cuLimit: curve.isCashbackCoin ? CU_LIMITS.sellCashback : CU_LIMITS.sell, tipLamports: tip, recentBlockhash, cashback: curve.isCashbackCoin }, plans[i]),
+      buildSellTx({ mint: mintPk, creator: curve.creator, tokenProgram, cuPrice: fees.cuPrice, cuLimit: curve.isCashbackCoin ? CU_LIMITS.sellCashback : CU_LIMITS.sell, tipLamports: tip, jitoTip: opts.bundle, recentBlockhash, cashback: curve.isCashbackCoin }, plans[i]),
       rows[i].signer,
     );
   const txs = plans.map((_p, i) => build(i, bh.blockhash));

@@ -30,6 +30,7 @@ declare module "@/engine/solana/config.js" {
   };
   export function normalizeSolanaRpc(url: string): string;
   export const JITO_TIP_ACCOUNTS: string[];
+  export const JITO_BUNDLE_TIP_ACCOUNTS: string[];
   export const SENDER_TIP_LAMPORTS: bigint;
   export function isHeliusSender(url: string): boolean;
   export function withSwqosOnly(url: string): string;
@@ -283,6 +284,8 @@ declare module "@/engine/solana/pump/math.js" {
       cuLimit?: number;
       ataExists?: boolean;
       tipLamports?: bigint;
+      /** the tx belongs to a Jito bundle: tip a block-engine account (JITO_BUNDLE_TIP_ACCOUNTS) */
+      jitoTip?: boolean;
       recentBlockhash: string;
     },
     plan: BuyPlan,
@@ -295,13 +298,15 @@ declare module "@/engine/solana/pump/math.js" {
       cuPrice: number;
       cuLimit?: number;
       tipLamports?: bigint;
+      /** the tx belongs to a Jito bundle: tip a block-engine account (JITO_BUNDLE_TIP_ACCOUNTS) */
+      jitoTip?: boolean;
       recentBlockhash: string;
       cashback?: boolean;
     },
     plan: SellPlan,
   ): VersionedTransaction;
   export function solOutForTokens(tokens: bigint, curve: Reserves, feeBps?: bigint): bigint;
-  export function tipInstruction(from: PublicKey, lamports: bigint | number, index?: number): TransactionInstruction;
+  export function tipInstruction(from: PublicKey, lamports: bigint | number, index?: number, jito?: boolean): TransactionInstruction;
   export function signWith(tx: VersionedTransaction, kp: Keypair): VersionedTransaction;
 }
 
@@ -438,7 +443,7 @@ declare module "@/engine/solana/pump/launch.js" {
       cashback?: boolean;
     },
     rows: BuyRow[],
-    opts?: { cuPrice: number; slippageBps?: number; tipLamports?: bigint; lookupTable?: unknown },
+    opts?: { cuPrice: number; slippageBps?: number; tipLamports?: bigint; jitoTip?: boolean; lookupTable?: unknown },
   ): Promise<LaunchPrep>;
   export interface LaunchResult {
     mint: string;

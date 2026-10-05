@@ -6,7 +6,7 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
-import { JITO_TIP_ACCOUNTS } from "../config.js";
+import { JITO_BUNDLE_TIP_ACCOUNTS, JITO_TIP_ACCOUNTS } from "../config.js";
 import {
   ATA_PROGRAM,
   INITIAL_REAL_TOKENS,
@@ -162,7 +162,7 @@ export function buildBuyTx(t, e) {
         microLamports: t.cuPrice,
       }),
       ...(t.ataExists ? [] : [createAtaInstruction(e.owner, e.owner, t.mint, r)]),
-      ...(t.tipLamports && t.tipLamports > 0n ? [tipInstruction(e.owner, t.tipLamports)] : []),
+      ...(t.tipLamports && t.tipLamports > 0n ? [tipInstruction(e.owner, t.tipLamports, void 0, !!t.jitoTip)] : []),
       buyInstruction(
         {
           mint: t.mint,
@@ -184,11 +184,13 @@ export function buildBuyTx(t, e) {
   return new VersionedTransaction(o);
 }
 
-export function tipInstruction(t, e, r) {
-  const n = r ?? Math.floor(Math.random() * JITO_TIP_ACCOUNTS.length);
+/** tip transfer: `jito` = a transaction of a Jito bundle (block-engine tip accounts), else Helius Sender's */
+export function tipInstruction(t, e, r, jito = !1) {
+  const list = jito ? JITO_BUNDLE_TIP_ACCOUNTS : JITO_TIP_ACCOUNTS,
+    n = (r ?? Math.floor(Math.random() * list.length)) % list.length;
   return SystemProgram.transfer({
     fromPubkey: t,
-    toPubkey: new PublicKey(JITO_TIP_ACCOUNTS[n]),
+    toPubkey: new PublicKey(list[n]),
     lamports: e,
   });
 }
@@ -244,7 +246,7 @@ export function buildSellTx(t, e) {
         e.minSolOutput,
         t.cashback,
       ),
-      ...(t.tipLamports && t.tipLamports > 0n ? [tipInstruction(e.owner, t.tipLamports)] : []),
+      ...(t.tipLamports && t.tipLamports > 0n ? [tipInstruction(e.owner, t.tipLamports, void 0, !!t.jitoTip)] : []),
     ];
   return new VersionedTransaction(
     new TransactionMessage({

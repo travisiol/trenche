@@ -12,7 +12,7 @@
  * other); transfers and capital flows are EXCLUDED from the PnL (only their fees count). The journal
  * (activity.json) is no longer consulted for figures. */
 import { PublicKey, type ParsedInstruction, type ParsedTransactionWithMeta, type PartiallyDecodedInstruction, type TokenBalance } from "@solana/web3.js";
-import { JITO_TIP_ACCOUNTS } from "@/engine/solana/config.js";
+import { JITO_BUNDLE_TIP_ACCOUNTS, JITO_TIP_ACCOUNTS } from "@/engine/solana/config.js";
 import { parseEventLogs } from "@/engine/solana/pump/events.js";
 import { PUMP_BUYBACK_FEE_RECIPIENTS, PUMP_FEE_RECIPIENTS, PUMP_PROGRAM, bondingCurvePda } from "@/engine/solana/pump/pdas.js";
 import type { FeeBreakdown, LedgerStatus, MintPnl, PnlWindow } from "@/lib/types";
@@ -58,7 +58,7 @@ type LedgerFile = {
 };
 
 const PUMP_PROGRAM_STR = PUMP_PROGRAM;
-const TIP_SET = new Set<string>(JITO_TIP_ACCOUNTS);
+const TIP_SET = new Set<string>([...JITO_TIP_ACCOUNTS, ...JITO_BUNDLE_TIP_ACCOUNTS]);
 const FEE_RECIPIENTS = new Set<string>([...PUMP_FEE_RECIPIENTS, ...PUMP_BUYBACK_FEE_RECIPIENTS]);
 const BASE_FEE = 5000;
 const MAX_ATTEMPTS = 5;

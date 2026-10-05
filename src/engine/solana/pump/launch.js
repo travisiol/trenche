@@ -90,7 +90,7 @@ export async function prepareLaunch(
               cashback: e.cashback,
             }),
             createAtaInstruction(e.dev.publicKey, e.dev.publicKey, a.publicKey, o),
-            ...(F ? [tipInstruction(e.dev.publicKey, n.tipLamports)] : []),
+            ...(F ? [tipInstruction(e.dev.publicKey, n.tipLamports, void 0, !!n.jitoTip)] : []),
             buyInstruction(
               {
                 mint: a.publicKey,
@@ -138,7 +138,7 @@ export async function prepareLaunch(
         uri: e.uri,
         cashback: e.cashback,
       }),
-      ...(n.tipLamports && n.tipLamports > 0n ? [tipInstruction(e.dev.publicKey, n.tipLamports)] : []),
+      ...(n.tipLamports && n.tipLamports > 0n ? [tipInstruction(e.dev.publicKey, n.tipLamports, void 0, !!n.jitoTip)] : []),
     ];
     ((p = new VersionedTransaction(
       new TransactionMessage({
@@ -166,6 +166,7 @@ export async function prepareLaunch(
             cuLimit: 13e4,
             ataExists: !1,
             tipLamports: n.tipLamports,
+            jitoTip: !!n.jitoTip,
             recentBlockhash: i,
           },
           P,
