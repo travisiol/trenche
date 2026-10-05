@@ -17,27 +17,42 @@ import { TASK_META } from "./model";
 import { TASK_STATUS_WORD } from "../dev/TaskRowCompact";
 
 export function useLaunchState(id: string | null) {
-  const [state, setState] = useState<LaunchState | null>(null);
-  const [sseDead, setSseDead] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  // every value is tagged with the launch it belongs to: switching launch never shows (nor stops polling on) the
+  // previous launch's state — a "failed" one used to stay on screen over a launch that went live
+  const [tagged, setTagged] = useState<{ id: string; state: LaunchState } | null>(null);
+  const [deadFor, setDeadFor] = useState<string | null>(null);
+  const [errFor, setErrFor] = useState<{ id: string; error: string } | null>(null);
+  const state = id && tagged?.id === id ? tagged.state : null;
+  const sseDead = !!id && deadFor === id;
+  const err = id && errFor?.id === id ? errFor.error : null;
   const url = id && !sseDead ? `/api/launch/${id}/stream` : null;
+  const put = (fn: (s: LaunchState | null) => LaunchState | null) =>
+    setTagged((t) => {
+      if (!id) return t;
+      const next = fn(t?.id === id ? t.state : null);
+      return next ? { id, state: next } : t;
+    });
   useSSE(url, {
-    state: (d) => setState(d as LaunchState),
-    done: (d) => setState(d as LaunchState),
-    step: (d) => setState((s) => (s ? { ...s, steps: [...s.steps, d as LaunchStep] } : s)),
-    task_status: (d) => setState((s) => (s ? { ...s, tasks: s.tasks.map((t) => (t.id === (d as LaunchTaskState).id ? (d as LaunchTaskState) : t)) } : s)),
-    error: (d) => setErr((d as { error?: string })?.error ?? "stream error"),
-    onError: () => setSseDead(true),
+    state: (d) => put(() => d as LaunchState),
+    done: (d) => put(() => d as LaunchState),
+    step: (d) => put((s) => (s ? { ...s, steps: [...s.steps, d as LaunchStep] } : s)),
+    task_status: (d) => put((s) => (s ? { ...s, tasks: s.tasks.map((t) => (t.id === (d as LaunchTaskState).id ? (d as LaunchTaskState) : t)) } : s)),
+    error: (d) => id && setErrFor({ id, error: (d as { error?: string })?.error ?? "stream error" }),
+    onError: () => setDeadFor(id),
   });
   const finished = state?.status === "done" || state?.status === "failed";
   const polling = !!id && !url && !finished;
   useEffect(() => {
-    if (!polling) return;
+    if (!polling || !id) return;
     let alive = true;
     const tick = () =>
       api<LaunchState>(`/api/launch/${id}`)
-        .then((s) => alive && (setState(s), setErr(null)))
-        .catch((e) => alive && setErr(failureMessage(e)));
+        .then((s) => {
+          if (!alive) return;
+          setTagged({ id, state: s });
+          setErrFor(null);
+        })
+        .catch((e) => alive && setErrFor({ id, error: failureMessage(e) }));
     tick();
     const t = setInterval(tick, 2000);
     return () => {
