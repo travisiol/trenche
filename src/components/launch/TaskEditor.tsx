@@ -6,6 +6,7 @@ import { ChevronDown, Info, Pause, Pencil, Play, Square, Trash2 } from "lucide-r
 import type { JobCreated, LaunchTaskState, LaunchTaskType, TaskActionResponse, WalletInfo } from "@/lib/types";
 import { PAUSABLE_TASKS } from "@/lib/types";
 import { failureMessage, post } from "@/lib/api";
+import { trackTradeJob } from "@/lib/pendingTrades";
 import { short, sol, time } from "@/lib/format";
 import { toast } from "@/components/ui";
 import { BxSwitch, cx } from "@/components/bx/ui";
@@ -114,8 +115,9 @@ export function LiveTaskCard({ launchId, mint, t, wallets, controls = true }: { 
     if (!window.confirm(`Sell 100 % of the token on the ${t.wallets.length} wallet${t.wallets.length !== 1 ? "s" : ""} of this ${meta.label} task?`)) return;
     setBusy("sell");
     try {
-      await post<JobCreated>("/api/dev/dump", { mint, wallets: t.wallets, percent: 100 });
       toast(`Selling 100 % on ${t.wallets.length} wallet${t.wallets.length !== 1 ? "s" : ""}`, "info");
+      const r = await post<JobCreated>("/api/dev/dump", { mint, wallets: t.wallets, percent: 100 });
+      trackTradeJob(r.jobId, { mint, side: "sell", label: `Sell All (${meta.label})` });
     } catch (e) {
       toast(failureMessage(e), "err");
     } finally {

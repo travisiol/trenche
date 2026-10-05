@@ -1,15 +1,18 @@
 "use client";
 /**
- * Live view of a server job (`GET /api/jobs/[id]`, polled every second until done).
- * Launch jobs prefer SSE (`/api/launch/[id]/stream`) and fall back to polling when the stream errors.
+ * Live view of a server job: the shared push stream (`/api/jobs/[id]/stream`, lib/jobstream.ts) by default.
+ * Launch jobs pass their own SSE (`/api/launch/[id]/stream`) and fall back to polling when that stream errors.
  */
 import { useEffect, useState } from "react";
 import { api, useSSE } from "@/lib/api";
+import { useJobStream } from "@/lib/jobstream";
 import type { JobView, JobStep } from "@/lib/types";
 import { short, solscanTx, time } from "@/lib/format";
 import { Dot, Progress, Spinner, StepItem, StepList } from "./ui";
 
 export function useJob(jobId: string | null, opts?: { sse?: string | null; intervalMs?: number }) {
+  // default: the shared job stream (/api/jobs/[id]/stream, steps pushed as they are written, polling fallback)
+  const shared = useJobStream(opts?.sse ? null : jobId);
   const [job, setJob] = useState<JobView | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [sseDead, setSseDead] = useState(false);
@@ -19,7 +22,7 @@ export function useJob(jobId: string | null, opts?: { sse?: string | null; inter
     done: (d) => setJob(d as JobView),
     onError: () => setSseDead(true),
   });
-  const polling = !!jobId && !sseUrl && !job?.done;
+  const polling = !!jobId && !!opts?.sse && !sseUrl && !job?.done;
   useEffect(() => {
     if (!polling) return;
     let alive = true;
@@ -41,6 +44,7 @@ export function useJob(jobId: string | null, opts?: { sse?: string | null; inter
       clearInterval(t);
     };
   }, [jobId, polling, opts?.intervalMs]);
+  if (!opts?.sse) return { job: shared.job, error: shared.error };
   return { job, error: err };
 }
 

@@ -5,14 +5,14 @@
  *  floating Instant Trade panel. Orders go to POST /api/trade/buy|sell with `preset` + index (contract TradeBuyRequest). */
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ChevronDown, ChevronUp, GripHorizontal, Pencil, Settings2, Wallet, X, Zap } from "lucide-react";
-import type { PositionRow, StatsWindow, TokenStatsResponse, TradeBuyRequest, TradeCreated, TradeSellRequest, WalletInfo } from "@/lib/types";
-import { failureMessage, post, useGet } from "@/lib/api";
+import type { PositionRow, StatsWindow, TokenStatsResponse, TradeBuyRequest, TradeSellRequest, WalletInfo } from "@/lib/types";
+import { failureMessage, useGet } from "@/lib/api";
 import { useBalances, useSettings, useSolPrice, useVault, useWallets } from "@/lib/store";
 import { usePresetIndex, useTradingPresets, type PresetIndex } from "@/lib/presets";
 import { short, sol, usd } from "@/lib/format";
 import { toast } from "@/components/ui";
 import { cx } from "@/components/bx/ui";
-import { BxJob } from "@/components/bx/Job";
+import { TradeJobLine, useOrderLines } from "@/components/trade/TradeJob";
 import { TradingPresetsDialog } from "@/components/launch/TradingPresetsDialog";
 
 /** Legacy helper kept for the trade page: P1..P3 first buy amount. */
@@ -142,8 +142,7 @@ export function TradePanel({ mint, symbol, rows }: { mint: string; symbol: strin
   const [open, setOpen] = useState(true);
   const [drawer, setDrawer] = useState(false);
   const [custom, setCustom] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [jobs, setJobs] = useState<string[]>([]);
+  const { lines, submit } = useOrderLines(3);
   const [unit, setUnit] = useState<"USD" | "SOL">("USD");
   const [presetsOpen, setPresetsOpen] = useState(false);
   const { live, balOf, holds, rule, setRule, sel, setSel, targets } = useOrderWallets(mint, rows, side);
@@ -158,19 +157,13 @@ export function TradePanel({ mint, symbol, rows }: { mint: string; symbol: strin
   const pnlPct = bought > 0 ? (pnl / bought) * 100 : null;
   const tokensHeld = rows.filter((r) => targets.includes(r.wallet)).reduce((n, r) => n + Number(r.amount), 0);
 
+  // no busy lock: the order line appears on click, the POST answers in a few ms and the job streams its steps
+  const busy = false;
   const send = async (body: Omit<TradeBuyRequest, "mint" | "wallets"> | Omit<TradeSellRequest, "mint" | "wallets">, label: string) => {
     if (!targets.length) return toast("Create a managed wallet in Portfolio to trade.", "err");
     if (!canSign) return toast("Unlock the vault first", "err");
-    setBusy(true);
-    try {
-      const r = await post<TradeCreated>(`/api/trade/${side}`, { mint, wallets: targets, preset: (presetIndex + 1) as 1 | 2 | 3, ...body });
-      setJobs((j) => [r.jobId, ...j].slice(0, 3));
-      toast(`${label} on ${targets.length} wallet${targets.length !== 1 ? "s" : ""}`, "info");
-    } catch (e) {
-      toast(failureMessage(e), "err");
-    } finally {
-      setBusy(false);
-    }
+    const req: TradeBuyRequest | TradeSellRequest = { mint, wallets: targets, preset: (presetIndex + 1) as 1 | 2 | 3, ...body };
+    await submit(`/api/trade/${side}`, req, { mint, side, label: `${label} × ${targets.length}` });
   };
   const noWallets = !live.length;
 
@@ -300,8 +293,8 @@ export function TradePanel({ mint, symbol, rows }: { mint: string; symbol: strin
                     {tp.slippagePercent}% · {tp.tipSol}
                   </span>
                 </div>
-                {jobs.map((j) => (
-                  <BxJob key={j} jobId={j} compact />
+                {lines.map((l) => (
+                  <TradeJobLine key={l.key} line={l} />
                 ))}
               </div>
             )}
@@ -351,7 +344,8 @@ export function InstantTrade({ mint, symbol, rows, open, onClose }: { mint: stri
   const [presetIndex, setPresetIndex] = usePresetIndex();
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const drag = useRef<{ dx: number; dy: number } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const { lines, submit } = useOrderLines(2);
+  const busy = false;
   const [unit, setUnit] = useState<"USD" | "SOL">("USD");
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -383,15 +377,7 @@ export function InstantTrade({ mint, symbol, rows, open, onClose }: { mint: stri
     const ws = side === "buy" ? targets : sellTargets;
     if (!ws.length) return toast(side === "buy" ? "No managed wallet to buy with." : "No wallet holds this token.", "err");
     if (!canSign) return toast("Unlock the vault first", "err");
-    setBusy(true);
-    try {
-      await post<TradeCreated>(`/api/trade/${side}`, { mint, wallets: ws, preset: (presetIndex + 1) as 1 | 2 | 3, ...body });
-      toast(`${label} on ${ws.length} wallet${ws.length !== 1 ? "s" : ""}`, "info");
-    } catch (e) {
-      toast(failureMessage(e), "err");
-    } finally {
-      setBusy(false);
-    }
+    await submit(`/api/trade/${side}`, { mint, wallets: ws, preset: (presetIndex + 1) as 1 | 2 | 3, ...body }, { mint, side, label: `${label} × ${ws.length}` });
   };
   const round = (tone: "buy" | "sell") => cx("flex h-9 items-center justify-center rounded-full border text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40", tone === "buy" ? "border-accent/50 text-accent hover:bg-accent/15" : "border-decrease/50 text-decrease hover:bg-decrease/15");
   const style = pos ? { left: pos.x, top: pos.y } : { left: "calc(50% - 110px)", bottom: 96 };
@@ -461,6 +447,9 @@ export function InstantTrade({ mint, symbol, rows, open, onClose }: { mint: stri
           {tp.slippagePercent}% · {tp.tipSol}
         </div>
         {editing ? <p className="text-[10px] text-text-300">Edit the buttons in Trading Presets (gear) — they are the P{presetIndex + 1} amounts.</p> : null}
+        {lines.map((l) => (
+          <TradeJobLine key={l.key} line={l} />
+        ))}
       </div>
       <div className="grid grid-cols-4 border-t border-line-100 text-center font-mono text-[10px] tabular-nums">
         {[money(bought), money(sold), money(holding), money(pnl)].map((v, i) => (

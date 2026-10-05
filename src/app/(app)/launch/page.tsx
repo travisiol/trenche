@@ -12,6 +12,7 @@ import { short, sol } from "@/lib/format";
 import { toast } from "@/components/ui";
 import { BxButton, BxModal, PadAvatar, cx } from "@/components/bx/ui";
 import { BxJob } from "@/components/bx/Job";
+import { trackTradeJob } from "@/lib/pendingTrades";
 import { LaunchModal } from "@/components/launch/LaunchModal";
 import { CtoModal } from "@/components/launch/CtoModal";
 import { ActivityPanel, ChartPanel, Gutter, RightRail, TasksPanel, TokenInfoPanel, type PanelFrame } from "@/components/launch/Workspace";
@@ -234,9 +235,10 @@ function LaunchScreen() {
   const dumpAll = async () => {
     if (!viewingMint) return;
     try {
+      toast("Dumping…", "info");
       const r = await post<JobCreated>("/api/dev/dump", { mint: viewingMint, percent: 100, bundle: settings.data?.jitoEnabled ?? true, slippageBps: settings.data?.slippageBps ?? 2000, tipSol: settings.data?.tipSol });
       setDumpJob(r.jobId);
-      toast("Dump sent", "info");
+      trackTradeJob(r.jobId, { mint: viewingMint, side: "sell", label: "Dump" });
     } catch (e) {
       toast(failureMessage(e), "err");
     }
@@ -268,8 +270,9 @@ function LaunchScreen() {
         if (id === "dumpAll") return dumpAll();
         if (id === "devSell100" || id === "devSellCustom") {
           const percent = id === "devSell100" ? 100 : kb.customSellPct;
-          await post<JobCreated>("/api/trade/sell", { mint: live.mint, wallets: [live.dev], percent });
-          return toast(`Selling ${percent}% of the dev wallet`, "info");
+          toast(`Selling ${percent}% of the dev wallet`, "info");
+          const r = await post<JobCreated>("/api/trade/sell", { mint: live.mint, wallets: [live.dev], percent });
+          return trackTradeJob(r.jobId, { mint: live.mint, side: "sell", label: `Dev sell ${percent}%` });
         }
         const m = /^(buy|vol)(\d)(Toggle|Stop)$/.exec(id);
         if (!m) return;

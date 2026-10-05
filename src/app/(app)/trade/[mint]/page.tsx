@@ -14,6 +14,7 @@ import { pushRecent } from "@/components/bx/recent";
 import { CandleChart } from "@/components/trade/Chart";
 import { InstantTrade, InstantTradeButton, TradePanel } from "@/components/trade/TradePanel";
 import { tradeRowStyle } from "@/components/trade/tradeRowStyle";
+import { mergePending, trackTradeJob, usePendingTrades, type ListedTrade } from "@/lib/pendingTrades";
 
 const TF: CandleTf[] = CANDLE_TFS;
 
@@ -142,7 +143,7 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
     </div>
   );
 
-  const tradesList = <TradesList mint={mint} mine={mine} supply={supply} solUsd={solUsd} />;
+  const tradesList = <TradesList mint={mint} mine={mine} supply={supply} solUsd={solUsd} priceSol={c && !c.complete ? c.priceSol : null} />;
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-bg-100">
@@ -300,13 +301,15 @@ function Risk({ icon, value, label, good, neutral }: { icon: React.ReactNode; va
   );
 }
 
-function TradesList({ mint, mine, supply, solUsd }: { mint: string; mine: Set<string>; supply: number; solUsd: number | null }) {
+function TradesList({ mint, mine, supply, solUsd, priceSol }: { mint: string; mine: Set<string>; supply: number; solUsd: number | null; priceSol: number | null }) {
   // 2 s while the page is open; the server caches pump.fun's answer so every open client shares one upstream call
   const q = useGet<TokenTradesResponse>(`/api/token/${mint}/trades?limit=100`, 2000);
   const [filter, setFilter] = useState<"all" | "others">("all");
   const [othersUsd, setOthersUsd] = useState(false);
   const [newestFirst, setNewestFirst] = useState(true);
-  const all = useMemo(() => q.data?.trades ?? [], [q.data]);
+  // our own sent transactions are listed at once (pending → landed → confirmed) until the API returns them
+  const pending = usePendingTrades(mint);
+  const all = useMemo<ListedTrade[]>(() => mergePending(q.data?.trades ?? [], pending, priceSol), [q.data, pending, priceSol]);
   const others = useMemo(() => {
     const list = all.filter((tr) => !mine.has(tr.wallet));
     const buys = list.filter((tr) => tr.side === "buy");
@@ -364,7 +367,7 @@ function TradesList({ mint, mine, supply, solUsd }: { mint: string; mine: Set<st
             const st = tradeRowStyle(tr.side, own);
             return (
               <div key={tr.signature} className="relative py-px">
-                <div className={cx("relative flex h-[30px] cursor-pointer flex-row px-2 hover:brightness-125", st.row)}>
+                <div className={cx("relative flex h-[30px] cursor-pointer flex-row px-2 hover:brightness-125", st.row, tr.pending === "sent" ? "opacity-60" : tr.pending === "failed" ? "line-through opacity-50" : "")}>
                   <div className="relative flex w-[22.5%] items-center justify-start overflow-hidden whitespace-nowrap p-1 leading-none">
                     <div className={cx("flex items-center gap-0.5 text-[13px] font-normal leading-4", st.amount)}>
                       {/* eslint-disable-next-line @next/next/no-img-element -- static asset */}
@@ -381,7 +384,13 @@ function TradesList({ mint, mine, supply, solUsd }: { mint: string; mine: Set<st
                     </div>
                   </div>
                   <div className="relative flex w-[15%] items-center justify-end gap-1 overflow-hidden whitespace-nowrap p-1 leading-none">
-                    <span className="text-[13px] leading-4 text-text-300">{age(tr.blockTime * 1000)}</span>
+                    {tr.pending ? (
+                      <span className={cx("text-[11px] font-medium uppercase leading-4", tr.pending === "failed" ? "text-decrease" : tr.pending === "sent" ? "animate-pulse text-text-300" : "text-green-100")} title="Sent from this terminal — the trade API has not listed it yet">
+                        {tr.pending}
+                      </span>
+                    ) : (
+                      <span className="text-[13px] leading-4 text-text-300">{age(tr.blockTime * 1000)}</span>
+                    )}
                     <TxLink sig={tr.signature} className="text-text-300" />
                   </div>
                 </div>
@@ -403,8 +412,9 @@ function Positions({ rows, mint, mode }: { rows: PositionsResponse; mint: string
   const sell = async (addr: string, percent: number) => {
     setBusy(`${addr}${percent}`);
     try {
-      await post<JobCreated>("/api/trade/sell", { mint, wallets: [addr], percent, slippageBps: settings.data?.slippageBps ?? 2000 });
       toast(`Selling ${percent}%`, "info");
+      const r = await post<JobCreated>("/api/trade/sell", { mint, wallets: [addr], percent, slippageBps: settings.data?.slippageBps ?? 2000 });
+      trackTradeJob(r.jobId, { mint, side: "sell", label: `Sell ${percent}%` });
     } catch (e) {
       toast(failureMessage(e), "err");
     } finally {

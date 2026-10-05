@@ -6,6 +6,7 @@ import { CANDLE_TFS, type AutoClaimStatus, type CandleTf, type JobCreated, type 
 import { failureMessage, post, useGet } from "@/lib/api";
 import { useSolPrice, useWallets } from "@/lib/store";
 import { tradeRowStyle } from "@/components/trade/tradeRowStyle";
+import { mergePending, trackTradeJob, usePendingTrades, type ListedTrade } from "@/lib/pendingTrades";
 import { usePresetIndex, useTradingPresets } from "@/lib/presets";
 import { age, pct, short, sol, usd } from "@/lib/format";
 import { toast } from "@/components/ui";
@@ -291,8 +292,9 @@ export function TasksPanel({
     if (!live) return;
     setSellBusy(percent);
     try {
-      await post<JobCreated>("/api/trade/sell", { mint: live.mint, wallets: [live.dev], percent, slippageBps: tp.slippagePercent * 100, tipSol: tp.tipSol });
       toast(`Selling ${percent}% of the dev wallet`, "info");
+      const r = await post<JobCreated>("/api/trade/sell", { mint: live.mint, wallets: [live.dev], percent, slippageBps: tp.slippagePercent * 100, tipSol: tp.tipSol });
+      trackTradeJob(r.jobId, { mint: live.mint, side: "sell", label: `Dev sell ${percent}%` });
     } catch (e) {
       toast(failureMessage(e), "err");
     } finally {
@@ -573,7 +575,10 @@ export function ActivityPanel({ mint, live, frame, className }: { mint: string |
   // trades every 2 s while the page is open (server-side pump.fun cache: N clients = 1 upstream call)
   const trades = useGet<TokenTradesResponse>(mint ? `/api/token/${mint}/trades?limit=100` : null, 2000);
   const price = useSolPrice();
-  const rows = trades.data?.trades ?? [];
+  // our own sent transactions are listed at once (pending → landed → confirmed) until the API returns them
+  const pending = usePendingTrades(mint);
+  const apiRows = trades.data?.trades ?? [];
+  const rows: ListedTrade[] = mergePending(apiRows, pending, apiRows[0] ? Number(apiRows[0].priceSol) : null);
   const vaultWallets = useWallets();
   const mine = new Set((vaultWallets.data?.wallets ?? []).map((w) => w.address));
   const supply = Number(trades.data?.supplyTokens ?? 1e9) || 1e9;
@@ -626,7 +631,7 @@ export function ActivityPanel({ mint, live, frame, className }: { mint: string |
                   const st = tradeRowStyle(t.side, own);
                   return (
                     <div key={t.signature} className="relative py-px">
-                      <div className={cx("relative flex h-[30px] cursor-pointer flex-row px-2 hover:brightness-125", st.row)}>
+                      <div className={cx("relative flex h-[30px] cursor-pointer flex-row px-2 hover:brightness-125", st.row, t.pending === "sent" ? "opacity-60" : t.pending === "failed" ? "line-through opacity-50" : "")}>
                         <div className="relative flex w-[22.5%] items-center justify-start overflow-hidden whitespace-nowrap p-1 leading-none">
                           <div className={cx("flex items-center gap-0.5 text-[13px] font-normal leading-4", st.amount)}>
                             {/* eslint-disable-next-line @next/next/no-img-element -- static asset */}
@@ -644,7 +649,13 @@ export function ActivityPanel({ mint, live, frame, className }: { mint: string |
                         </div>
                         <div className="relative flex w-[15%] items-center justify-end overflow-hidden whitespace-nowrap p-1 leading-none">
                           <TxLink sig={t.signature} className="text-text-300 hover:text-text-100" />
-                          <span className="ml-1 text-[13px] text-text-300">{age(t.blockTime * 1000)}</span>
+                          {t.pending ? (
+                            <span className={cx("ml-1 text-[11px] font-medium uppercase", t.pending === "failed" ? "text-decrease" : t.pending === "sent" ? "animate-pulse text-text-300" : "text-green-100")} title="Sent from this terminal — the trade API has not listed it yet">
+                              {t.pending}
+                            </span>
+                          ) : (
+                            <span className="ml-1 text-[13px] text-text-300">{age(t.blockTime * 1000)}</span>
+                          )}
                         </div>
                       </div>
                     </div>
