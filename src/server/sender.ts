@@ -16,7 +16,7 @@
  * otherwise Sender is skipped and the read RPC alone carries it) AND to the read RPC: one signature, so there is
  * nothing to dedup — the first acknowledgement wins.
  *
- * TRENCH_SIMULATE_SENDS=1 (measurement only, see README): nothing is broadcast — each "send" is a
+ * TRENCH_SIMULATE_SENDS=1 (measurement only, on an isolated TRENCH_DATA_DIR instance): nothing is broadcast — each "send" is a
  * simulateTransaction (sigVerify:false) on the read RPC and the confirmation resolves at once with the simulation
  * result (sigsub.ts reads simResult). */
 import { Connection, VersionedTransaction, type FetchFn, type SendOptions } from "@solana/web3.js";
