@@ -3,7 +3,8 @@
  * CU limits are MEASURED (scripts/probe-cu.mjs: buy/sell built by the engine, simulated on live mainnet curves with
  * sigVerify:false, 2026-10-05): buy with a fresh ATA (idempotent create + first user-volume touch) 85.7k–105.1k CU,
  * buy on an existing ATA ~75.8k, sell ~60.8k (compute-budget + tip instructions included in the buy numbers).
- * The limits below add ~20 % headroom (a transaction that runs out of CU fails AND pays its fee). A smaller limit
+ * The limits below keep ≥ 33 % headroom over the largest sample (a transaction that runs out of CU fails AND pays
+ * its fee; the existing-ATA buy and the sell have one sample each, the cashback sell none). A smaller limit
  * means a smaller priority fee for the same µLamports/CU price (fee = price × limit) and an easier fit in a block.
  *
  * Priority fee: Helius getPriorityFeeEstimate (account keys = pump program + the mint's bonding curve, level
@@ -16,13 +17,14 @@ import { queuedFetch } from "./rpcqueue";
 import { store } from "./store";
 
 export const CU_LIMITS = {
-  /** buy that creates the ATA (idempotent create, first trade of this wallet on the mint) */
-  buyNewAta: 125_000,
-  /** buy on an ATA that exists */
-  buyAtaExists: 92_000,
-  sell: 75_000,
-  /** cashback coins pass one more writable account (user volume accumulator) */
-  sellCashback: 85_000,
+  /** buy that creates the ATA (idempotent create, first trade of this wallet on the mint) — max measured 105.1k */
+  buyNewAta: 140_000,
+  /** buy on an ATA that exists — measured ~75.8k (one composite sample: generous headroom) */
+  buyAtaExists: 110_000,
+  /** measured ~60.8k (one composite sample: generous headroom) */
+  sell: 100_000,
+  /** cashback coins pass one more writable account (user volume accumulator) — not measured */
+  sellCashback: 115_000,
 } as const;
 
 export const PRIORITY_FLOOR = 10_000;
