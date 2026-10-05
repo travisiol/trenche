@@ -2,6 +2,7 @@ import { json, route } from "@/server/api";
 import { autoclaimStatusOrNull } from "@/server/autoclaim";
 import { touchHot } from "@/server/hot";
 import { launchRecordStatus, reconcileLaunches } from "@/server/reconcile";
+import { imageUrl } from "@/server/metadata";
 import { store } from "@/server/store";
 import type { LaunchesResponse } from "@/lib/types";
 
@@ -12,6 +13,6 @@ export const GET = route(async () => {
   touchHot(); // the launch page is open: keep a blockhash, Sender and the confirmation socket warm
   // unconfirmed creates with a signature are re-checked on chain (every 30 s at most) before the list is answered
   await reconcileLaunches().catch(() => 0);
-  const res: LaunchesResponse = { launches: store().launches.map((l) => ({ ...l, status: launchRecordStatus(l), autoClaim: autoclaimStatusOrNull(l.mint) })) };
+  const res: LaunchesResponse = { launches: store().launches.map((l) => ({ ...l, image: imageUrl(l.image), status: launchRecordStatus(l), autoClaim: autoclaimStatusOrNull(l.mint) })) };
   return json(res);
 });

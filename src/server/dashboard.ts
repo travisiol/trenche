@@ -1,4 +1,5 @@
 /* Dashboard: recent launches with live market cap, PnL windows from the on-chain ledger, active tasks. */
+import { imageUrl } from "./metadata";
 import { PublicKey } from "@solana/web3.js";
 import type { DashboardLaunch, DashboardResponse, LaunchTaskState, PnlSharePeriod, PnlShareResponse } from "@/lib/types";
 import { curveMetrics, fetchCurve, readConn } from "./engine";
@@ -44,6 +45,7 @@ export async function dashboard(): Promise<DashboardResponse> {
   const recentLaunches: DashboardLaunch[] = await Promise.all(
     recent.map(async (l): Promise<DashboardLaunch> => {
       const card = feedCard(l.mint);
+      l = { ...l, image: imageUrl(l.image) };
       if (card) return { ...l, marketCapSol: card.marketCapSol, marketCapUsd: card.marketCapUsd, progress: card.progress, complete: card.complete };
       const found = await fetchCurve(conn, new PublicKey(l.mint)).catch(() => null);
       if (!found) return { ...l, marketCapSol: null, marketCapUsd: null, progress: null, complete: null };

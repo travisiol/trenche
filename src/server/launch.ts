@@ -36,7 +36,7 @@ import { registerRuntimeProducer, RESTORE_NOTE, restoreSection, saveRuntimeSoon 
 import { solPriceCached } from "./price";
 import { syncPumpCluster } from "./pumpcluster";
 import { checkCreateOnChain, reconcileLaunches } from "./reconcile";
-import { fetchUriJson } from "./metadata";
+import { fetchUriJson, imageUrl } from "./metadata";
 import { ipfsToHttp } from "@/engine/solana/pump/metadata.js";
 import { isDevnet, logActivity, saveLaunches, store, track, type Job, type PendingMint } from "./store";
 import { loops, TradeLoop, type SavedLoop } from "./tradeloop";
@@ -104,7 +104,7 @@ export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<Laun
   const mint = keypair.publicKey.toBase58();
   let image: string | null = null;
   const j = await fetchUriJson(uri, 5000).catch(() => null);
-  if (j && typeof j.image === "string") image = ipfsToHttp(j.image);
+  if (j && typeof j.image === "string") image = imageUrl(ipfsToHttp(j.image));
   const pm = pendings();
   pm.set(mint, { keypair, uri, name, symbol, image, at: Date.now(), reserved: mintSource === "reserved" });
   // keep memory bounded

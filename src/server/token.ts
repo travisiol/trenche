@@ -9,7 +9,7 @@ import type { Candle, CandleTf, CurveState, StatsWindow, TokenCandlesResponse, T
 import { HttpError } from "./api";
 import { PUMP_SUPPLY_TOKENS, fetchCurve, readConn, toCurveState, tokenProgramOf } from "./engine";
 import { feedCard, feedSolUsd } from "./feed";
-import { rememberMeta, resolveMeta } from "./metadata";
+import { imageUrl, rememberMeta, resolveMeta } from "./metadata";
 import { solPrice } from "./price";
 import { store } from "./store";
 import { TF_SECONDS, aggregateCandles, candlesFromTrades, normalizeCandles, pumpCandles, pumpCoin, pumpTrades, type PumpCoin } from "./pumpapi";
@@ -83,7 +83,7 @@ export async function tokenInfo(mint: string): Promise<TokenInfo> {
     name: meta.name,
     symbol: meta.symbol,
     uri: meta.uri,
-    image: meta.image,
+    image: imageUrl(meta.image),
     description: meta.description,
     twitter: meta.twitter,
     telegram: meta.telegram,

@@ -64,7 +64,7 @@ export const IMAGE_CDN = (mint: string) => `https://axiomtrading-v2.axiom-cdn.io
  *  cloudflare-ipfs.com is gone — ipfs.io is kept as the last resort only. */
 const GATEWAYS = ["https://pump.mypinata.cloud/ipfs/", "https://4everland.io/ipfs/", "https://gateway.pinata.cloud/ipfs/", "https://ipfs.io/ipfs/"];
 /** gateway written into image URLs handed to the browser */
-const IMAGE_GATEWAY = "https://4everland.io/ipfs/";
+const IMAGE_GATEWAY = "https://pump.mypinata.cloud/ipfs/"; // pump.fun's own pinata: answers 200 at once for everything pump.fun pinned (4everland 301s, ~1.7 s)
 const DEAD_IMAGE_HOSTS = new Set(["ipfs.io", "gateway.ipfs.io", "cloudflare-ipfs.com", "dweb.link", "w3s.link", "nftstorage.link"]);
 
 /** image URLs on a retired or rate-limited gateway (and ipfs:// URIs) are re-pointed at IMAGE_GATEWAY; others are kept */
