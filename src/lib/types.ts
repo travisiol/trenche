@@ -1196,6 +1196,8 @@ export type DashboardLaunch = LaunchRecord & {
 /** Every fee the vault wallets paid over a window, from the on-chain ledger (SOL, decimal strings; see
  *  src/server/ledger.ts). Categories are exclusive: they add up to `totalCostSol`. */
 export type FeeBreakdown = {
+  /** creator fees EARNED in the window (claimed or not) — what the dashboard windows count, like the calendar */
+  creatorFeesEarnedSol?: string;
   /** base signature fee: 5000 lamports × signatures of every transaction a vault wallet paid for */
   networkSol: string;
   /** priority fee actually charged (meta.fee − base) on those transactions */

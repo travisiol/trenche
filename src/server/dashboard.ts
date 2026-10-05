@@ -1,12 +1,12 @@
 /* Dashboard: recent launches with live market cap, PnL windows from the on-chain ledger, active tasks. */
 import { imageUrl } from "./metadata";
 import { PublicKey } from "@solana/web3.js";
-import type { DashboardLaunch, DashboardResponse, LaunchTaskState, PnlSharePeriod, PnlShareResponse } from "@/lib/types";
+import type { DashboardLaunch, DashboardResponse, PnlWindow, LaunchTaskState, PnlSharePeriod, PnlShareResponse } from "@/lib/types";
 import { curveMetrics, fetchCurve, readConn } from "./engine";
 import { feedCard, feedSolUsd } from "./feed";
 import { readCreatorFees } from "./fees";
 import { launchGet } from "./launch";
-import { refreshCreatorRevenue } from "./creatorRevenue";
+import { creatorFeesByDay, refreshCreatorRevenue } from "./creatorRevenue";
 import { ledgerDay, ledgerDays, ledgerEntries, ledgerMints, ledgerPnl, ledgerStatus, refreshLedger } from "./ledger";
 import { positions } from "./positions";
 import { reconcileLaunches } from "./reconcile";
@@ -71,11 +71,12 @@ export async function dashboard(): Promise<DashboardResponse> {
   const pending = await pendingCreatorFees();
   return {
     recentLaunches,
+    // calendar windows (UTC midnight): 1D = today's calendar cell, 7D = the last 7 cells… same figure as the calendar
     pnl: {
-      "24h": ledgerPnl(now - 86_400_000, now, pending).window,
-      "7d": ledgerPnl(now - 7 * 86_400_000, now, pending).window,
-      "30d": ledgerPnl(now - 30 * 86_400_000, now, pending).window,
-      all: ledgerPnl(0, now, pending).window,
+      "24h": calendarWindow(1, now, pending),
+      "7d": calendarWindow(7, now, pending),
+      "30d": calendarWindow(30, now, pending),
+      all: calendarWindow(0, now, pending),
     },
     days: ledgerDays(),
     mints: ledgerMints(),
@@ -84,6 +85,23 @@ export async function dashboard(): Promise<DashboardResponse> {
     totalSol,
     solPrice: usd,
   };
+}
+
+/** a PnL window made of whole calendar days (UTC), `days` = 0 for all time: net = the sum of the calendar cells
+ *  (creator fees counted the day they were earned); costs / gross from the ledger over the same days; the gap goes
+ *  to "other" so the breakdown adds up to the net */
+function calendarWindow(days: number, now: number, pending: string | null): PnlWindow {
+  const today = new Date(now);
+  const startMs = days ? Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()) - (days - 1) * 86_400_000 : 0;
+  const startDate = days ? new Date(startMs).toISOString().slice(0, 10) : "";
+  const w = ledgerPnl(startMs, now, pending).window;
+  const net = ledgerDays()
+    .filter((d) => d.date >= startDate)
+    .reduce((s, d) => s + d.sol, 0);
+  let earned = 0;
+  for (const [date, perMint] of creatorFeesByDay()) if (date >= startDate) for (const v of perMint.values()) earned += Number(v) / 1e9;
+  const explained = Number(w.realisedSol) - Number(w.fees.totalCostSol) + earned;
+  return { ...w, netSol: f9(net), otherSol: f9(net - explained), fees: { ...w.fees, creatorFeesEarnedSol: f9(earned) } };
 }
 
 /** Figures of the Share PnL card (see PnlShareResponse). Positions are best-effort: null when unreadable. */

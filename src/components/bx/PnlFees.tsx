@@ -27,10 +27,12 @@ export function PnlFees({ pnl, solUsd, unit, className, compact }: { pnl: PnlWin
   if (!pnl) return null;
   const f = pnl.fees;
   const cost = Number(f.totalCostSol);
-  const rewards = Number(f.creatorFeesClaimedSol);
+  // dashboard windows count creator fees when earned (like the calendar); other callers (share card) when claimed
+  const earnedBasis = f.creatorFeesEarnedSol !== undefined;
+  const rewards = Number(earnedBasis ? f.creatorFeesEarnedSol : f.creatorFeesClaimedSol);
   const pending = f.creatorFeesPendingSol === null ? null : Number(f.creatorFeesPendingSol);
   const other = Number(pnl.otherSol);
-  const title = [...ROWS.map(([k, l]) => `${l}: ${fmtSigned(-Number(f[k]), null, "SOL")}`), `Creator fees claimed: ${fmtSigned(rewards, null, "SOL")}`, pending !== null ? `Creator fees pending (not counted): ${pending.toFixed(4)} SOL` : "", other ? `Other SOL movements: ${fmtSigned(other, null, "SOL")}` : ""].filter(Boolean).join("\n");
+  const title = [...ROWS.map(([k, l]) => `${l}: ${fmtSigned(-Number(f[k]), null, "SOL")}`), earnedBasis ? `Creator fees earned (claimed or not): ${fmtSigned(rewards, null, "SOL")}` : `Creator fees claimed: ${fmtSigned(rewards, null, "SOL")}`, pending !== null ? `Creator fees still to claim: ${pending.toFixed(4)} SOL${earnedBasis ? " (counted)" : " (not counted)"}` : "", other ? `Other SOL movements: ${fmtSigned(other, null, "SOL")}` : ""].filter(Boolean).join("\n");
   return (
     <div className={cx("min-w-0", className)}>
       <button type="button" onClick={() => setOpen((o) => !o)} title={title} className={cx("inline-flex max-w-full items-center gap-1 rounded text-text-300 transition-colors hover:text-text-100", compact ? "text-[12px]" : "text-[13px]")}>
@@ -52,8 +54,8 @@ export function PnlFees({ pnl, solUsd, unit, className, compact }: { pnl: PnlWin
             <Row key={k} label={l} value={-Number(f[k])} solUsd={solUsd} unit={unit} />
           ))}
           <Row label="Total costs" value={-cost} solUsd={solUsd} unit={unit} strong />
-          <Row label="Creator fees claimed" value={rewards} solUsd={solUsd} unit={unit} />
-          {pending !== null ? <Row label="Creator fees pending (not counted)" value={pending} solUsd={solUsd} unit={unit} muted /> : null}
+          <Row label={earnedBasis ? "Creator fees earned (claimed or not)" : "Creator fees claimed"} value={rewards} solUsd={solUsd} unit={unit} />
+          {pending !== null ? <Row label={earnedBasis ? "of which still to claim (all time)" : "Creator fees pending (not counted)"} value={pending} solUsd={solUsd} unit={unit} muted /> : null}
           {other ? <Row label="Other SOL movements (rent refunds…)" value={other} solUsd={solUsd} unit={unit} /> : null}
           <Row label="Gross trading (sells − buys)" value={Number(pnl.realisedSol)} solUsd={solUsd} unit={unit} />
           <Row label="Net PnL" value={Number(pnl.netSol)} solUsd={solUsd} unit={unit} strong />
