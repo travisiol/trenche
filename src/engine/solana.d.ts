@@ -152,6 +152,7 @@ declare module "@/engine/solana/send.js" {
   ): Promise<SendResult[]>;
   export function latestBlockhash(conn: Connection): Promise<{ blockhash: string; lastValidBlockHeight: number }>;
   export function submitJitoBundle(txs: VersionedTransaction[], opts?: { blockEngineUrl?: string }): Promise<string>;
+  export function preflightBundle(readConn: Connection, txs: VersionedTransaction[]): Promise<{ error: string | null; simulated: boolean }>;
   export function jitoBundleStatus(bundleId: string, opts?: { blockEngineUrl?: string }): Promise<"Invalid" | "Pending" | "Failed" | "Landed" | null>;
   export interface BundleResult {
     ok: boolean;
@@ -467,11 +468,13 @@ declare module "@/engine/solana/pump/launch.js" {
     },
   ): Promise<LaunchResult>;
   export interface BundleStep {
-    phase: "bundle" | "sent" | "fail";
+    phase: "preflight" | "bundle" | "sent" | "fail";
     index: number;
     total?: number;
     bundle?: boolean;
     error?: string;
+    /** preflight: true when the whole bundle went through simulateBundle */
+    simulated?: boolean;
   }
   export function launchBundle(
     read: Connection,

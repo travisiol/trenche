@@ -280,6 +280,50 @@ export async function submitJitoBundle(txs, opts = {}) {
   }
 }
 
+/* Before a bundle leaves: Jito drops a bundle silently (status "Invalid") when one transaction fails its simulation or
+   carries a bad signature, so check both here. 1) every required signature verified locally (ed25519); 2) the whole
+   bundle simulated in order with Jito's `simulateBundle` on the read RPC when it offers the method (Helius / Jito RPCs)
+   — the buys after the create see the created curve, which a plain simulateTransaction cannot. Returns an error
+   sentence, or null (all good / simulateBundle unavailable: `simulated` says which). */
+export async function preflightBundle(readConn, txs) {
+  const { ed25519 } = await import("@noble/curves/ed25519");
+  for (let i = 0; i < txs.length; i++) {
+    const tx = txs[i],
+      msg = tx.message.serialize(),
+      n = tx.message.header.numRequiredSignatures,
+      keys = tx.message.staticAccountKeys;
+    for (let k = 0; k < n; k++) {
+      const sig = tx.signatures[k];
+      if (!sig || sig.every(b => b === 0) || !ed25519.verify(sig, msg, keys[k].toBytes()))
+        return { error: `Transaction ${i + 1} of the bundle has a missing or invalid signature for ${keys[k].toBase58()}.`, simulated: !1 };
+    }
+  }
+  let data;
+  try {
+    const res = await fetch(readConn.rpcEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "simulateBundle",
+        params: [{ encodedTransactions: txs.map(tx => Buffer.from(tx.serialize()).toString("base64")) }, { skipSigVerify: !0, replaceRecentBlockhash: !0, preExecutionAccountsConfigs: txs.map(() => null), postExecutionAccountsConfigs: txs.map(() => null) }],
+      }),
+    });
+    data = await res.json().catch(() => null);
+  } catch {
+    return { error: null, simulated: !1 };
+  }
+  const v = data?.result?.value;
+  if (!v) return { error: null, simulated: !1 }; // method not offered by this RPC
+  const failed = v.summary && typeof v.summary === "object" ? v.summary.failed : null;
+  if (!failed) return { error: null, simulated: !0 };
+  const results = v.transactionResults ?? [],
+    idx = Math.max(0, results.findIndex(r => r?.err)),
+    logs = (results[idx]?.logs ?? []).filter(l => /error|failed|exceeded|insufficient/i.test(l)).slice(-3).join(" · ");
+  return { error: `Transaction ${idx + 1} of the bundle fails simulation: ${JSON.stringify(failed.error ?? results[idx]?.err ?? failed)}${logs ? ` — ${logs}` : ""}.`, simulated: !0 };
+}
+
 /* Jito's own view of a bundle: Invalid (unknown / > 5 min) · Pending · Failed (dropped by every region — usually a
    transaction that fails simulation) · Landed. null when the call itself fails. */
 export async function jitoBundleStatus(bundleId, opts = {}) {

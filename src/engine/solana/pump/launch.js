@@ -8,7 +8,7 @@ import {
 import { createV2Instruction, generateMint } from "./create.js";
 import { buyInstruction, randomBuybackFeeRecipient, randomFeeRecipient } from "./instructions.js";
 import { FRESH_CURVE, buildBuyTx, buildSellTx, planBuys, planSells, signWith, tipInstruction } from "./math.js";
-import { latestBlockhash, sendAndConfirm, sendBundleAndConfirm, sendMany } from "../send.js";
+import { latestBlockhash, preflightBundle, sendAndConfirm, sendBundleAndConfirm, sendMany } from "../send.js";
 import {
   ATA_PROGRAM,
   SYSTEM_PROGRAM,
@@ -357,8 +357,12 @@ export async function launchBundle(readConn, prep, opts = {}) {
   const buys = [],
     bundleErrors = [];
   let created = { confirmed: !1, error: "not sent" };
-  // the create does not depend on anything in the bundle: simulate it first — Jito silently drops a bundle whose tx fails
-  const sim = await readConn.simulateTransaction(prep.createTx, { sigVerify: !1, replaceRecentBlockhash: !0, commitment: "processed" }).catch(() => null);
+  // Jito silently drops a bundle whose tx fails or is badly signed: signatures + simulateBundle first (see preflightBundle)
+  const pre = await preflightBundle(readConn, chunks[0]).catch(() => ({ error: null, simulated: !1 }));
+  if (pre.error) return { mint: prep.mint.publicKey.toBase58(), create: { confirmed: !1, error: `${pre.error} Nothing was sent.` }, buys: [], atomic: !0, mode: "bundle", bundleErrors: [] };
+  if (typeof opts.onStep == "function") opts.onStep({ phase: "preflight", index: 0, simulated: pre.simulated });
+  // without simulateBundle on the RPC, at least the create (it depends on nothing in the bundle) is simulated alone
+  const sim = pre.simulated ? null : await readConn.simulateTransaction(prep.createTx, { sigVerify: !1, replaceRecentBlockhash: !0, commitment: "processed" }).catch(() => null);
   if (sim?.value?.err) {
     const why = (sim.value.logs ?? []).filter(l => /error|failed|exceeded|insufficient/i.test(l)).slice(-3).join(" · ");
     return { mint: prep.mint.publicKey.toBase58(), create: { confirmed: !1, error: `The create transaction fails simulation: ${JSON.stringify(sim.value.err)}${why ? ` — ${why}` : ""}. Nothing was sent.` }, buys: [], atomic: !0, mode: "bundle", bundleErrors: [] };

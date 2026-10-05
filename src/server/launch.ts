@@ -619,6 +619,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
       const r = await launchBundle(conn, prep, {
         timeoutMs: 45_000,
         onStep: (s) => {
+          if (s.phase === "preflight") step(run, "bundle", true, s.simulated ? "Bundle checked: signatures valid, whole bundle simulated OK (simulateBundle)." : "Signatures valid · this RPC has no simulateBundle: only the create is simulated before sending.");
           if (s.phase === "bundle") step(run, "bundle", true, `Sending Jito bundle ${s.index + 1}/${s.total ?? 1}…`);
         },
       });
