@@ -1,7 +1,7 @@
 "use client";
 /** Block X launch workspace: Chart · Tasks · Token info · Activity panels + the right rail (Launch · Claim Rewards). */
 import { useState } from "react";
-import { Check, ChevronDown, ClipboardPlus, Copy, Flame, Gift, GripVertical, Maximize2, Minimize2, MoreHorizontal, Pencil, Rocket, Settings, SlidersHorizontal, Square } from "lucide-react";
+import { ChevronDown, ClipboardPlus, Flame, Gift, GripVertical, Maximize2, Minimize2, MoreHorizontal, Pencil, Rocket, Settings, SlidersHorizontal, Square } from "lucide-react";
 import { CANDLE_TFS, type AutoClaimStatus, type CandleTf, type LaunchPreset, type LaunchState, type LaunchTaskType, type MintPnl, type PositionsResponse, type TokenCandlesResponse, type TokenInfo, type TokenTradesResponse, type WalletGroup, type WalletInfo } from "@/lib/types";
 import { failureMessage, post, useGet } from "@/lib/api";
 import { useSolPrice, useWallets } from "@/lib/store";
@@ -11,6 +11,7 @@ import { usePresetIndex, useTradingPresets } from "@/lib/presets";
 import { age, short, sol, usd } from "@/lib/format";
 import { toast } from "@/components/ui";
 import { cx } from "@/components/bx/ui";
+import { CopyCa } from "@/components/bx/CopyCa";
 import { TxLink } from "@/components/bx/Job";
 import { CandleChart } from "@/components/trade/Chart";
 import { LiveTaskCard, TaskCard } from "./TaskEditor";
@@ -541,7 +542,7 @@ export function TokenInfoPanel({ form, token, mint, onEdit, frame, className }: 
                     <span>SOL</span>
                   </span>
                 </div>
-                <CopyCa ca={mint ?? (form.reservedMint || form.mintAddress || null)} reserved={!mint} />
+                <TokenCa ca={mint ?? (form.reservedMint || form.mintAddress || null)} reserved={!mint} />
               </div>
               {onEdit ? (
                 <div className="-mr-1 flex shrink-0 items-center gap-1">
@@ -598,26 +599,9 @@ export function TokenInfoPanel({ form, token, mint, onEdit, frame, className }: 
 
 /** contract address under the token name, click = copy. Before launch: the reserved / imported mint address when there
  *  is one (Edit → Fetch mint address), else the address is only drawn at launch. */
-function CopyCa({ ca, reserved }: { ca: string | null; reserved: boolean }) {
-  const [copied, setCopied] = useState(false);
+function TokenCa({ ca, reserved }: { ca: string | null; reserved: boolean }) {
   if (!ca) return <p className="mt-0.5 truncate text-[11px] text-text-300" title="Edit → Fetch mint address reserves the …pump address now, so the CA is known before launch">CA drawn at launch — reserve one in Edit</p>;
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(ca);
-      setCopied(true);
-      toast("CA copied", "ok");
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      toast("Copy failed — select the address by hand", "err");
-    }
-  };
-  return (
-    <button type="button" onClick={copy} className="group mt-0.5 flex max-w-full items-center gap-1 font-mono text-[11px] text-text-300 transition-colors hover:text-text-100" title={`${ca} — click to copy${reserved ? " (reserved: the token launches on this address)" : ""}`} data-testid="copy-ca">
-      <span className="truncate">{short(ca, 6, 6)}</span>
-      {copied ? <Check className="h-3 w-3 shrink-0 text-increase" /> : <Copy className="h-3 w-3 shrink-0 opacity-60 group-hover:opacity-100" />}
-      {reserved ? <span className="shrink-0 rounded bg-accent-muted px-1 font-sans text-[9px] uppercase text-accent">reserved</span> : null}
-    </button>
-  );
+  return <CopyCa ca={ca} note={reserved ? "reserved" : undefined} className="mt-1" />;
 }
 
 /* --------------------------------------------------------------- Activity */

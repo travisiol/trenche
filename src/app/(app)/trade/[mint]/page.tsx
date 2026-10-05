@@ -1,5 +1,6 @@
 "use client";
 /** Block X /sol/trading/[mint]: 68px token header · chart (1s…1m, MC/Price) · Trades list · right panel (Buy/Sell, Token info) · Positions/Wallets. */
+import { CopyCa } from "@/components/bx/CopyCa";
 import { use, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Check, ChevronDown, Copy, ExternalLink, Globe, UserRoundCog, UsersRound, Zap } from "lucide-react";
@@ -100,9 +101,7 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
           </div>
           <div className="flex min-w-0 items-center gap-2 whitespace-nowrap text-[13px] font-normal text-text-300">
             {t?.createdAt ? <span className="text-age">{age(t.createdAt)}</span> : null}
-            <button type="button" className="cursor-pointer text-text-300 transition-colors hover:text-text-100" title={mint} onClick={() => navigator.clipboard?.writeText(mint)}>
-              {mint.slice(0, 4)}...{mint.slice(-4)}
-            </button>
+            <CopyCa ca={mint} />
             {t?.twitter ? (
               <a href={t.twitter} target="_blank" rel="noreferrer" className="flex h-full items-center text-xblue hover:text-text-100" aria-label="Twitter">
                 𝕏

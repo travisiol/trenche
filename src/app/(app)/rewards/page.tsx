@@ -1,5 +1,6 @@
 "use client";
 /** Block X /rewards: tabs Fees (Referrals omitted), launchpad chips (Pump.fun only), "Choose a launchpad" card, then fee rows + Claim. */
+import { CopyCa } from "@/components/bx/CopyCa";
 import Link from "next/link";
 import { useState } from "react";
 import { Gift, Plus, X } from "lucide-react";
@@ -175,9 +176,9 @@ function FeeRow({ mint, canSign, launch, onRemove }: { mint: string; canSign: bo
           </Link>
           <span className="truncate text-text-300">{name}</span>
         </div>
-        <div className="font-mono text-[11px] text-text-300">
-          {short(mint, 6, 6)}
-          {fees.data?.creator ? ` · creator ${short(fees.data.creator)}` : ""}
+        <div className="flex items-center gap-2 font-mono text-[11px] text-text-300">
+          <CopyCa ca={mint} />
+          {fees.data?.creator ? <span>creator {short(fees.data.creator)}</span> : null}
         </div>
         {notMine ? <div className="text-[11px] text-yellow-100">Creator wallet not in your vault — read-only.</div> : null}
         {fees.error ? <div className="text-[11px] text-decrease">{failureMessage(fees.error)}</div> : null}
