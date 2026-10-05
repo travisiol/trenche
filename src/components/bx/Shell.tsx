@@ -11,7 +11,8 @@ import { Bell, BookOpen, Check, ChevronDown, Copy, History, Menu, Search, Settin
 import { useRecent, clearRecent } from "./recent";
 import { VaultPill } from "./vault";
 import { PadAvatar, cx } from "./ui";
-import { useSolPrice, useSettings } from "@/lib/store";
+import { useBalances, useSolPrice, useSettings } from "@/lib/store";
+import { soundOnBalances } from "@/lib/sounds";
 import { failureMessage, useGet } from "@/lib/api";
 import { age, short, usd } from "@/lib/format";
 import type { PresetsResponse, RpcHealthResponse, SearchResponse, SearchSort } from "@/lib/types";
@@ -36,6 +37,11 @@ export function Wordmark({ className }: { className?: string }) {
 }
 
 export function Shell({ children }: { children: ReactNode }) {
+  // fund sounds: SOL arriving on a vault wallet (balances refresh every 15 s and right after each job)
+  const balancesForSound = useBalances();
+  useEffect(() => {
+    soundOnBalances(balancesForSound.data as Record<string, string | null> | null);
+  }, [balancesForSound.data]);
   const path = usePathname();
   const [menu, setMenu] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);

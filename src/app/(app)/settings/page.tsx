@@ -7,6 +7,7 @@ import type { Cluster, Settings, SettingsUpdateRequest } from "@/lib/types";
 import { failureMessage, post } from "@/lib/api";
 import { refreshVaultDependents, settingsRes, useSettings, useVault } from "@/lib/store";
 import { setToastsMuted, toast, toastsMuted } from "@/components/ui";
+import { playSound, setSoundsMuted } from "@/lib/sounds";
 import { BxButton, BxInput, BxSwitch, cx } from "@/components/bx/ui";
 import { UnlockVaultModal, lockVault } from "@/components/bx/vault";
 import { KEYBINDS, KEYBIND_DEFAULTS, comboLabel, comboOf, useKeybinds, type KeybindId } from "@/lib/keybinds";
@@ -287,6 +288,13 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
 
 function Notifications() {
   const [muted, setMuted] = useState(() => (typeof window === "undefined" ? false : toastsMuted()));
+  const [soundOff, setSoundOff] = useState(() => {
+    try {
+      return typeof window !== "undefined" && localStorage.getItem("donchain.sounds.muted") === "1";
+    } catch {
+      return false;
+    }
+  });
   return (
     <div className="space-y-3">
       <H3>In-app</H3>
@@ -298,6 +306,20 @@ function Notifications() {
             setToastsMuted(v);
           }}
         />
+      </Row>
+      <Row title="Fund sounds" desc="A short sound when SOL leaves a wallet and when a wallet receives SOL. Muting toasts mutes these too.">
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => { playSound("send"); setTimeout(() => playSound("receive"), 450); }} className="rounded-md border border-line-100 bg-bg-50 px-2 py-1 text-xs text-text-200 hover:text-text-100">
+            Test
+          </button>
+          <BxSwitch
+            checked={!soundOff}
+            onChange={(v) => {
+              setSoundOff(!v);
+              setSoundsMuted(!v);
+            }}
+          />
+        </div>
       </Row>
     </div>
   );

@@ -6,6 +6,7 @@
 import { useSyncExternalStore } from "react";
 import { api } from "./api";
 import type { JobView } from "./types";
+import { soundOnJob } from "./sounds";
 
 type Entry = { job: JobView | null; error: string | null; listeners: Set<() => void>; close: () => void; done: boolean };
 const entries = new Map<string, Entry>();
@@ -15,6 +16,7 @@ function start(id: string): Entry {
   entries.set(id, e);
   const emit = () => e.listeners.forEach((l) => l());
   const set = (j: JobView) => {
+    soundOnJob(j);
     e.job = j;
     e.error = null;
     if (j.done) finish();
