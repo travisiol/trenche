@@ -50,3 +50,5 @@ public/icons/*.png
 .next-rpc/
 .next-speed/
 .next-priv/
+# every alternate build dir (TRENCH_DIST_DIR=.next-xxx) — Tailwind scans what git does not ignore
+/.next-*/
