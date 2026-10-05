@@ -28,9 +28,13 @@
  *    Candle = { timestamp (ms, bucket start), open, high, low, close (SOL per token, decimal strings — plain or
  *               exponent form), volume (SOL, string) }. createdTs is required (0 is accepted).
  *
- * Every upstream call is cached server-side (2 s trades, 3 s coin, 3 s candles) and deduplicated, so N open
- * clients cost one call. A 403/429/5xx or Cloudflare block puts pump.fun in a 60 s back-off (`pumpStatus()`),
- * during which the callers fall back to the RPC. */
+ * Rate limit (observed 2026-10-05): pump.fun's Cloudflare answers 429 "error 1015" above ~25 calls/min per IP.
+ * So every upstream call goes through ONE budget shared by all routes: ≤ 12 calls in any 60 s window (token bucket:
+ * 2 burst, +1 every 5 s). A call that finds no budget is not made: the caller gets the last value (stale, up to
+ * 10 min) or falls back to the chain. Caches: trades 3 s per mint (ONE page of 100 per refresh, merged into a
+ * per-mint trade store of ≤ 1000 — stats and the 1s/5s/15s/1m candles are derived from that store, no extra call),
+ * candles ≥ 5m 30 s, coin rows 60 s. A 403/429/1015 backs off 30 s → 2 min → 5 min (reset by the next success),
+ * 5xx/timeouts 30 s; during the back-off nothing is sent (`pumpStatus()`). */
 import type { Candle, CandleTf, TokenTrade } from "@/lib/types";
 
 const FRONTEND = "https://frontend-api-v3.pump.fun";
@@ -75,6 +79,7 @@ export type PumpTrade = TokenTrade & { priceUsd: number | null; tokens: string }
 export type PumpStatus = { ok: boolean; blockedUntil: number | null; lastError: string | null; lastErrorAt: number | null; lastOkAt: number | null; callsLastMinute: number };
 
 type CacheEntry<T> = { at: number; value: T };
+type TradeStore = { trades: PumpTrade[]; at: number; deep: boolean; cursor: string | null };
 type PumpGlobal = {
   cache: Map<string, CacheEntry<unknown>>;
   inflight: Map<string, Promise<unknown>>;
@@ -83,6 +88,13 @@ type PumpGlobal = {
   lastErrorAt: number | null;
   lastOkAt: number | null;
   callsAt: number[];
+  /** consecutive rate-limit answers (back-off ladder index) */
+  strikes?: number;
+  tokens?: number;
+  refillAt?: number;
+  /** calls refused by the budget in the last minute (served stale / from the chain instead) */
+  skippedAt?: number[];
+  trades?: Map<string, TradeStore>;
 };
 declare global {
   var __trenchPump: PumpGlobal | undefined;
@@ -94,16 +106,54 @@ function g(): PumpGlobal {
 
 export class PumpUnavailable extends Error {}
 
-export function pumpStatus(): PumpStatus {
+/** ≤ 12 upstream calls in any 60 s window, bucket of 2 refilled every 5 s */
+export const PUMP_BUDGET_PER_MIN = 12;
+const BUCKET = 2;
+const REFILL_MS = 5000;
+const BACKOFF_LADDER = [30_000, 120_000, 300_000];
+/** a stale cached value is still served (instead of nothing) up to this age */
+const STALE_MAX = 10 * 60_000;
+
+function takeBudget(): boolean {
   const s = g();
   const now = Date.now();
   while (s.callsAt.length && s.callsAt[0] < now - 60_000) s.callsAt.shift();
-  return { ok: now >= s.blockedUntil, blockedUntil: now < s.blockedUntil ? s.blockedUntil : null, lastError: s.lastError, lastErrorAt: s.lastErrorAt, lastOkAt: s.lastOkAt, callsLastMinute: s.callsAt.length };
+  if (s.tokens === undefined || s.refillAt === undefined) {
+    s.tokens = BUCKET;
+    s.refillAt = now;
+  }
+  s.tokens = Math.min(BUCKET, s.tokens + (now - s.refillAt) / REFILL_MS);
+  s.refillAt = now;
+  if (s.tokens < 1 || s.callsAt.length >= PUMP_BUDGET_PER_MIN) {
+    (s.skippedAt ??= []).push(now);
+    while (s.skippedAt.length && s.skippedAt[0] < now - 60_000) s.skippedAt.shift();
+    return false;
+  }
+  s.tokens -= 1;
+  return true;
+}
+
+/** true when a call could be made right now (no back-off, budget left) — no token is taken */
+export function pumpCallable(): boolean {
+  const s = g();
+  const now = Date.now();
+  if (now < s.blockedUntil) return false;
+  const tokens = Math.min(BUCKET, (s.tokens ?? BUCKET) + (now - (s.refillAt ?? now)) / REFILL_MS);
+  return tokens >= 1 && s.callsAt.filter((t) => t >= now - 60_000).length < PUMP_BUDGET_PER_MIN;
+}
+
+export function pumpStatus(): PumpStatus & { budgetPerMinute: number; skippedLastMinute: number } {
+  const s = g();
+  const now = Date.now();
+  while (s.callsAt.length && s.callsAt[0] < now - 60_000) s.callsAt.shift();
+  const skipped = (s.skippedAt ?? []).filter((t) => t >= now - 60_000).length;
+  return { ok: now >= s.blockedUntil, blockedUntil: now < s.blockedUntil ? s.blockedUntil : null, lastError: s.lastError, lastErrorAt: s.lastErrorAt, lastOkAt: s.lastOkAt, callsLastMinute: s.callsAt.length, budgetPerMinute: PUMP_BUDGET_PER_MIN, skippedLastMinute: skipped };
 }
 
 async function fetchJson<T>(url: string, timeoutMs = 8000): Promise<T> {
   const s = g();
   if (Date.now() < s.blockedUntil) throw new PumpUnavailable(`pump.fun API in back-off until ${new Date(s.blockedUntil).toISOString()} (${s.lastError ?? "blocked"})`);
+  if (!takeBudget()) throw new PumpUnavailable(`pump.fun call budget (${PUMP_BUDGET_PER_MIN}/min) spent: served from cache / chain`);
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   s.callsAt.push(Date.now());
@@ -114,31 +164,40 @@ async function fetchJson<T>(url: string, timeoutMs = 8000): Promise<T> {
       const blocked = res.status === 403 || res.status === 429 || res.status >= 500;
       const msg = `${res.status} ${res.statusText}: ${text.slice(0, 120).replace(/\s+/g, " ")}`;
       if (blocked) {
-        s.blockedUntil = Date.now() + (res.status === 429 ? 20_000 : 60_000);
+        // rate limited (429 / Cloudflare 1015 / 403): 30 s → 2 min → 5 min; a 5xx: 30 s
+        const limited = res.status === 429 || res.status === 403 || /1015|rate.?limit/i.test(text);
+        const strike = limited ? Math.min(BACKOFF_LADDER.length - 1, s.strikes ?? 0) : 0;
+        if (limited) s.strikes = (s.strikes ?? 0) + 1;
+        s.blockedUntil = Date.now() + BACKOFF_LADDER[strike];
         s.lastError = msg;
         s.lastErrorAt = Date.now();
       }
       throw new PumpUnavailable(msg);
     }
     s.lastOkAt = Date.now();
+    s.strikes = 0;
     return JSON.parse(text) as T;
   } catch (e) {
     if (e instanceof PumpUnavailable) throw e;
     const msg = e instanceof Error ? e.message : String(e);
     s.lastError = msg;
     s.lastErrorAt = Date.now();
-    if (/abort/i.test(msg)) s.blockedUntil = Date.now() + 15_000;
+    if (/abort/i.test(msg)) s.blockedUntil = Date.now() + 30_000;
     throw new PumpUnavailable(`pump.fun unreachable: ${msg}`);
   } finally {
     clearTimeout(timer);
   }
 }
 
-/** cached + deduplicated upstream call */
+/** cached + deduplicated upstream call; when pump.fun cannot be called (back-off, budget spent, error) the last
+ *  value is served as long as it is younger than STALE_MAX */
 function cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
   const s = g();
   const hit = s.cache.get(key) as CacheEntry<T> | undefined;
   if (hit && Date.now() - hit.at < ttlMs) return Promise.resolve(hit.value);
+  const stale = hit && Date.now() - hit.at < STALE_MAX ? hit.value : undefined;
+  // nothing can be sent right now: the stale value, without even trying
+  if (stale !== undefined && !pumpCallable()) return Promise.resolve(stale);
   const running = s.inflight.get(key) as Promise<T> | undefined;
   if (running) return running;
   const p = load()
@@ -146,9 +205,13 @@ function cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<
       s.cache.set(key, { at: Date.now(), value: v });
       if (s.cache.size > 500) {
         const now = Date.now();
-        for (const [k, e] of s.cache) if (now - e.at > 120_000) s.cache.delete(k);
+        for (const [k, e] of s.cache) if (now - e.at > STALE_MAX) s.cache.delete(k);
       }
       return v;
+    })
+    .catch((e: unknown) => {
+      if (stale !== undefined && e instanceof PumpUnavailable) return stale;
+      throw e;
     })
     .finally(() => s.inflight.delete(key));
   s.inflight.set(key, p);
@@ -223,7 +286,7 @@ function toCoin(c: RawCoin): PumpCoin {
 
 /** every coin of one creator (newest first) — the only per-coin lookup frontend-api-v3 still answers */
 export function pumpCoinsByCreator(creator: string): Promise<PumpCoin[]> {
-  return cached(`creator:${creator}`, 3000, async () => {
+  return cached(`creator:${creator}`, 60_000, async () => {
     const raw = await fetchJson<RawCoin[]>(`${FRONTEND}/coins?offset=0&limit=50&sort=created_timestamp&order=DESC&includeNsfw=true&creator=${encodeURIComponent(creator)}`);
     return Array.isArray(raw) ? raw.filter((c) => c && typeof c.mint === "string").map(toCoin) : [];
   });
@@ -254,23 +317,56 @@ function toTrade(t: RawTrade): PumpTrade {
   };
 }
 
-/** newest `limit` trades (≤ 300, 100 per upstream page), newest first; cached 2 s */
-export function pumpTrades(mint: string, limit = 100): Promise<PumpTrade[]> {
-  const want = Math.max(1, Math.min(300, limit));
-  const pages = Math.ceil(want / 100);
-  return cached(`trades:${mint}:${pages}`, 2000, async () => {
-    const out: PumpTrade[] = [];
-    let cursor: string | null = null;
-    for (let i = 0; i < pages; i++) {
-      const url: string = `${SWAP}/v2/coins/${mint}/trades?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
-      const page: RawTrades = await fetchJson<RawTrades>(url);
-      const rows = Array.isArray(page?.trades) ? page.trades : [];
-      out.push(...rows.filter((t) => t && typeof t.tx === "string").map(toTrade));
-      cursor = page.pagination?.hasMore && page.pagination.nextCursor ? page.pagination.nextCursor : null;
-      if (!cursor || rows.length < 100) break;
-    }
-    return out;
-  }).then((rows) => rows.slice(0, want));
+const sortTrades = (a: PumpTrade, b: PumpTrade) => b.blockTime - a.blockTime || b.slot - a.slot;
+
+async function tradesPage(mint: string, cursor: string | null): Promise<{ rows: PumpTrade[]; next: string | null }> {
+  const url: string = `${SWAP}/v2/coins/${mint}/trades?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+  const page: RawTrades = await fetchJson<RawTrades>(url);
+  const rows = (Array.isArray(page?.trades) ? page.trades : []).filter((t) => t && typeof t.tx === "string").map(toTrade);
+  return { rows, next: page.pagination?.hasMore && page.pagination.nextCursor && rows.length >= 100 ? page.pagination.nextCursor : null };
+}
+
+/** newest `limit` trades (≤ 1000), newest first, from the per-mint trade store. ONE upstream page (100 newest) per
+ *  refresh, at most every 3 s and within the shared budget, merged into the store; two older pages are fetched once
+ *  (when `limit` > 100 and budget is left) to deepen the history the 5m…24h stats read. */
+export async function pumpTrades(mint: string, limit = 100): Promise<PumpTrade[]> {
+  const want = Math.max(1, Math.min(1000, limit));
+  const s = g();
+  const stores: Map<string, TradeStore> = (s.trades ??= new Map<string, TradeStore>());
+  await cached(`trades:${mint}`, 3000, async () => {
+    const { rows: fresh, next } = await tradesPage(mint, null);
+    const have = stores.get(mint);
+    const known = new Set(have?.trades.map((t) => t.signature));
+    // a page that does not overlap the store (> 100 trades since the last refresh) replaces it: no hole in the list
+    const overlaps = !have || !have.trades.length || fresh.length < 100 || fresh.some((t) => known.has(t.signature));
+    const merged = overlaps ? [...fresh.filter((t) => !known.has(t.signature)), ...(have?.trades ?? [])] : fresh;
+    merged.sort(sortTrades);
+    stores.set(mint, { trades: merged.slice(0, 1000), at: Date.now(), deep: !next || (overlaps && !!have?.deep), cursor: next });
+    if (stores.size > 100) stores.delete(stores.keys().next().value!);
+    return true;
+  }).catch((e: unknown) => {
+    if (!stores.get(mint)?.trades.length) throw e;
+  });
+  const st = stores.get(mint);
+  if (!st) return [];
+  if (want > 100 && !st.deep && st.trades.length < want && pumpCallable()) {
+    st.deep = true;
+    void (async () => {
+      const older: PumpTrade[] = [];
+      let cursor: string | null = st.cursor;
+      // the cursor after the newest page: at most 2 more calls
+      for (let i = 0; i < 2 && cursor && pumpCallable(); i++) {
+        const page = await tradesPage(mint, cursor);
+        older.push(...page.rows);
+        cursor = page.next;
+      }
+      const cur = stores.get(mint);
+      if (!cur || !older.length) return;
+      const known = new Set(cur.trades.map((t) => t.signature));
+      cur.trades = [...cur.trades, ...older.filter((t) => !known.has(t.signature))].sort(sortTrades).slice(0, 1000);
+    })().catch(() => {});
+  }
+  return st.trades.slice(0, want);
 }
 
 type RawCandle = { timestamp: number; open: string | number; high: string | number; low: string | number; close: string | number; volume: string | number };
@@ -293,7 +389,7 @@ export const TF_SECONDS: Record<CandleTf, number> = Object.fromEntries(Object.en
 /** OHLCV candles (SOL per token, volume in SOL), oldest first, de-duplicated and strictly increasing in time */
 export function pumpCandles(mint: string, tf: CandleTf, createdTs: number | null): Promise<Candle[]> {
   const spec = PUMP_INTERVAL[tf];
-  return cached(`candles:${mint}:${spec.interval}`, 3000, async () => {
+  return cached(`candles:${mint}:${spec.interval}`, 30_000, async () => {
     const raw = await fetchJson<RawCandle[]>(`${SWAP}/v2/coins/${mint}/candles?interval=${spec.interval}&limit=1000&currency=SOL&createdTs=${createdTs ?? 0}`);
     const rows = Array.isArray(raw) ? raw : [];
     const base = spec.aggregate ? spec.sec / spec.aggregate : spec.sec;

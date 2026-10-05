@@ -1,7 +1,8 @@
 /* Token metadata (name/symbol/image/description/links) resolved from the mint's `uri` with a timeout and a cache. */
 import { PublicKey, type Connection } from "@solana/web3.js";
 import { ipfsToHttp, parseMintMetadata } from "@/engine/solana/pump/metadata.js";
-import { store } from "./store";
+import { join } from "node:path";
+import { readJson, store, writeJson } from "./store";
 
 export type TokenMeta = {
   mint: string;
@@ -20,11 +21,39 @@ export type TokenMeta = {
   fetched: boolean;
 };
 
-type Cache = { map: Map<string, TokenMeta>; inflight: Map<string, Promise<TokenMeta>> };
+type Cache = { map: Map<string, TokenMeta>; inflight: Map<string, Promise<TokenMeta>>; disk?: boolean; saveTimer?: ReturnType<typeof setTimeout> | null };
 function cache(): Cache {
   const rt = store().runtime;
   if (!rt.meta) rt.meta = { map: new Map(), inflight: new Map() } satisfies Cache;
-  return rt.meta as Cache;
+  const c = rt.meta as Cache;
+  if (!c.disk) {
+    // metadata of a mint never changes: everything resolved once (pump.fun row or chain + IPFS) is kept on disk
+    // forever, so a pump.fun back-off or a slow gateway never turns a known token back into "8Zd3…aqMt" + "?"
+    c.disk = true;
+    for (const m of readJson<TokenMeta[]>(diskPath(), [])) if (m?.mint && (m.name || m.image) && !c.map.has(m.mint)) c.map.set(m.mint, { ...m, fetched: true });
+  }
+  return c;
+}
+const diskPath = () => join(store().dir, "meta-cache.json");
+function saveDiskSoon(c: Cache): void {
+  if (c.saveTimer) return;
+  c.saveTimer = setTimeout(() => {
+    c.saveTimer = null;
+    try {
+      writeJson(diskPath(), [...c.map.values()].filter((m) => m.fetched && (m.name || m.image)));
+    } catch {
+      /* disk error: memory only */
+    }
+  }, 2000);
+}
+
+/** a complete metadata row from pump.fun's coin API: kept (memory + disk) for when that API is in back-off */
+export function rememberMeta(m: Omit<TokenMeta, "resolvedAt" | "fetched">): void {
+  const c = cache();
+  const have = c.map.get(m.mint);
+  if (have?.fetched && have.name === m.name && have.image === (m.image ?? null)) return;
+  c.map.set(m.mint, { ...m, image: m.image ?? null, resolvedAt: Date.now(), fetched: true });
+  saveDiskSoon(c);
 }
 
 export const IMAGE_CDN = (mint: string) => `https://axiomtrading-v2.axiom-cdn.io/${mint}.webp`;
@@ -114,6 +143,7 @@ export function resolveMeta(
       }
     }
     c.map.set(mint, meta);
+    if (meta.fetched && (meta.name || meta.image)) saveDiskSoon(c);
     if (c.map.size > 3000) {
       const oldest = [...c.map.entries()].sort((a, b) => a[1].resolvedAt - b[1].resolvedAt).slice(0, 500);
       for (const [k] of oldest) c.map.delete(k);

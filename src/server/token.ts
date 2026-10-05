@@ -9,7 +9,7 @@ import type { Candle, CandleTf, CurveState, StatsWindow, TokenCandlesResponse, T
 import { HttpError } from "./api";
 import { PUMP_SUPPLY_TOKENS, fetchCurve, readConn, toCurveState, tokenProgramOf } from "./engine";
 import { feedCard, feedSolUsd } from "./feed";
-import { resolveMeta } from "./metadata";
+import { rememberMeta, resolveMeta } from "./metadata";
 import { solPrice } from "./price";
 import { store } from "./store";
 import { TF_SECONDS, aggregateCandles, candlesFromTrades, normalizeCandles, pumpCandles, pumpCoin, pumpTrades, type PumpCoin } from "./pumpapi";
@@ -70,8 +70,10 @@ export async function tokenInfo(mint: string): Promise<TokenInfo> {
   const [coin, found, price] = await Promise.all([coinOf(mint), fetchCurve(conn, mintPk).catch(() => null), solPrice().catch(() => null)]);
   const usd = price?.usd ?? feedSolUsd();
   const hint = coin ? { name: coin.name ?? undefined, symbol: coin.symbol ?? undefined, uri: coin.uri ?? undefined } : card ? { name: card.name, symbol: card.symbol, uri: card.uri } : undefined;
-  // metadata: pump.fun row first (no RPC), else the on-chain metadata (resolveMeta caches it)
+  // metadata: pump.fun row first (no RPC; remembered on disk for the back-off days), else the on-chain metadata →
+  // uri → IPFS JSON (resolveMeta: cached on disk forever per mint), so name + image never disappear
   const meta = coin?.name && coin.symbol ? { name: coin.name, symbol: coin.symbol, uri: coin.uri, image: coin.image, description: coin.description, twitter: coin.twitter, telegram: coin.telegram, website: coin.website, tokenProgram: coin.tokenProgram } : await resolveMeta(mint, hint, conn);
+  if (coin?.name && coin.symbol) rememberMeta({ mint, ...meta });
   const curve = found ? toCurveState(found.curve, found.pda, usd) : coin ? curveFromCoin(coin, usd) : null;
   // pump.fun's USD market cap is fresher than solPrice × SOL mc when both exist
   if (curve && coin?.marketCapUsd && !curve.complete) curve.marketCapUsd = coin.marketCapUsd;
@@ -113,18 +115,26 @@ export async function tokenTrades(mint: string, limit: number): Promise<TokenTra
 
 export async function tokenCandles(mint: string, tf: CandleTf): Promise<TokenCandlesResponse> {
   const sec = TF_SECONDS[tf];
-  const coin = await coinOf(mint);
-  let candles: Candle[] | null = await pumpCandles(mint, tf, coin?.createdAt ?? null).catch(() => null);
+  let candles: Candle[] | null = null;
   let source: TokenCandlesResponse["source"] = "pump";
-  // sub-minute buckets: the candle API lags a few seconds behind the trade list — merge the trades' buckets on top
-  if (sec < 60) {
-    const recent = await pumpTrades(mint, 300).catch(() => null);
+  if (sec <= 60) {
+    // 1s / 5s / 15s / 1m: derived locally from the per-mint trade store (the same single trades call the trade list
+    // and the stats use) — no candle call, and the newest trade is in the chart as soon as it is in the list
+    const recent = await pumpTrades(mint, 1000).catch(() => null);
     if (recent?.length) {
-      const fromTrades = candlesFromTrades(recent, sec);
-      const lastApi = candles?.length ? candles[candles.length - 1].time : -1;
-      const tail = fromTrades.filter((c) => c.time > lastApi);
-      candles = normalizeCandles([...(candles ?? []), ...tail]);
-      if (!lastApi) source = "trades";
+      candles = normalizeCandles(candlesFromTrades(recent, sec));
+      source = "trades";
+    }
+  } else {
+    // 5m and up: pump.fun candles (cached 30 s), the trade store as a fallback
+    const coin = await coinOf(mint);
+    candles = await pumpCandles(mint, tf, coin?.createdAt ?? null).catch(() => null);
+    if (!candles?.length) {
+      const recent = await pumpTrades(mint, 1000).catch(() => null);
+      if (recent?.length) {
+        candles = normalizeCandles(candlesFromTrades(recent, sec));
+        source = "trades";
+      }
     }
   }
   if (!candles || !candles.length) {
@@ -137,7 +147,7 @@ export async function tokenCandles(mint: string, tf: CandleTf): Promise<TokenCan
 
 const WINDOWS: Record<StatsWindow, number> = { "5m": 300, "1h": 3600, "6h": 6 * 3600, "24h": 24 * 3600 };
 
-/** Block X window stats (5m / 1h / 6h / 24h: volume, buys/sells, price change) from the last 300 trades */
+/** Block X window stats (5m / 1h / 6h / 24h: volume, buys/sells, price change) from the trade store (≤ 300) */
 export async function tokenStats(mint: string): Promise<TokenStatsResponse> {
   const { trades, source } = await tradesOf(mint, 300);
   const sorted = trades.filter((t) => t.blockTime > 0).sort((a, b) => a.blockTime - b.blockTime || a.slot - b.slot);
