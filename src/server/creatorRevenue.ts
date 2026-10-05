@@ -16,9 +16,11 @@ type CreatorScan = {
   /** lamports received per mint ("?" = a fee whose transaction names none of this creator's mints) */
   perMint: Record<string, { lamports: string; trades: number }>;
   claims: { at: number; sig: string; lamports: string }[];
+  /** every fee received, dated (the PnL calendar puts each fee on the day it was earned) */
+  fees: { at: number; mint: string; lamports: string }[];
   scannedAt: number;
 };
-type RevenueFile = { v: 2; creators: Record<string, CreatorScan> };
+type RevenueFile = { v: 3; creators: Record<string, CreatorScan> };
 
 const MAX_NEW_SIGNATURES = 2000;
 const FETCH_BUDGET = 300;
@@ -32,8 +34,8 @@ function path(): string {
 function file(): RevenueFile {
   const p = path();
   if (S.file && S.path === p) return S.file;
-  const raw = readJson<RevenueFile | { v: number }>(p, { v: 2, creators: {} });
-  const f: RevenueFile = raw.v === 2 ? (raw as RevenueFile) : { v: 2, creators: {} }; // v1 counted logged events only
+  const raw = readJson<RevenueFile | { v: number }>(p, { v: 3, creators: {} });
+  const f: RevenueFile = raw.v === 3 ? (raw as RevenueFile) : { v: 3, creators: {} }; // v1 counted logged events only, v2 had no dates: rescanned
   f.creators ??= {};
   S.file = f;
   S.path = p;
@@ -94,7 +96,7 @@ async function scanCreator(creator: string, mints: Set<string>, prev: CreatorSca
   const conn = readConn();
   const vault = creatorVaultPda(new PublicKey(creator));
   const vaultStr = vault.toBase58();
-  const st: CreatorScan = prev ? { ...prev, pending: [...prev.pending], perMint: { ...prev.perMint }, claims: [...prev.claims] } : { newest: null, pending: [], perMint: {}, claims: [], scannedAt: 0 };
+  const st: CreatorScan = prev ? { ...prev, pending: [...prev.pending], perMint: { ...prev.perMint }, claims: [...prev.claims], fees: [...(prev.fees ?? [])] } : { newest: null, pending: [], perMint: {}, claims: [], fees: [], scannedAt: 0 };
   // 1. new signatures, newest first, down to the last one already seen
   const fresh: string[] = [];
   let before: string | undefined;
@@ -134,6 +136,7 @@ async function scanCreator(creator: string, mints: Set<string>, prev: CreatorSca
       const mint = keys.find((k) => mints.has(k)) ?? "?";
       const cur = st.perMint[mint] ?? { lamports: "0", trades: 0 };
       st.perMint[mint] = { lamports: (BigInt(cur.lamports) + delta).toString(), trades: cur.trades + 1 };
+      st.fees.push({ at: (tx.blockTime ?? 0) * 1000, mint, lamports: delta.toString() });
     } else if (delta < BigInt(0) && !st.claims.some((c) => c.sig === sig)) {
       st.claims.push({ at: (tx.blockTime ?? 0) * 1000, sig, lamports: (-delta).toString() });
     }
@@ -185,4 +188,20 @@ export function creatorRevenueByMint(): { byMint: Map<string, bigint>; complete:
     for (const [mint, r] of Object.entries(st.perMint)) if (mint !== "?") byMint.set(mint, (byMint.get(mint) ?? BigInt(0)) + BigInt(r.lamports));
   }
   return { byMint, complete };
+}
+
+/** creator fees earned per UTC day and mint (lamports), from the dated fee list */
+export function creatorFeesByDay(): Map<string, Map<string, bigint>> {
+  const f = file();
+  const out = new Map<string, Map<string, bigint>>();
+  for (const creator of creatorMints().keys()) {
+    for (const e of f.creators[creator]?.fees ?? []) {
+      if (!e.at || e.mint === "?") continue;
+      const day = new Date(e.at).toISOString().slice(0, 10);
+      const m = out.get(day) ?? new Map<string, bigint>();
+      m.set(e.mint, (m.get(e.mint) ?? BigInt(0)) + BigInt(e.lamports));
+      out.set(day, m);
+    }
+  }
+  return out;
 }

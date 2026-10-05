@@ -7,7 +7,7 @@ import { feedCard, feedSolUsd } from "./feed";
 import { readCreatorFees } from "./fees";
 import { launchGet } from "./launch";
 import { refreshCreatorRevenue } from "./creatorRevenue";
-import { ledgerDays, ledgerEntries, ledgerMints, ledgerPnl, ledgerStatus, refreshLedger } from "./ledger";
+import { ledgerDay, ledgerDays, ledgerEntries, ledgerMints, ledgerPnl, ledgerStatus, refreshLedger } from "./ledger";
 import { positions } from "./positions";
 import { reconcileLaunches } from "./reconcile";
 import { solPrice } from "./price";
@@ -87,10 +87,11 @@ export async function dashboard(): Promise<DashboardResponse> {
 }
 
 /** Figures of the Share PnL card (see PnlShareResponse). Positions are best-effort: null when unreadable. */
-export async function pnlShare(period: PnlSharePeriod): Promise<PnlShareResponse> {
+export async function pnlShare(period: PnlSharePeriod, day?: string): Promise<PnlShareResponse> {
   const st = store();
-  const to = Date.now();
-  const since = SHARE_WINDOW_MS[period] ? to - SHARE_WINDOW_MS[period] : 0;
+  const dayStart = day ? Date.parse(`${day}T00:00:00Z`) : NaN;
+  const to = day ? dayStart + 86_400_000 - 1 : Date.now();
+  const since = day ? dayStart : SHARE_WINDOW_MS[period] ? to - SHARE_WINDOW_MS[period] : 0;
   const usd = feedSolUsd() ?? (await solPrice().catch(() => null))?.usd ?? null;
   await refreshLedger().catch(() => null);
   const pending = await pendingCreatorFees();
@@ -100,8 +101,14 @@ export async function pnlShare(period: PnlSharePeriod): Promise<PnlShareResponse
   const launches = entries.filter((e) => e.kind === "create").length;
   let best: { mint: string; net: bigint } | null = null;
   for (const m of mints.values()) if (!best || m.net > best.net) best = { mint: m.mint, net: m.net };
+  // a calendar day: the calendar's own figure (creator fees on the day they were earned) and that day's best coin
+  const dayB = day ? ledgerDay(day) : null;
+  if (dayB) {
+    const top = dayB.coins[0];
+    best = top && Number(top.netSol) > 0 ? { mint: top.mint, net: BigInt(0) } : null;
+  }
   let unrealisedSol: number | null = null;
-  if (st.sol.unlocked) {
+  if (st.sol.unlocked && !day) {
     try {
       const wallets = st.sol.wallets.map((x) => x.address);
       const mintList = [...new Set([...st.launches.map((l) => l.mint), ...st.tracked])];
@@ -110,12 +117,14 @@ export async function pnlShare(period: PnlSharePeriod): Promise<PnlShareResponse
       unrealisedSol = null;
     }
   }
-  const net = Number(w.netSol);
+  const netSol = dayB ? dayB.totalSol : w.netSol;
+  const net = Number(netSol);
   return {
     period,
+    ...(day ? { day } : {}),
     from: since || first,
     to,
-    netSol: w.netSol,
+    netSol,
     netUsd: usd === null ? null : f2(net * usd),
     usdAtCurrentPrice: true,
     grossSol: w.realisedSol,
@@ -124,11 +133,11 @@ export async function pnlShare(period: PnlSharePeriod): Promise<PnlShareResponse
     unrealisedSol: unrealisedSol === null ? null : f9(unrealisedSol),
     unrealisedUsd: unrealisedSol === null || usd === null ? null : f2(unrealisedSol * usd),
     trades: w.trades,
-    wins: w.wins,
-    losses: w.losses,
-    bestTradeSol: best ? mints.get(best.mint)!.netSol : null,
+    wins: dayB ? dayB.coins.filter((c) => Number(c.netSol) > 0).length : w.wins,
+    losses: dayB ? dayB.coins.filter((c) => Number(c.netSol) < 0).length : w.losses,
+    bestTradeSol: best ? (dayB ? dayB.coins[0].netSol : mints.get(best.mint)!.netSol) : null,
     bestTradeMint: best?.mint ?? null,
-    bestTradeSymbol: best ? (mints.get(best.mint)?.symbol ?? null) : null,
+    bestTradeSymbol: best ? (dayB ? dayB.coins[0].symbol : (mints.get(best.mint)?.symbol ?? null)) : null,
     volumeSol: f9(Number(w.buysSol) + Number(w.sellsSol)),
     buysSol: w.buysSol,
     sellsSol: w.sellsSol,

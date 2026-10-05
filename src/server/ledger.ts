@@ -15,11 +15,11 @@ import { PublicKey, type ParsedInstruction, type ParsedTransactionWithMeta, type
 import { JITO_BUNDLE_TIP_ACCOUNTS, JITO_TIP_ACCOUNTS } from "@/engine/solana/config.js";
 import { parseEventLogs } from "@/engine/solana/pump/events.js";
 import { PUMP_BUYBACK_FEE_RECIPIENTS, PUMP_FEE_RECIPIENTS, PUMP_PROGRAM, bondingCurvePda } from "@/engine/solana/pump/pdas.js";
-import type { FeeBreakdown, LedgerStatus, MintPnl, PnlWindow } from "@/lib/types";
+import type { DayBreakdown, FeeBreakdown, LedgerStatus, MintPnl, PnlWindow } from "@/lib/types";
 import { isPublicRpc, readConn } from "./engine";
 import { feedCard } from "./feed";
 import { metaCached } from "./metadata";
-import { creatorRevenueByMint } from "./creatorRevenue";
+import { creatorFeesByDay, creatorRevenueByMint } from "./creatorRevenue";
 import { readJson, store, writeJson } from "./store";
 
 export type LedgerTx = {
@@ -529,22 +529,64 @@ function symbolOf(mint: string): string | null {
   return st.launches.find((l) => l.mint === mint)?.symbol ?? metaCached(mint)?.symbol ?? feedCard(mint)?.symbol ?? null;
 }
 
-/** net SOL per UTC day over the whole ledger (calendar) */
+/** net SOL per UTC day (calendar): trades + launch costs of that day, creator fees on the day they were EARNED (a claim
+ *  only moves them from the creator vault to the wallet: its own tx fees count, the amount does not — counted already),
+ *  transfer fees. The same figure as the sum of that day's coin rows (ledgerDay) + its other costs. */
 export function ledgerDays(): { date: string; sol: number; trades: number }[] {
   const out = new Map<string, { date: string; sol: number; trades: number }>();
+  const day = (date: string) => out.get(date) ?? { date, sol: 0, trades: 0 };
   for (const e of ledgerEntries()) {
     if (!e.at) continue;
     const date = new Date(e.at).toISOString().slice(0, 10);
-    const d = out.get(date) ?? { date, sol: 0, trades: 0 };
+    const d = day(date);
     if (e.kind === "trade" || e.kind === "create" || e.kind === "claim" || e.kind === "other" || e.kind === "tip") {
-      d.sol += Number(e.delta) / 1e9;
+      d.sol += Number(e.delta - e.claim) / 1e9;
       if (e.grossBuy > BigInt(0) || e.grossSell > BigInt(0)) d.trades++;
     } else {
       d.sol -= Number(e.base + e.priority + e.tip) / 1e9;
     }
     out.set(date, d);
   }
+  for (const [date, perMint] of creatorFeesByDay()) {
+    const d = day(date);
+    for (const v of perMint.values()) d.sol += Number(v) / 1e9;
+    out.set(date, d);
+  }
   return [...out.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/** one UTC day of the calendar, coin by coin: what each token made that day (trades − launch costs + creator fees
+ *  earned that day) and the costs that belong to no coin (transfers, claim fees). total = the calendar's figure. */
+export function ledgerDay(date: string): DayBreakdown {
+  const rows = new Map<string, { mint: string; trading: bigint; costs: bigint; fees: bigint; net: bigint; trades: number }>();
+  const row = (mint: string) => rows.get(mint) ?? { mint, trading: BigInt(0), costs: BigInt(0), fees: BigInt(0), net: BigInt(0), trades: 0 };
+  let other = BigInt(0);
+  for (const e of ledgerEntries()) {
+    if (!e.at || new Date(e.at).toISOString().slice(0, 10) !== date) continue;
+    if ((e.kind === "trade" || e.kind === "create") && e.mint) {
+      const r = row(e.mint);
+      r.trading += e.grossSell - e.grossBuy - e.pumpFee;
+      r.costs += e.launchRent + e.base + e.priority + e.tip + e.rent;
+      r.net += e.delta;
+      r.trades += e.grossBuy > BigInt(0) || e.grossSell > BigInt(0) ? 1 : 0;
+      rows.set(e.mint, r);
+    } else if (e.kind === "trade" || e.kind === "create" || e.kind === "claim" || e.kind === "other" || e.kind === "tip") {
+      other += e.delta - e.claim;
+    } else {
+      other -= e.base + e.priority + e.tip;
+    }
+  }
+  for (const [mint, v] of creatorFeesByDay().get(date) ?? []) {
+    const r = row(mint);
+    r.fees += v;
+    r.net += v;
+    rows.set(mint, r);
+  }
+  const coins = [...rows.values()]
+    .map((r) => ({ mint: r.mint, symbol: symbolOf(r.mint), tradingSol: f9(r.trading), costsSol: f9(r.costs), creatorFeesSol: f9(r.fees), netSol: f9(r.net), trades: r.trades }))
+    .sort((a, b) => Number(b.netSol) - Number(a.netSol));
+  const total = [...rows.values()].reduce((s, r) => s + r.net, BigInt(0)) + other;
+  return { date, coins, otherSol: f9(other), totalSol: f9(total), complete: ledgerStatus().complete && creatorRevenueByMint().complete };
 }
 
 /** per-mint rows, all time, newest first */

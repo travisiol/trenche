@@ -1238,6 +1238,16 @@ export type PnlWindow = {
   estimated: boolean;
 };
 /** one mint of the ledger */
+/** GET /api/pnl/day?date=YYYY-MM-DD — one calendar day, coin by coin */
+export type DayBreakdown = {
+  date: string;
+  coins: { mint: string; symbol: string | null; tradingSol: string; costsSol: string; creatorFeesSol: string; netSol: string; trades: number }[];
+  /** costs of the day that belong to no coin: transfers, claim transaction fees */
+  otherSol: string;
+  /** = Σ coins + other = the calendar's figure for that day */
+  totalSol: string;
+  complete: boolean;
+};
 export type MintPnl = {
   mint: string;
   symbol: string | null;
@@ -1296,6 +1306,8 @@ export type PnlSharePeriod = "1d" | "7d" | "30d" | "all";
  *  Every number comes from the on-chain ledger of the vault wallets (src/server/ledger.ts) + the current positions. */
 export type PnlShareResponse = {
   period: PnlSharePeriod;
+  /** set when the card is one calendar day (YYYY-MM-DD, UTC): figures are that day's, as in the calendar */
+  day?: string;
   /** epoch ms of the window (`from` = the first ledger entry for "all", or `to` when the ledger is empty) */
   from: number;
   to: number;

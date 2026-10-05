@@ -1,9 +1,10 @@
 "use client";
-/** Block X "PNL Calendar": one month grid, per-day realised PnL from this app's activity journal (sells − buys). */
+/** Block X "PNL Calendar": one month grid, per-day net PnL from the on-chain ledger; a day opens its coins (DayPnlModal). */
 import { useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { ActivityItem } from "@/lib/types";
 import { cx } from "./ui";
+import { DayPnlModal } from "./DayPnlModal";
 
 export type DayPnl = { date: string; sol: number; trades: number };
 
@@ -28,6 +29,7 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 export function PnlCalendar({ days, solUsd, unit, className }: { days: Map<string, DayPnl>; solUsd: number | null; unit: "USD" | "SOL"; className?: string }) {
   const now = new Date();
   const [ym, setYm] = useState<[number, number]>([now.getUTCFullYear(), now.getUTCMonth()]);
+  const [openDay, setOpenDay] = useState<string | null>(null);
   const [y, m] = ym;
   const first = new Date(Date.UTC(y, m, 1));
   const daysInMonth = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
@@ -113,9 +115,10 @@ export function PnlCalendar({ days, solUsd, unit, className }: { days: Map<strin
               <button
                 key={i}
                 type="button"
-                className="relative flex min-h-0 cursor-default flex-col items-center justify-center rounded border border-transparent p-0.5 pt-3 transition-colors duration-200 sm:p-1"
+                onClick={() => setOpenDay(c.date)}
+                className="relative flex min-h-0 cursor-pointer flex-col hover:border-line-200 items-center justify-center rounded border border-transparent p-0.5 pt-3 transition-colors duration-200 sm:p-1"
                 style={{ backgroundColor: tone === "increase" ? "color-mix(in srgb, var(--increase) 22%, transparent)" : tone === "decrease" ? "color-mix(in srgb, var(--decrease) 22%, transparent)" : "color-mix(in srgb, var(--text-100) 6%, transparent)" }}
-                title={`${c.date}: ${fmt(c.sol)}${c.trades ? ` · ${c.trades} trades` : ""} — net SOL that moved this day: trades, launch costs and creator fees counted the day they were claimed`}
+                title={`${c.date}: ${fmt(c.sol)}${c.trades ? ` · ${c.trades} trades` : ""} — trades − launch costs + creator fees earned that day. Click for the coins of the day and to share it`}
               >
                 <div className="absolute left-0.5 top-0.5 text-[9px] font-medium leading-[12px] text-text-300 sm:left-1 sm:text-[10px] sm:leading-[14px]">{d + 1}</div>
                 <div className={cx("flex min-w-0 max-w-full items-center justify-center gap-0.5 overflow-hidden text-[10px] leading-3 tabular-nums sm:text-[14px] sm:leading-4", tone === "increase" ? "text-increase" : tone === "decrease" ? "text-decrease" : "text-text-200")}>
@@ -137,6 +140,7 @@ export function PnlCalendar({ days, solUsd, unit, className }: { days: Map<strin
           </div>
         </div>
       </div>
+      {openDay ? <DayPnlModal date={openDay} onClose={() => setOpenDay(null)} solUsd={solUsd} unit={unit} /> : null}
     </div>
   );
 }
