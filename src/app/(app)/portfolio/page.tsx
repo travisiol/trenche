@@ -62,6 +62,8 @@ export default function PortfolioPage() {
   const dash = useGet<DashboardResponse>(live.length ? "/api/dashboard" : null, 30000);
   const jobs = useGet<JobsListResponse>("/api/jobs", 4000);
   const curGroup = tab === "groups" ? (groups.find((g) => g.id === group) ?? groups[0] ?? null) : null;
+  /** where Create / Import put new wallets: the group shown on either tab (Groups tab, or a group sub-tab of Developer Wallets) */
+  const targetGroup = tab === "groups" ? curGroup?.id : groups.some((g) => g.id === filter) ? filter : undefined;
   const scopeWallets = curGroup ? live.filter((w) => w.group === curGroup.id) : live;
   const scopeLabel = curGroup ? curGroup.name : "Developer Wallets";
 
@@ -507,16 +509,18 @@ export default function PortfolioPage() {
         </div>
       </div>
 
+      {modal === "create" ? (
       <CreateModal
         key={`create-${modal === "create" ? "open" : "closed"}-${tab}-${curGroup?.id ?? ""}`}
-        open={modal === "create"}
+        open
         onClose={() => setModal(null)}
         groups={groups}
-        group={curGroup?.id}
+        group={targetGroup}
         fromGroupsTab={tab === "groups"}
         onCreated={({ group: g }) => {
-          if (g) {
-            setTab("groups");
+          if (g && tab === "wallets") {
+            setFilter(g);
+          } else if (g) {
             setGroup(g);
             setFilter("all");
           } else if (tab === "groups") {
@@ -526,7 +530,8 @@ export default function PortfolioPage() {
           setSelected(new Set());
         }}
       />
-      <ImportModal open={modal === "import"} onClose={() => setModal(null)} group={curGroup?.id} />
+      ) : null}
+      {modal === "import" ? <ImportModal open onClose={() => setModal(null)} group={targetGroup} /> : null}
       {modal === "export" ? <ExportModal open onClose={() => setModal(null)} {...base} selected={sel.length ? sel : live.map((w) => w.address)} /> : null}
       {exportOne ? <ExportModal open onClose={() => setExportOne(null)} {...base} selected={[exportOne]} /> : null}
       {modal === "move" ? <MoveModal open onClose={() => setModal(null)} {...base} /> : null}
