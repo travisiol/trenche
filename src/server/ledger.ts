@@ -111,6 +111,11 @@ function ledgerWallets(): string[] {
   return [...new Set([...base, ...EXTRA_WALLETS])];
 }
 
+/** every address the ledger ever covered (wallets removed from the vault since included) + the current ones */
+function historyWallets(): string[] {
+  return [...new Set([...Object.keys(file().wallets), ...ledgerWallets()])];
+}
+
 /* ------------------------------------------------------------- parsing */
 
 function compact(sig: string, tx: ParsedTransactionWithMeta): LedgerTx {
@@ -421,7 +426,9 @@ export type LedgerPnl = {
 let entriesCache: { key: string; entries: LedgerEntry[] } | null = null;
 export function ledgerEntries(): LedgerEntry[] {
   const f = file();
-  const vault = new Set(ledgerWallets());
+  // every wallet that was ever in the vault: the result is a record of what happened, it does not shrink when a
+  // wallet is removed from the vault later (its trades, costs and launches stay counted)
+  const vault = new Set(historyWallets());
   const key = `${Object.keys(f.txs).length}|${[...vault].sort().join(",")}`;
   if (entriesCache && entriesCache.key === key) return entriesCache.entries;
   const entries: LedgerEntry[] = [];
