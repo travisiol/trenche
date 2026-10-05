@@ -1,23 +1,26 @@
 "use client";
 /** Block X right-side drawers of the Portfolio summary panel (BEHAVIOUR.md §5.3): Deposit (portfolio-deposit.html),
- *  Disperse (portfolio-disperse.html: preset bar, total + Split equal, Variation slider, delay in minutes, destinations
- *  with editable rows, Deposit total, Create deposit wallet → fresh deposit wallet with address + QR, the job waits for
- *  the funds), Reverse Disperse (recipient Address / Select wallet, wallet list, delay, Start). Mixer: omitted (no provider). */
+ *  Disperse = Privacy funding (preset bar, From = any vault wallet or a new deposit wallet with QR, total + Variation
+ *  (Σ = total exactly, plan preview + re-roll), random delay range s/min, random order, destinations by group or tick,
+ *  relay hop ON), Reverse Disperse (recipient Address / Select wallet, wallets by group, random delay range, random
+ *  order, relay ON). Mixer / bridge: omitted on purpose (the relay hop only breaks the direct link). */
 import { useEffect, useMemo, useState } from "react";
 import QRCode from "qrcode";
 import { Check, Copy, Save, Shuffle, Trash2, X } from "lucide-react";
+import { RELAY_FEE_LAM, RENT_MIN_LAM, TX_FEE_MARGIN_LAM, fmtDuration, lamToSol, seededRng, solToLam, splitLamports } from "@/lib/privacy";
+import { WalletPicker } from "@/components/bx/WalletPicker";
+import { DEFAULT_DELAY, DelayRangeField, PlanSummary, PlanTable, PrivacyRelaySwitch, delayText, draftFromSec, readDelay, type DelayDraft } from "./PrivacyFields";
 import type { DispersePreset, DispersePresetsResponse, FundDisperseRequest, FundDisperseResponse, JobCreated, WalletGroup, WalletInfo } from "@/lib/types";
 import { failureMessage, isApiFailure, post, useGet } from "@/lib/api";
 import { refreshVaultDependents } from "@/lib/store";
 import { short, sol } from "@/lib/format";
 import { toast } from "@/components/ui";
-import { BxSwitch, cx } from "@/components/bx/ui";
+import { cx } from "@/components/bx/ui";
 import { BxJob } from "@/components/bx/Job";
 
 export type DrawerKind = "deposit" | "withdraw" | "disperse" | "reverse" | null;
 
 const field = "w-full border border-line-100 bg-bg-50 px-3 py-2 text-sm text-text-100 outline-none placeholder:text-text-300 focus:border-accent";
-const TX_FEE = 0.000005;
 
 export function Drawer({ title, width = 460, onClose, right, children }: { title: string; width?: number; onClose: () => void; right?: React.ReactNode; children: React.ReactNode }) {
   useEffect(() => {
@@ -102,58 +105,67 @@ export function DepositDrawer({ onClose, wallets, selected, active, balances }: 
 }
 
 /* ------------------------------------------------------------ Disperse */
-/** Equal split with ±variation, rows still summing to the total (two decimals of lamport precision kept at 6). */
-function splitAmounts(total: number, n: number, variationPct: number, seed: number): number[] {
-  if (!n || !(total > 0)) return Array(n).fill(0);
-  const avg = total / n;
-  if (!variationPct) return Array(n).fill(avg);
-  let s = seed || 1;
-  const rnd = () => {
-    s = (s * 1103515245 + 12345) & 0x7fffffff;
-    return s / 0x7fffffff;
-  };
-  const raw = Array.from({ length: n }, () => avg * (1 + ((rnd() * 2 - 1) * variationPct) / 100));
-  const sum = raw.reduce((a, b) => a + b, 0);
-  return raw.map((x) => (x / sum) * total);
-}
-const fmt6 = (n: number) => (Math.round(n * 1e6) / 1e6).toString();
+const DEPOSIT = "__deposit__";
+const ZERO = BigInt(0);
+const RENT_MIN = BigInt(RENT_MIN_LAM);
+const solL = (l: bigint) => sol(Number(l) / 1e9, 6);
+const lamOfBalance = (v: string | number | null | undefined): bigint => (v === null || v === undefined ? ZERO : (solToLam(String(v)) ?? ZERO));
 
-export function DisperseDrawer({ onClose, wallets, groups, scopeLabel, scopeGroup, onHistory }: { onClose: () => void; wallets: WalletInfo[]; groups: WalletGroup[]; scopeLabel: string; scopeGroup: string | null; onHistory: () => void }) {
+export function DisperseDrawer({ onClose, wallets, groups, balances, selected, active, scopeLabel, scopeGroup, onHistory }: { onClose: () => void; wallets: WalletInfo[]; groups: WalletGroup[]; balances: Record<string, string | null> | null; selected: string[]; active: string | null; scopeLabel: string; scopeGroup: string | null; onHistory: () => void }) {
   const presetsQ = useGet<DispersePresetsResponse>("/api/fund/disperse/presets", 0);
   const presetsMissing = isApiFailure(presetsQ.error) && (presetsQ.error.kind === "missing" || presetsQ.error.status === 404);
   const presets = presetsQ.data?.presets ?? [];
   const [preset, setPreset] = useState("");
   const [naming, setNaming] = useState<string | null>(null);
+  const [fromPick, setFromPick] = useState<string | null>(null);
   const [total, setTotal] = useState("");
-  const [variation, setVariation] = useState(0);
+  const [variation, setVariation] = useState(30);
   const [seed, setSeed] = useState(1);
-  const [delay, setDelay] = useState("0");
-  const [viaRelay, setViaRelay] = useState(false);
-  const [edited, setEdited] = useState<Record<string, string>>({});
-  const [targetGroup, setTargetGroup] = useState<string>(scopeGroup ?? "");
-  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [delay, setDelay] = useState<DelayDraft>(DEFAULT_DELAY);
+  const [viaRelay, setViaRelay] = useState(true);
+  const [destPick, setDestPick] = useState<string[]>(() => (scopeGroup ? wallets.filter((w) => !w.archived && w.group === scopeGroup).map((w) => w.address) : []));
   const [result, setResult] = useState<FundDisperseResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const dests = useMemo(() => wallets.filter((w) => !w.archived && (targetGroup ? w.group === targetGroup : true) && !excluded.has(w.address)), [wallets, targetGroup, excluded]);
-  const totalNum = Number(total) || 0;
-  const auto = useMemo(() => splitAmounts(totalNum, dests.length, variation, seed), [totalNum, dests.length, variation, seed]);
-  const amountOf = (a: string, i: number) => (edited[a] !== undefined ? edited[a] : fmt6(auto[i] ?? 0));
-  const depositTotal = dests.reduce((n, w, i) => n + (Number(amountOf(w.address, i)) || 0), 0);
-  const fees = dests.length * (TX_FEE + (viaRelay ? 0.00001 : 0));
-  const canStart = dests.length > 0 && depositTotal > 0;
+
+  const balLam = (a: string) => lamOfBalance(balances?.[a] ?? wallets.find((w) => w.address === a)?.sol);
+  // From: what the user picked, else the selected/active wallet with a balance, else the first funded wallet, else a deposit wallet
+  const autoFrom = [...selected, ...(active ? [active] : []), ...wallets.map((w) => w.address)].find((a) => wallets.some((w) => w.address === a) && balLam(a) > ZERO) ?? DEPOSIT;
+  const from = fromPick ?? autoFrom;
+  const isDeposit = from === DEPOSIT;
+  const dests = destPick.filter((a) => a !== from && wallets.some((w) => w.address === a && !w.archived));
+  const n = dests.length;
+  const totalLam = solToLam(total) ?? ZERO;
+  const amounts = useMemo(() => splitLamports(totalLam, n, variation, seededRng(seed)), [totalLam, n, variation, seed]);
+  const sumLam = amounts.reduce((s, x) => s + x, ZERO);
+  const d = readDelay(delay);
+  const perSend = BigInt((isDeposit ? 5_000 : TX_FEE_MARGIN_LAM) + (viaRelay ? RELAY_FEE_LAM : 0));
+  const feesLam = BigInt(n) * perSend;
+  const needLam = totalLam + feesLam;
+  const fromBal = isDeposit ? null : balLam(from);
+  const etaMs = n ? ((d.range.minMs + d.range.maxMs) / 2) * (n - 1) + n * (viaRelay ? 4000 : 2000) : 0;
+  const labelOf = (a: string) => wallets.find((w) => w.address === a)?.label || short(a);
+  const low = viaRelay ? dests.findIndex((_, i) => amounts[i] < RENT_MIN) : -1;
+  const problem =
+    d.error ??
+    (low >= 0 && totalLam > ZERO ? `Through a relay each payment must be ≥ ${lamToSol(RENT_MIN)} SOL — ${labelOf(dests[low])} would get ${lamToSol(amounts[low])} SOL. Raise the total or lower the variation.` : null) ??
+    (fromBal !== null && totalLam > ZERO && fromBal < needLam ? `Short by ${solL(needLam - fromBal)} SOL.` : null) ??
+    (fromBal !== null && totalLam > ZERO && fromBal - needLam < RENT_MIN ? `Would leave ~${solL(fromBal - needLam)} SOL on the source — under the ${lamToSol(RENT_MIN)} SOL rent minimum the network requires. Use Max or lower the total.` : null);
+  const maxLam = fromBal !== null && n ? fromBal - feesLam - RENT_MIN : ZERO;
+  const canStart = n > 0 && totalLam > ZERO && !problem;
+  const line = `Total ${totalLam > ZERO ? solL(totalLam) : "0"} SOL → ${n} wallet${n !== 1 ? "s" : ""} · random ±${variation} % · delays ${delayText(delay)} · random order · relay ${viaRelay ? "ON" : "OFF"} · fees ~${solL(feesLam)} SOL · ETA ~${fmtDuration(etaMs)}`;
+  const reroll = () => setSeed((s) => s + 1);
 
   const applyPreset = (p: DispersePreset) => {
     setPreset(p.id);
     setTotal(p.totalSol);
     setVariation(p.variationPct);
-    setDelay(String(p.delayMinutes));
+    setDelay(p.delayMaxSec !== undefined ? draftFromSec(p.delayMinSec ?? 0, p.delayMaxSec) : { min: String(p.delayMinutes), max: String(p.delayMinutes), unit: "min" });
     setViaRelay(p.viaRelay);
-    setEdited({});
   };
   const savePreset = async (name: string, id?: string) => {
     try {
-      const r = await post<DispersePresetsResponse>("/api/fund/disperse/presets", { preset: { id, name, totalSol: total || "0", variationPct: variation, delayMinutes: Number(delay) || 0, viaRelay } });
+      const r = await post<DispersePresetsResponse>("/api/fund/disperse/presets", { preset: { id, name, totalSol: total || "0", variationPct: variation, delayMinutes: d.minSec / 60, delayMinSec: d.minSec, delayMaxSec: d.maxSec, viaRelay } });
       await presetsQ.refresh();
       // Block X keeps the saved preset selected (Update / Delete act on it right away)
       const saved = id ? r.presets.find((p) => p.id === id) : [...r.presets].reverse().find((p) => p.name === name);
@@ -179,13 +191,13 @@ export function DisperseDrawer({ onClose, wallets, groups, scopeLabel, scopeGrou
     setBusy(true);
     setErr(null);
     try {
-      const amounts: Record<string, string> = {};
-      dests.forEach((w, i) => (amounts[w.address] = amountOf(w.address, i)));
-      const body: FundDisperseRequest = { createDeposit: true, to: dests.map((w) => w.address), totalSol: fmt6(depositTotal), amounts, variationPct: variation, delayMinutes: Number(delay) || 0, viaRelay: viaRelay || undefined, presetName: presets.find((p) => p.id === preset)?.name };
+      const amountMap: Record<string, string> = {};
+      dests.forEach((a, i) => (amountMap[a] = lamToSol(amounts[i])));
+      const body: FundDisperseRequest = { ...(isDeposit ? { createDeposit: true } : { from }), to: dests, totalSol: lamToSol(totalLam), amounts: amountMap, variationPct: variation, delayMinSec: d.minSec, delayMaxSec: d.maxSec, shuffle: true, viaRelay, presetName: presets.find((p) => p.id === preset)?.name };
       const r = await post<FundDisperseResponse>("/api/fund/disperse", body);
       setResult(r);
       refreshVaultDependents();
-      toast(`Deposit wallet ${short(r.from.address, 6, 6)} created — fund it with ${r.needSol} SOL`, "ok");
+      toast(r.from.isDeposit ? `Deposit wallet ${short(r.from.address, 6, 6)} created — fund it with ${r.needSol} SOL` : `Disperse started from ${r.from.label}`, "ok");
     } catch (e) {
       setErr(failureMessage(e));
     } finally {
@@ -237,114 +249,95 @@ export function DisperseDrawer({ onClose, wallets, groups, scopeLabel, scopeGrou
           </div>
         </div>
         <div>
-          <label className="mb-1 block text-xs text-text-300">Total to split (SOL)</label>
+          <label className="mb-1 block text-xs text-text-300">From</label>
+          <select value={from} onChange={(e) => setFromPick(e.target.value)} disabled={!!result} className="h-9 w-full rounded-md border border-line-100 bg-bg-50 px-2 text-xs text-text-100 outline-none focus:border-accent" aria-label="Funding wallet">
+            <option value={DEPOSIT}>New deposit wallet (fund it by QR, the job waits)</option>
+            {wallets
+              .filter((w) => !w.archived)
+              .map((w) => (
+                <option key={w.address} value={w.address}>
+                  {w.label || short(w.address)} — {sol(balances?.[w.address] ?? w.sol)} SOL
+                </option>
+              ))}
+          </select>
+        </div>
+        <div>
+          <div className="mb-1 flex items-center justify-between">
+            <label className="text-xs text-text-300">Total to split (SOL)</label>
+            {!isDeposit && n ? (
+              <button type="button" disabled={maxLam <= ZERO} onClick={() => setTotal(lamToSol(maxLam - (maxLam % BigInt(1000))))} className="text-[11px] text-accent hover:underline disabled:opacity-40" title="Whole balance minus fees, keeping the rent minimum on the source">
+                Max {maxLam > ZERO ? solL(maxLam) : "0"}
+              </button>
+            ) : null}
+          </div>
           <div className="flex gap-2">
-            <input value={total} onChange={(e) => { setTotal(e.target.value.replace(/[^0-9.]/g, "")); setEdited({}); }} placeholder="0.0" inputMode="decimal" className={field} />
-            <button type="button" disabled={!(totalNum > 0) || !dests.length} onClick={() => { setVariation(0); setEdited({}); }} className="shrink-0 rounded border border-line-100 bg-bg-50 px-3 text-xs font-medium text-text-100 hover:border-accent/35 hover:text-accent disabled:opacity-45">
+            <input value={total} onChange={(e) => setTotal(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="0.0" inputMode="decimal" className={field} />
+            <button type="button" disabled={!(totalLam > ZERO) || !n} onClick={() => setVariation(0)} className="shrink-0 rounded border border-line-100 bg-bg-50 px-3 text-xs font-medium text-text-100 hover:border-accent/35 hover:text-accent disabled:opacity-45">
               Split equal
             </button>
           </div>
           <div className="mt-3">
             <div className="mb-1 flex items-center justify-between gap-2">
               <label htmlFor="disperse-variation" className="text-xs text-text-300">
-                Variation
+                Random variation
               </label>
               <div className="flex items-center gap-1.5">
-                <span className="text-xs tabular-nums text-text-100">{variation}%</span>
-                <button type="button" disabled={!(totalNum > 0) || !variation} onClick={() => { setSeed((s) => s + 1); setEdited({}); }} className="flex h-6 w-6 items-center justify-center rounded border border-line-100 bg-bg-50 text-text-300 hover:border-accent/35 hover:text-accent disabled:opacity-40" aria-label="Shuffle variation" title="Shuffle amounts">
+                <span className="text-xs tabular-nums text-text-100">±{variation}%</span>
+                <button type="button" disabled={!(totalLam > ZERO) || !variation} onClick={reroll} className="flex h-6 w-6 items-center justify-center rounded border border-line-100 bg-bg-50 text-text-300 hover:border-accent/35 hover:text-accent disabled:opacity-40" aria-label="Re-roll amounts" title="Re-roll the random amounts">
                   <Shuffle className="h-3 w-3" />
                 </button>
               </div>
             </div>
-            <input id="disperse-variation" min={0} max={100} step={1} disabled={!(totalNum > 0)} className="consolidate-slider w-full" aria-valuemin={0} aria-valuemax={100} aria-valuenow={variation} aria-label="Variation" type="range" value={variation} onChange={(e) => { setVariation(Number(e.target.value)); setEdited({}); }} />
+            <input id="disperse-variation" min={0} max={100} step={1} className="consolidate-slider w-full" aria-valuemin={0} aria-valuemax={100} aria-valuenow={variation} aria-label="Variation" type="range" value={variation} onChange={(e) => setVariation(Number(e.target.value))} />
             <div className="mt-1 flex justify-between text-[11px] text-text-300">
               {[0, 25, 50, 75, 100].map((v) => (
-                <button key={v} type="button" disabled={!(totalNum > 0)} onClick={() => { setVariation(v); setEdited({}); }} className={cx("transition-colors hover:text-text-100 disabled:cursor-not-allowed disabled:opacity-40", variation === v ? "text-text-100" : "")}>
+                <button key={v} type="button" onClick={() => setVariation(v)} className={cx("transition-colors hover:text-text-100", variation === v ? "text-text-100" : "")}>
                   {v}%
                 </button>
               ))}
             </div>
-            <p className="mt-1 text-[11px] text-text-300">0% is an equal split. Drag to vary amounts across wallets while still summing to the total. You can still edit any row.</p>
+            <p className="mt-1 text-[11px] text-text-300">Each amount is drawn ±{variation}% around the equal share, then rescaled so they add up to the total exactly.</p>
           </div>
         </div>
+        <DelayRangeField value={delay} onChange={setDelay} />
         <div>
-          <label className="mb-1 block text-xs text-text-300">Delay between wallets (minutes)</label>
-          <input value={delay} onChange={(e) => setDelay(e.target.value.replace(/[^0-9]/g, ""))} inputMode="numeric" className={field} />
+          <label className="mb-1 block text-xs text-text-300">Destinations — a group in one click, or tick wallets</label>
+          <WalletPicker wallets={wallets} groups={groups} value={dests} onChange={setDestPick} balances={balances} exclude={isDeposit ? [] : [from]} />
         </div>
-        {groups.length ? (
+        <PrivacyRelaySwitch checked={viaRelay} onChange={setViaRelay} />
+        {n && totalLam > ZERO ? (
           <div>
-            <label className="mb-1 block text-xs text-text-300">Destinations</label>
-            <select value={targetGroup} onChange={(e) => { setTargetGroup(e.target.value); setExcluded(new Set()); setEdited({}); }} className="h-9 w-full rounded-md border border-line-100 bg-bg-50 px-2 text-xs text-text-100 outline-none focus:border-accent">
-              <option value="">Developer Wallets (all)</option>
-              {groups.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
+            <div className="mb-1 flex items-center justify-between text-[11px] text-text-300">
+              <span>Plan preview — order and delays are drawn at start</span>
+              <button type="button" onClick={reroll} disabled={!variation} className="inline-flex items-center gap-1 text-accent hover:underline disabled:opacity-40">
+                <Shuffle className="h-3 w-3" /> Re-roll
+              </button>
+            </div>
+            <PlanTable rows={dests.map((a, i) => ({ label: labelOf(a), sol: lamToSol(amounts[i]) }))} />
+            <p className={cx("mt-1 text-right font-mono text-[11px]", sumLam === totalLam ? "text-green-100" : "text-decrease")}>
+              Σ {lamToSol(sumLam)} SOL {sumLam === totalLam ? "= total" : "≠ total"}
+            </p>
           </div>
         ) : null}
-        <label className="flex items-center justify-between gap-3 text-xs">
-          <span>
-            <span className="text-text-100">Relay hop</span>
-            <span className="block text-[11px] text-text-300">One fresh relay wallet per destination, keys never stored, two signatures each.</span>
-          </span>
-          <BxSwitch checked={viaRelay} onChange={setViaRelay} />
-        </label>
-        <div className="rounded-[10px] border border-line-100">
-          <div className="flex items-center justify-between border-b border-line-50 px-3 py-2">
-            <span className="text-xs text-text-300">
-              Destinations ({dests.length}/{wallets.filter((w) => !w.archived && (targetGroup ? w.group === targetGroup : true)).length})
-            </span>
-            <button type="button" onClick={() => { setExcluded(new Set(wallets.map((w) => w.address))); setEdited({}); }} className="text-xs text-accent hover:underline">
-              Clear
-            </button>
-          </div>
-          <div className="max-h-64 overflow-y-auto">
-            {!dests.length ? (
-              <p className="px-3 py-4 text-sm text-text-300">
-                No wallets in this section.
-                {excluded.size ? (
-                  <button type="button" onClick={() => setExcluded(new Set())} className="ml-2 text-accent hover:underline">
-                    Restore
-                  </button>
-                ) : null}
-              </p>
-            ) : (
-              dests.map((w, i) => (
-                <div key={w.address} className="flex items-center gap-2 border-b border-line-50 px-3 py-1.5 text-xs last:border-0">
-                  <span className="min-w-0 flex-1 truncate text-text-100">{w.label || short(w.address)}</span>
-                  <span className="font-mono text-[11px] text-text-300">{short(w.address, 4, 4)}</span>
-                  <span className="relative">
-                    <input inputMode="decimal" value={amountOf(w.address, i)} onChange={(e) => setEdited((m) => ({ ...m, [w.address]: e.target.value.replace(/[^0-9.]/g, "") }))} className="h-7 w-24 rounded-md border border-line-100 bg-input-100 px-2 pr-9 text-right font-mono text-[11px] text-text-100 outline-none focus:border-accent" aria-label={`Amount for ${w.label}`} />
-                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-text-300">SOL</span>
-                  </span>
-                  <button type="button" onClick={() => setExcluded((s) => new Set([...s, w.address]))} className="flex h-5 w-5 items-center justify-center rounded text-text-300 hover:text-decrease" aria-label={`Remove ${w.label}`}>
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
-          <div className="flex items-center justify-between border-t border-line-50 px-3 py-2 text-xs">
-            <span className="text-text-300">Deposit total</span>
-            <span className="font-medium text-text-100">
-              {sol(depositTotal)} SOL <span className="text-text-300">+ ~{sol(fees, 6)} fees</span>
-            </span>
-          </div>
-        </div>
+        <PlanSummary line={line} available={isDeposit ? undefined : fromBal === null ? null : lamToSol(fromBal)} needed={lamToSol(needLam)} problem={totalLam > ZERO || d.error ? problem : null} />
         {err ? <p className="rounded-md border border-decrease/30 bg-decrease/10 px-3 py-2 text-xs text-decrease">{err}</p> : null}
         {result ? (
           <div className="flex flex-col gap-3">
-            <AddressBox address={result.from.address} label={`${result.from.label} — send ${result.needSol} SOL here`} />
-            <p className="text-[11px] text-text-300">The job waits until this wallet holds {result.needSol} SOL, then sends {result.plan.length} transfer{result.plan.length !== 1 ? "s" : ""}{Number(delay) ? ` ${delay} min apart` : ""}. Stop it from the Activity tab.</p>
+            {result.from.isDeposit ? <AddressBox address={result.from.address} label={`${result.from.label} — send exactly ${result.needSol} SOL here`} /> : null}
+            <p className="text-[11px] text-text-300">
+              {result.from.isDeposit ? `The job waits until this wallet holds ${result.needSol} SOL, then` : `${result.from.label}`} sends {result.plan.length} payment{result.plan.length !== 1 ? "s" : ""} in this random order{viaRelay ? ", each through its own relay" : ""}. Stop it any time below or from the Activity tab.
+            </p>
+            <PlanTable title={`Drawn plan — Σ ${result.totalSol} SOL · ETA ~${fmtDuration(result.etaMs ?? 0)}`} rows={result.plan.map((p) => ({ label: p.label, sol: p.sol, delayMs: p.delayMs }))} />
             <div className="rounded-md border border-line-100 bg-bg-50 p-3">
               <BxJob jobId={result.jobId} />
             </div>
+            <button type="button" onClick={() => setResult(null)} className="h-8 rounded border border-line-100 bg-bg-50 text-xs text-text-200 hover:text-text-100">
+              New disperse
+            </button>
           </div>
         ) : (
           <button type="button" disabled={!canStart || busy} onClick={start} className="h-9 rounded border border-accent/40 bg-accent/15 text-sm font-medium text-accent hover:bg-accent/25 disabled:opacity-50">
-            {busy ? "Creating…" : "Create deposit wallet"}
+            {busy ? "Starting…" : isDeposit ? "Create deposit wallet" : `Start private disperse · ${n} wallet${n !== 1 ? "s" : ""}`}
           </button>
         )}
       </div>
@@ -357,26 +350,33 @@ export function ReverseDisperseDrawer({ onClose, wallets, groups, scopeLabel, sc
   const [mode, setMode] = useState<"address" | "wallet">("address");
   const [address, setAddress] = useState("");
   const [toWallet, setToWallet] = useState("");
-  const [sel, setSel] = useState<Set<string>>(new Set());
-  const [delay, setDelay] = useState("0");
+  const [sel, setSel] = useState<string[]>(() => (scopeGroup ? wallets.filter((w) => !w.archived && w.group === scopeGroup).map((w) => w.address) : []));
+  const [delay, setDelay] = useState<DelayDraft>(DEFAULT_DELAY);
   const [viaRelay, setViaRelay] = useState(true);
   const [jobId, setJobId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [group, setGroup] = useState<string>(scopeGroup ?? "");
-  const pool = wallets.filter((w) => !w.archived && (group ? w.group === group : true));
   const balOf = (a: string) => Number(balances?.[a] ?? wallets.find((w) => w.address === a)?.sol ?? 0) || 0;
-  const picked = pool.filter((w) => sel.has(w.address));
-  const totalSel = picked.reduce((n, w) => n + balOf(w.address), 0);
   const to = mode === "address" ? address.trim() : toWallet;
-  const valid = picked.length > 0 && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(to);
+  const picked = sel.filter((a) => a !== to && wallets.some((w) => w.address === a && !w.archived));
+  const n = picked.length;
+  const totalSel = picked.reduce((s, a) => s + balOf(a), 0);
+  const d = readDelay(delay);
+  const fees = n * (0.000005 + (viaRelay ? 0.000005 : 0));
+  const etaMs = n ? ((d.range.minMs + d.range.maxMs) / 2) * (n - 1) + n * (viaRelay ? 4000 : 2000) : 0;
+  const relayMin = (RENT_MIN_LAM + 10_000) / 1e9;
+  const tooSmall = viaRelay ? picked.filter((a) => balOf(a) > 0 && balOf(a) < relayMin).length : 0;
+  const validTo = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(to);
+  const toLabel = mode === "wallet" ? wallets.find((w) => w.address === to)?.label || (to ? short(to) : "—") : to ? short(to) : "—";
+  const valid = n > 0 && validTo && !d.error;
+  const line = `Sweep ${n} wallet${n !== 1 ? "s" : ""} (${sol(totalSel)} SOL) → ${toLabel} · delays ${delayText(delay)} · random order · relay ${viaRelay ? "ON" : "OFF"} · fees ~${sol(fees, 6)} SOL · ETA ~${fmtDuration(etaMs)}`;
   const start = async () => {
     setBusy(true);
     setErr(null);
     try {
-      const r = await post<JobCreated>("/api/fund/consolidate", { sources: picked.map((w) => w.address), to, viaRelay: viaRelay || undefined, delayMinutes: Number(delay) || 0, kind: "reverse" });
+      const r = await post<JobCreated>("/api/fund/consolidate", { sources: picked, to, viaRelay, delayMinSec: d.minSec, delayMaxSec: d.maxSec, shuffle: true, kind: "reverse" });
       setJobId(r.jobId);
-      toast(`Reverse disperse started on ${picked.length} wallet${picked.length !== 1 ? "s" : ""}`, "info");
+      toast(`Reverse disperse started on ${n} wallet${n !== 1 ? "s" : ""}`, "info");
     } catch (e) {
       setErr(failureMessage(e));
     } finally {
@@ -412,60 +412,19 @@ export function ReverseDisperseDrawer({ onClose, wallets, groups, scopeLabel, sc
             </select>
           )}
         </div>
-        {groups.length ? (
-          <select value={group} onChange={(e) => { setGroup(e.target.value); setSel(new Set()); }} className="h-9 w-full rounded-md border border-line-100 bg-bg-50 px-2 text-xs text-text-100 outline-none focus:border-accent" aria-label="Wallets to sweep">
-            <option value="">Developer Wallets (all)</option>
-            {groups.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.name}
-              </option>
-            ))}
-          </select>
-        ) : null}
-        <div className="rounded-[10px] border border-line-100">
-          <div className="flex items-center justify-between border-b border-line-50 px-3 py-2 text-xs">
-            <span className="text-text-300">
-              {picked.length}/{pool.length} selected · {sol(totalSel)} SOL
-            </span>
-            <span className="flex gap-2">
-              <button type="button" onClick={() => setSel(new Set(pool.filter((w) => balOf(w.address) > 0).map((w) => w.address)))} className="text-accent hover:underline">
-                With balance
-              </button>
-              <button type="button" onClick={() => setSel(new Set())} className="text-accent hover:underline">
-                Clear
-              </button>
-            </span>
+        <div>
+          <div className="mb-1 flex items-center justify-between">
+            <label className="text-xs text-text-300">Wallets to sweep — a group in one click, or tick wallets</label>
+            <button type="button" onClick={() => setSel(wallets.filter((w) => !w.archived && w.address !== to && balOf(w.address) > 0).map((w) => w.address))} className="text-[11px] text-accent hover:underline">
+              With balance
+            </button>
           </div>
-          <div className="max-h-64 overflow-y-auto">
-            {!pool.length ? <p className="px-3 py-4 text-sm text-text-300">No wallets in this section.</p> : null}
-            {pool.map((w) => {
-              const on = sel.has(w.address);
-              const disabled = w.address === to;
-              return (
-                <label key={w.address} className={cx("flex cursor-pointer items-center gap-2 border-b border-line-50 px-3 py-1.5 text-xs last:border-0", on ? "bg-accent-muted" : "hover:bg-hover-100", disabled ? "opacity-40" : "")}>
-                  <input type="checkbox" className="pi-checkbox" checked={on} disabled={disabled} onChange={() => setSel((s) => { const n = new Set(s); if (n.has(w.address)) n.delete(w.address); else n.add(w.address); return n; })} />
-                  <span className="min-w-0 flex-1 truncate text-text-100">{w.label || short(w.address)}</span>
-                  <span className="font-mono text-[11px] text-text-300">{short(w.address, 4, 4)}</span>
-                  <span className="font-mono text-[11px] text-text-200">{sol(balOf(w.address))} SOL</span>
-                </label>
-              );
-            })}
-          </div>
+          <WalletPicker wallets={wallets} groups={groups} value={picked} onChange={setSel} balances={balances} exclude={to ? [to] : []} />
         </div>
-        <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 text-xs text-text-300">
-            Delay (min)
-            <input value={delay} onChange={(e) => setDelay(e.target.value.replace(/[^0-9]/g, ""))} inputMode="numeric" className={cx(field, "w-20 py-1.5")} />
-          </label>
-          <span className="text-[11px] text-text-300">between wallets (0 = ASAP)</span>
-        </div>
-        <label className="flex items-center justify-between gap-3 text-xs">
-          <span>
-            <span className="text-text-100">Relay hop</span>
-            <span className="block text-[11px] text-text-300">Each wallet empties itself through its own fresh relay wallet.</span>
-          </span>
-          <BxSwitch checked={viaRelay} onChange={setViaRelay} />
-        </label>
+        <DelayRangeField value={delay} onChange={setDelay} label="Random delay before each wallet" />
+        <PrivacyRelaySwitch checked={viaRelay} onChange={setViaRelay} what="wallet" />
+        <PlanSummary line={line} problem={d.error ?? (tooSmall ? `${tooSmall} wallet${tooSmall !== 1 ? "s hold" : " holds"} less than ${relayMin} SOL — too little for a relay hop; skipped.` : null)} />
+        <p className="text-[11px] text-text-300">Every wallet sends its whole balance and ends at 0; the order is drawn at start.</p>
         {err ? <p className="rounded-md border border-decrease/30 bg-decrease/10 px-3 py-2 text-xs text-decrease">{err}</p> : null}
         {jobId ? (
           <div className="rounded-md border border-line-100 bg-bg-50 p-3">

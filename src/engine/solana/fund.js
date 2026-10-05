@@ -172,7 +172,9 @@ export async function sweepSol(opts) {
   const { conn, sendConn, wallets, to, keypairOf } = opts,
     step = typeof opts.onStep == "function" ? opts.onStep : () => {},
     dest = to instanceof PublicKey ? to : new PublicKey(to),
-    FEE = 10000n, // frais + petite marge (le wallet expéditeur paie les frais)
+    // frais EXACTS d'une signature sans compute-price : le wallet finit à 0. Une marge laisserait une poussière
+    // < minimum de rent, que le runtime refuse (compte rent-exempt → rent-paying = InsufficientFundsForRent).
+    FEE = 5000n,
     results = [];
   let sent = 0,
     idx = 0;

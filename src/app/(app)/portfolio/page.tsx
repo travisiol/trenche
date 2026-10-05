@@ -4,7 +4,7 @@
  *  funding; Consolidate / Distribute / Transfer turn the summary into the drag-and-drop transfer view.
  *  Omitted: Marketplace, Mixer, Unwrap, Convert, Swap Stocks (no provider on this server). */
 import { useMemo, useState } from "react";
-import { Archive, ArrowDownToLine, ArrowLeftRight, ArrowUpDown, ArrowUpFromLine, Calendar, Check, Copy, Droplet, FolderKanban, FolderPlus, KeyRound, Pencil, Plus, Search, Share2, Shuffle, Trash2, Undo2, Upload, Wallet, X } from "lucide-react";
+import { Archive, EyeOff, ArrowDownToLine, ArrowLeftRight, ArrowUpDown, ArrowUpFromLine, Calendar, Check, Copy, Droplet, FolderKanban, FolderPlus, KeyRound, Pencil, Plus, Search, Share2, Shuffle, Trash2, Undo2, Upload, Wallet, X } from "lucide-react";
 import type { ActivityResponse, DashboardResponse, JobsListResponse, PositionsResponse, WalletGroup, WalletInfo } from "@/lib/types";
 import { del, failureMessage, post, useGet } from "@/lib/api";
 import { useBalances, useSettings, useSolPrice, useVault, useWallets, walletsRes } from "@/lib/store";
@@ -17,6 +17,7 @@ import { PnlFees } from "@/components/bx/PnlFees";
 import { SharePnlButton } from "@/components/bx/SharePnl";
 import { AirdropModal, CreateModal, ExportModal, ImportModal, MoveModal, SendModal, type ModalKind } from "@/components/portfolio/BxModals";
 import { DepositDrawer, DisperseDrawer, ReverseDisperseDrawer, type DrawerKind } from "@/components/portfolio/Drawers";
+import { PrivateSendModal } from "@/components/portfolio/PrivateSend";
 import { DRAG_MIME, TransferView, type TransferKind } from "@/components/portfolio/TransferView";
 
 type Win = "1D" | "7D" | "30D" | "All";
@@ -478,7 +479,11 @@ export default function PortfolioPage() {
                     <div className="grid grid-cols-2 gap-2">
                       <Action icon={<Share2 className="h-4 w-4 shrink-0" />} label="Disperse" onClick={() => setDrawer("disperse")} disabled={!canSign} />
                       <Action icon={<Undo2 className="h-4 w-4 shrink-0" />} label="Reverse Disperse" onClick={() => setDrawer("reverse")} disabled={!canSign} />
+                      <div className="col-span-2">
+                        <Action icon={<EyeOff className="h-4 w-4 shrink-0" />} label="Private send" onClick={() => (live.length ? setModal("private") : toast("Create or import a wallet first.", "info"))} disabled={!canSign} />
+                      </div>
                     </div>
+                    <p className="mt-2 text-[11px] leading-snug text-text-300">Random amounts, random delays, random order, one fresh relay wallet per payment. Relays break the direct link only — they stay visible on-chain.</p>
                   </div>
                   {calendar ? (
                     <div className="mt-3.5 flex h-[420px] flex-col border-t border-line-50 pt-2">
@@ -518,7 +523,8 @@ export default function PortfolioPage() {
       {modal === "withdraw" ? <SendModal kind="withdraw" open onClose={() => setModal(null)} {...base} /> : null}
       {modal === "airdrop" ? <AirdropModal open onClose={() => setModal(null)} {...base} /> : null}
       {drawer === "deposit" ? <DepositDrawer onClose={() => setDrawer(null)} wallets={scopeWallets} selected={sel} active={active} balances={bal} /> : null}
-      {drawer === "disperse" ? <DisperseDrawer onClose={() => setDrawer(null)} wallets={live} groups={groups} scopeLabel={scopeLabel} scopeGroup={curGroup?.id ?? null} onHistory={() => { setDrawer(null); setActivityTab("disperse"); }} /> : null}
+      {modal === "private" ? <PrivateSendModal onClose={() => setModal(null)} wallets={live} balances={bal} selected={sel} active={active} /> : null}
+      {drawer === "disperse" ? <DisperseDrawer onClose={() => setDrawer(null)} wallets={live} groups={groups} balances={bal} selected={sel} active={active} scopeLabel={scopeLabel} scopeGroup={curGroup?.id ?? null} onHistory={() => { setDrawer(null); setActivityTab("disperse"); }} /> : null}
       {drawer === "reverse" ? <ReverseDisperseDrawer onClose={() => setDrawer(null)} wallets={live} groups={groups} scopeLabel={scopeLabel} scopeGroup={curGroup?.id ?? null} balances={bal} /> : null}
     </div>
   );

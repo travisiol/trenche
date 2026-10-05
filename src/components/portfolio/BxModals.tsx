@@ -14,7 +14,7 @@ import { BxButton, BxInput, BxLabel, BxModal, BxSelect, BxSwitch, cx } from "@/c
 import { WalletPicker } from "@/components/bx/WalletPicker";
 import { BxJob } from "@/components/bx/Job";
 
-export type ModalKind = "create" | "import" | "export" | "move" | "deposit" | "withdraw" | "transfer" | "distribute" | "consolidate" | "disperse" | "reverse" | "airdrop" | null;
+export type ModalKind = "create" | "import" | "export" | "move" | "deposit" | "withdraw" | "transfer" | "distribute" | "consolidate" | "disperse" | "reverse" | "airdrop" | "private" | null;
 
 export type Base = { open: boolean; onClose: () => void; wallets: WalletInfo[]; groups: WalletGroup[]; selected: string[]; active: string | null; balances: Record<string, string | null> | null };
 

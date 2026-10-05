@@ -1,10 +1,11 @@
 import { HttpError, intIn, json, lamportsOf, numIn, readBody, requireAddress, requireAddresses, route, solString } from "@/server/api";
-import { disperse, disperseV2 } from "@/server/funds";
+import { delayRangeOf, disperse, disperseV2, shuffleOf } from "@/server/funds";
 import type { FundDisperseLegacyRequest, FundDisperseRequest, FundDisperseResponse, JobCreated } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-/** POST FundDisperseRequest (Block X drawer: deposit wallet, total/variation/delay in minutes) → FundDisperseResponse.
+/** POST FundDisperseRequest (Block X drawer: vault wallet or fresh deposit wallet, total/variation, random delay range
+ *  delayMinSec–delayMaxSec or fixed delayMinutes, shuffle) → FundDisperseResponse (the drawn plan in execution order).
  *  The legacy {from, to, minSol, maxSol, minDelay, maxDelay} shape still returns { jobId }. */
 export const POST = route(async (req: Request) => {
   const body = await readBody<FundDisperseRequest & FundDisperseLegacyRequest>(req);
@@ -24,11 +25,12 @@ export const POST = route(async (req: Request) => {
     amountLam: body.amountSol !== undefined && body.amountSol !== "" ? lamportsOf(body.amountSol, "amountSol") : undefined,
     amounts,
     variationPct: numIn(body.variationPct, 0, 100, 0, "variationPct"),
-    delayMs: Math.round(numIn(body.delayMinutes, 0, 1440, 0, "delayMinutes") * 60_000),
+    delay: delayRangeOf(body),
+    shuffle: shuffleOf(body.shuffle),
     waitMs: Math.round(numIn(body.waitMinutes, 0, 1440, body.createDeposit ? 120 : 0, "waitMinutes") * 60_000),
     viaRelay: !!body.viaRelay,
     presetName: body.presetName ? String(body.presetName).slice(0, 48) : undefined,
   });
-  const res: FundDisperseResponse = { jobId: r.job.id, from: r.from, plan: r.plan.map((p) => ({ address: p.address, label: p.label, sol: solString(p.lamports) })), needSol: solString(r.needLam), totalSol: solString(r.totalLam) };
+  const res: FundDisperseResponse = { jobId: r.job.id, from: r.from, plan: r.plan.map((p) => ({ address: p.address, label: p.label, sol: solString(p.lamports), delayMs: p.delayMs })), needSol: solString(r.needLam), totalSol: solString(r.totalLam), etaMs: r.etaMs };
   return json(res);
 });

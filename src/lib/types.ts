@@ -125,8 +125,34 @@ export type FundWithdrawRequest = { from: string; to: string; sol: string; viaRe
  *  Block X drag-and-drop shape: `{ sources, targets, sol? }` — pairs sources[i] → targets[i % targets.length];
  *  without `sol` each source sends its whole balance minus fees. */
 export type FundTransferRequest =
-  | { from: string; to: string; sol: string; viaRelay?: boolean }
-  | { sources: string[]; targets: string[]; sol?: string; viaRelay?: boolean; delayMinutes?: number };
+  | {
+      from: string;
+      /** a vault wallet, or any address for a Private send */
+      to: string;
+      sol?: string;
+      viaRelay?: boolean;
+      /** Private send (any of the fields below switches to it): `max` sends the whole balance (fees exact, source ends
+       *  at 0); `parts` 1–5 random amounts (±variationPct, default 40, Σ = sol exactly), each after a random delay in
+       *  delayMinSec–delayMaxSec (24 h max) and — viaRelay — through its own fresh relay wallet. */
+      max?: boolean;
+      parts?: number;
+      /** exact part amounts (the previewed draw, Σ = the amount sent); sets `parts` */
+      partsSol?: string[];
+      variationPct?: number;
+      delayMinSec?: number;
+      delayMaxSec?: number;
+    }
+  | { sources: string[]; targets: string[]; sol?: string; viaRelay?: boolean; delayMinutes?: number; delayMinSec?: number; delayMaxSec?: number; shuffle?: boolean };
+/** Private send → the drawn parts (null with `max`: drawn when the job reads the balance; see job.extra.plan) */
+export type FundPrivateSendResponse = JobCreated & {
+  plan: FundPlanRow[] | null;
+  totalSol: string | null;
+  needSol: string | null;
+  /** rough wall time: drawn delays + ~2 s per signature */
+  etaMs: number;
+};
+/** one payment of a drawn plan, in execution order; `delayMs` = wait before it (0 for the first) */
+export type FundPlanRow = { address: string; label: string; sol: string; delayMs: number };
 /** Legacy shape (min/max per wallet, delays in ms) — still accepted. */
 export type FundDisperseLegacyRequest = {
   from: string;
@@ -153,7 +179,13 @@ export type FundDisperseRequest = {
   amountSol?: string;
   amounts?: Record<string, string>;
   variationPct?: number;
+  /** fixed delay between payments (legacy) */
   delayMinutes?: number;
+  /** random delay range in seconds (24 h max): every payment after the first waits a uniform draw in it */
+  delayMinSec?: number;
+  delayMaxSec?: number;
+  /** random destination order */
+  shuffle?: boolean;
   waitMinutes?: number;
   viaRelay?: boolean;
   /** optional saved-preset name for the activity journal */
@@ -162,14 +194,16 @@ export type FundDisperseRequest = {
 export type FundDisperseResponse = JobCreated & {
   /** the funding wallet (the fresh deposit wallet when createDeposit) */
   from: { address: string; label: string; isDeposit: boolean };
-  plan: { address: string; label: string; sol: string }[];
+  /** drawn plan in execution order (shuffled when asked), Σ sol = totalSol exactly */
+  plan: FundPlanRow[];
   /** SOL the source must hold before anything is sent (sum + fees) */
   needSol: string;
   totalSol: string;
+  etaMs: number;
 };
 /** POST /api/fund/distribute — Block X "Distribute" drop zone: ONE source → many targets, equal split of
  *  `totalSol` (default: the source's whole balance minus fees), same variation/delay options as Disperse. */
-export type FundDistributeRequest = { sources: string[]; targets: string[]; totalSol?: string; variationPct?: number; delayMinutes?: number; viaRelay?: boolean };
+export type FundDistributeRequest = { sources: string[]; targets: string[]; totalSol?: string; variationPct?: number; delayMinutes?: number; delayMinSec?: number; delayMaxSec?: number; shuffle?: boolean; viaRelay?: boolean };
 /** Reverse Disperse / Consolidate: every source sweeps its whole balance to `to` (any address, e.g. the deposit
  *  wallet). Block X shapes also accepted: `{ sources, targets: [to] }` and `{ groupId, to }`. `delayMinutes`
  *  between wallets (0 = ASAP). */
@@ -182,11 +216,16 @@ export type FundConsolidateRequest = {
   /** each source empties itself through its own fresh relay wallet (2 signatures per source) */
   viaRelay?: boolean;
   delayMinutes?: number;
+  /** random delay range in seconds before each wallet after the first (overrides delayMinutes) */
+  delayMinSec?: number;
+  delayMaxSec?: number;
+  /** random wallet order */
+  shuffle?: boolean;
   /** "reverse" labels the job "Reverse Disperse" in Activity (same sweep) */
   kind?: "consolidate" | "reverse";
 };
 /** Saved Disperse presets (Preset select / Save as / Update / Delete in the drawer): GET/POST /api/fund/disperse/presets */
-export type DispersePreset = { id: string; name: string; totalSol: string; variationPct: number; delayMinutes: number; viaRelay: boolean; createdAt: number };
+export type DispersePreset = { id: string; name: string; totalSol: string; variationPct: number; delayMinutes: number; /** random delay range (seconds); absent on older presets */ delayMinSec?: number; delayMaxSec?: number; viaRelay: boolean; createdAt: number };
 export type DispersePresetsResponse = { presets: DispersePreset[] };
 export type DispersePresetsUpdateRequest = { preset: Omit<DispersePreset, "createdAt" | "id"> & { id?: string } } | { remove: string };
 /** POST /api/dev/airdrop — devnet only (409 on mainnet); 429 when the faucet refuses, 504 when not confirmed in 60 s */

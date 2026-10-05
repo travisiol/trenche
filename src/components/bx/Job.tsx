@@ -82,13 +82,13 @@ export function BxJob({ jobId, compact }: { jobId: string | null; compact?: bool
   );
 }
 
-const PHASE: Record<string, string> = { relay: "Relay", hop1: "Hop 1/2", hop2: "Hop 2/2", recover: "Recover" };
+const PHASE: Record<string, string> = { relay: "Relay", hop1: "Hop 1/2", hop2: "Hop 2/2", recover: "Recover", wait: "Delay", pay: "Payment" };
 
 export function StepLine({ s }: { s: JobStep }) {
   return (
     <li className="flex min-h-7 items-center gap-2 border-b border-line-50 py-1 last:border-0">
       <span className={cx("h-1.5 w-1.5 shrink-0 rounded-full", s.ok ? "bg-green-100" : "bg-decrease")} />
-      {s.phase ? <span className={cx("shrink-0 rounded px-1 text-[10px] font-medium uppercase", s.phase === "recover" ? "bg-yellow-100/15 text-yellow-100" : "bg-accent-muted text-accent")}>{PHASE[s.phase] ?? s.phase}</span> : null}
+      {s.phase ? <span className={cx("shrink-0 rounded px-1 text-[10px] font-medium uppercase", s.phase === "recover" ? "bg-yellow-100/15 text-yellow-100" : s.phase === "wait" ? "bg-line-50 text-text-300" : "bg-accent-muted text-accent")}>{PHASE[s.phase] ?? s.phase}</span> : null}
       <span className="min-w-0 flex-1 truncate text-text-200">
         {s.label ?? s.note ?? ""}
         {s.address ? <span className="ml-1 font-mono text-text-300">{short(s.address)}</span> : null}

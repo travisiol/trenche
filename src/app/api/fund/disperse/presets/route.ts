@@ -21,7 +21,7 @@ export const POST = route(async (req: Request) => {
     const name = String(p.name ?? "").trim().slice(0, 48);
     if (!name) throw new HttpError(400, "preset.name required.");
     const id = p.id ? String(p.id) : "dp_" + Date.now().toString(36);
-    const rec: DispersePreset = { id, name, totalSol: solString(lamportsOf(p.totalSol, "preset.totalSol", true)), variationPct: numIn(p.variationPct, 0, 100, 0, "preset.variationPct"), delayMinutes: numIn(p.delayMinutes, 0, 1440, 0, "preset.delayMinutes"), viaRelay: !!p.viaRelay, createdAt: list.find((x) => x.id === id)?.createdAt ?? Date.now() };
+    const rec: DispersePreset = { id, name, totalSol: solString(lamportsOf(p.totalSol, "preset.totalSol", true)), variationPct: numIn(p.variationPct, 0, 100, 0, "preset.variationPct"), delayMinutes: numIn(p.delayMinutes, 0, 1440, 0, "preset.delayMinutes"), ...(p.delayMaxSec !== undefined ? { delayMinSec: numIn(p.delayMinSec, 0, 86_400, 0, "preset.delayMinSec"), delayMaxSec: numIn(p.delayMaxSec, 0, 86_400, 0, "preset.delayMaxSec") } : {}), viaRelay: !!p.viaRelay, createdAt: list.find((x) => x.id === id)?.createdAt ?? Date.now() };
     const i = list.findIndex((x) => x.id === id);
     if (i >= 0) list[i] = rec;
     else list.push(rec);
