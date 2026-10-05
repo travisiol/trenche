@@ -152,6 +152,7 @@ declare module "@/engine/solana/send.js" {
   ): Promise<SendResult[]>;
   export function latestBlockhash(conn: Connection): Promise<{ blockhash: string; lastValidBlockHeight: number }>;
   export function submitJitoBundle(txs: VersionedTransaction[], opts?: { blockEngineUrl?: string }): Promise<string>;
+  export function jitoBundleStatus(bundleId: string, opts?: { blockEngineUrl?: string }): Promise<"Invalid" | "Pending" | "Failed" | "Landed" | null>;
   export interface BundleResult {
     ok: boolean;
     bundleId: string | null;

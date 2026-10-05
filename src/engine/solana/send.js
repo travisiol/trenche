@@ -250,15 +250,7 @@ var JITO_BLOCK_ENGINES = [
   "https://amsterdam.mainnet.block-engine.jito.wtf",
 ];
 
-export async function submitJitoBundle(txs, opts = {}) {
-  const base = opts.blockEngineUrl || JITO_BLOCK_ENGINES[0],
-    encoded = txs.map(tx => base58Encode(tx.serialize())),
-    body = JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "sendBundle",
-      params: [encoded, { encoding: "base58" }],
-    });
+async function submitTo(base, body) {
   const res = await fetch(base + "/api/v1/bundles", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -268,6 +260,40 @@ export async function submitJitoBundle(txs, opts = {}) {
   if (data.error) throw new Error(`Jito refused the bundle: ${data.error.message || JSON.stringify(data.error)}`);
   if (!res.ok) throw new Error(`Jito HTTP ${res.status}`);
   return data.result;
+}
+
+/* Same bundle to every regional block engine at once (same bundle id: Jito dedups) — the leader's region gets it
+   first. Resolves with the first accepted id; throws the first refusal only when every region refused. */
+export async function submitJitoBundle(txs, opts = {}) {
+  const encoded = txs.map(tx => base58Encode(tx.serialize())),
+    body = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "sendBundle",
+      params: [encoded, { encoding: "base58" }],
+    }),
+    engines = opts.blockEngineUrl ? [opts.blockEngineUrl] : JITO_BLOCK_ENGINES;
+  try {
+    return await Promise.any(engines.map(base => submitTo(base, body)));
+  } catch (e) {
+    throw e instanceof AggregateError ? e.errors[0] : e;
+  }
+}
+
+/* Jito's own view of a bundle: Invalid (unknown / > 5 min) · Pending · Failed (dropped by every region — usually a
+   transaction that fails simulation) · Landed. null when the call itself fails. */
+export async function jitoBundleStatus(bundleId, opts = {}) {
+  try {
+    const res = await fetch((opts.blockEngineUrl || JITO_BLOCK_ENGINES[0]) + "/api/v1/getInflightBundleStatuses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getInflightBundleStatuses", params: [[bundleId]] }),
+    });
+    const data = await res.json().catch(() => ({}));
+    return data?.result?.value?.[0]?.status ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // Envoie le bundle puis confirme via les signatures de ses tx (elles ne confirment que
@@ -284,8 +310,18 @@ export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
   }
   const timeoutMs = opts.timeoutMs ?? 45000,
     t0 = Date.now();
-  let poll = 700;
+  let poll = 700,
+    jito = null,
+    jitoAt = 0,
+    failedSeen = 0;
   for (; Date.now() - t0 < timeoutMs;) {
+    // Jito's verdict every ~3 s: two "Failed" in a row = dropped (a tx fails simulation), stop waiting
+    if (Date.now() - jitoAt > 3000) {
+      jitoAt = Date.now();
+      jito = (await jitoBundleStatus(bundleId, opts)) ?? jito;
+      failedSeen = jito === "Failed" ? failedSeen + 1 : 0;
+      if (failedSeen >= 2) break;
+    }
     const st = (await readConn.getSignatureStatuses(sigs).catch(() => null))?.value ?? [];
     const bad = st.find(s => s && s.err);
     if (bad) return { ok: !1, bundleId, sigs, error: `A bundle transaction reverted: ${JSON.stringify(bad.err)}` };
@@ -302,6 +338,10 @@ export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
     ok: !1,
     bundleId,
     sigs,
-    error: "Bundle not landed within the window — nothing was spent (atomic). Retry, or raise the tip.",
+    jitoStatus: jito,
+    error:
+      jito === "Failed"
+        ? `Jito dropped the bundle (status Failed, id ${bundleId}) — a transaction of the bundle fails simulation; nothing was spent (atomic).`
+        : `Bundle not landed within the window (Jito status ${jito ?? "unknown"}, id ${bundleId}) — nothing was spent (atomic).`,
   };
 }

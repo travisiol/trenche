@@ -357,6 +357,12 @@ export async function launchBundle(readConn, prep, opts = {}) {
   const buys = [],
     bundleErrors = [];
   let created = { confirmed: !1, error: "not sent" };
+  // the create does not depend on anything in the bundle: simulate it first — Jito silently drops a bundle whose tx fails
+  const sim = await readConn.simulateTransaction(prep.createTx, { sigVerify: !1, replaceRecentBlockhash: !0, commitment: "processed" }).catch(() => null);
+  if (sim?.value?.err) {
+    const why = (sim.value.logs ?? []).filter(l => /error|failed|exceeded|insufficient/i.test(l)).slice(-3).join(" · ");
+    return { mint: prep.mint.publicKey.toBase58(), create: { confirmed: !1, error: `The create transaction fails simulation: ${JSON.stringify(sim.value.err)}${why ? ` — ${why}` : ""}. Nothing was sent.` }, buys: [], atomic: !0, mode: "bundle", bundleErrors: [] };
+  }
   for (let ci = 0; ci < chunks.length; ci++) {
     onStep({ phase: "bundle", index: ci, total: chunks.length });
     const r = await sendBundleAndConfirm(readConn, chunks[ci], {
