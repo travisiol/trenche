@@ -175,7 +175,8 @@ export default function PortfolioPage() {
                   </div>
                   <div className="hidden shrink-0 items-center lg:flex">
                     <div className="flex items-center gap-2 text-xs text-text-300">
-                      {tab === "wallets" ? (
+                      {/* selection tools: always on Developer Wallets, on Groups as soon as wallets are ticked */}
+                      {tab === "wallets" || sel.length > 0 ? (
                         <>
                           <button type="button" disabled={!canSign || !live.length} onClick={() => setModal("export")} className={tool} title={!canSign ? "Unlock the vault" : sel.length ? "Export the private keys of the selection" : "Export the private keys of every wallet"}>
                             <KeyRound className="h-3.5 w-3.5" />
