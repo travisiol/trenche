@@ -1,17 +1,30 @@
-/* Creator fees EARNED per launched token, read on chain: every pump.fun trade pays its creator fee into the creator
- * vault of the dev wallet and its trade event names the mint, so scanning each dev wallet's creator vault history
- * (engine scanFeesHistory) gives the exact fees each token produced — claimed or still pending. pump.fun pays per
- * creator wallet, not per token: a claim alone cannot say which token it came from, this can.
+/* Creator fees EARNED per launched token, read on chain. pump.fun pays creator fees into one creator vault per dev
+ * wallet (not per token), so a claim alone cannot say which token it came from. Every transaction that touches the
+ * vault is read instead: a lamport INCREASE of the vault is a creator fee paid by a trade, and the token traded is
+ * the dev wallet's mint present in that transaction's accounts; a DECREASE is a claim. Lamport deltas, not pump.fun's
+ * logged events: trades routed through bots often have their logs truncated or emit no log event at all.
  * Incremental (newest signature per creator), persisted next to the ledger in creator-revenue.json. */
-import { scanFeesHistory } from "@/engine/solana/pump/fees.js";
+import { PublicKey, type VersionedTransactionResponse } from "@solana/web3.js";
+import { creatorVaultPda } from "@/engine/solana/pump/pdas.js";
 import { readConn } from "./engine";
 import { readJson, store, writeJson } from "./store";
 
-type ScanState = { newest: string | null; complete: boolean; claims: { ts: number; sig: string; amount: string }[]; perMint: Record<string, { revenue: string; trades: number }> };
-type RevenueFile = { v: 1; creators: Record<string, ScanState & { scannedAt: number }> };
+type CreatorScan = {
+  newest: string | null;
+  /** signatures seen but not readable yet (RPC hiccup) — retried, newest first */
+  pending: string[];
+  /** lamports received per mint ("?" = a fee whose transaction names none of this creator's mints) */
+  perMint: Record<string, { lamports: string; trades: number }>;
+  claims: { at: number; sig: string; lamports: string }[];
+  scannedAt: number;
+};
+type RevenueFile = { v: 2; creators: Record<string, CreatorScan> };
 
-const g = globalThis as unknown as { __trenchRevenue?: { file: RevenueFile | null; path: string; running: Promise<void> | null; lastRun: number } };
-const S = (g.__trenchRevenue ??= { file: null, path: "", running: null, lastRun: 0 });
+const MAX_NEW_SIGNATURES = 2000;
+const FETCH_BUDGET = 300;
+
+const g = globalThis as unknown as { __trenchRevenue2?: { file: RevenueFile | null; path: string; running: Promise<void> | null; lastRun: number } };
+const S = (g.__trenchRevenue2 ??= { file: null, path: "", running: null, lastRun: 0 });
 
 function path(): string {
   return `${store().dir}/creator-revenue.json`;
@@ -19,16 +32,98 @@ function path(): string {
 function file(): RevenueFile {
   const p = path();
   if (S.file && S.path === p) return S.file;
-  const f = readJson<RevenueFile>(p, { v: 1, creators: {} });
+  const raw = readJson<RevenueFile | { v: number }>(p, { v: 2, creators: {} });
+  const f: RevenueFile = raw.v === 2 ? (raw as RevenueFile) : { v: 2, creators: {} }; // v1 counted logged events only
   f.creators ??= {};
   S.file = f;
   S.path = p;
   return f;
 }
 
-/** dev wallets of every launch that went live */
-function creators(): string[] {
-  return [...new Set(store().launches.filter((l) => l.createConfirmed && l.dev).map((l) => l.dev))];
+/** dev wallet → its live mints */
+function creatorMints(): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const l of store().launches) {
+    if (!l.createConfirmed || !l.dev) continue;
+    const s = out.get(l.dev) ?? new Set<string>();
+    s.add(l.mint);
+    out.set(l.dev, s);
+  }
+  return out;
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let i = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (i < items.length) {
+        const k = i++;
+        out[k] = await fn(items[k]);
+      }
+    }),
+  );
+  return out;
+}
+
+function accountKeys(tx: VersionedTransactionResponse): string[] {
+  const keys = tx.transaction.message.staticAccountKeys.map((k) => k.toBase58());
+  const loaded = tx.meta?.loadedAddresses;
+  if (loaded) keys.push(...loaded.writable.map((k) => k.toBase58()), ...loaded.readonly.map((k) => k.toBase58()));
+  return keys;
+}
+
+async function scanCreator(creator: string, mints: Set<string>, prev: CreatorScan | undefined, budget: { left: number }): Promise<CreatorScan> {
+  const conn = readConn();
+  const vault = creatorVaultPda(new PublicKey(creator));
+  const vaultStr = vault.toBase58();
+  const st: CreatorScan = prev ? { ...prev, pending: [...prev.pending], perMint: { ...prev.perMint }, claims: [...prev.claims] } : { newest: null, pending: [], perMint: {}, claims: [], scannedAt: 0 };
+  // 1. new signatures, newest first, down to the last one already seen
+  const fresh: string[] = [];
+  let before: string | undefined;
+  let first: string | null = null;
+  for (;;) {
+    const batch = await conn.getSignaturesForAddress(vault, { limit: 1000, before }, "confirmed");
+    if (!batch.length) break;
+    let reached = false;
+    for (const s of batch) {
+      first ??= s.signature;
+      if (s.signature === st.newest) {
+        reached = true;
+        break;
+      }
+      if (!s.err) fresh.push(s.signature);
+    }
+    if (reached || batch.length < 1000 || fresh.length >= MAX_NEW_SIGNATURES) break;
+    before = batch[batch.length - 1].signature;
+  }
+  if (first) st.newest = first;
+  st.pending = [...fresh, ...st.pending.filter((s) => !fresh.includes(s))];
+  // 2. read the queued transactions (budgeted across creators), oldest first so a partial run stays consistent
+  const todo = st.pending.slice(-Math.max(0, budget.left)).reverse();
+  budget.left -= todo.length;
+  const got = await mapLimit(todo, 6, (sig) => conn.getTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => undefined));
+  const done = new Set<string>();
+  todo.forEach((sig, i) => {
+    const tx = got[i];
+    if (tx === undefined) return; // retry next run
+    done.add(sig);
+    if (!tx?.meta) return;
+    const keys = accountKeys(tx);
+    const idx = keys.indexOf(vaultStr);
+    if (idx < 0) return;
+    const delta = BigInt(tx.meta.postBalances[idx] ?? 0) - BigInt(tx.meta.preBalances[idx] ?? 0);
+    if (delta > BigInt(0)) {
+      const mint = keys.find((k) => mints.has(k)) ?? "?";
+      const cur = st.perMint[mint] ?? { lamports: "0", trades: 0 };
+      st.perMint[mint] = { lamports: (BigInt(cur.lamports) + delta).toString(), trades: cur.trades + 1 };
+    } else if (delta < BigInt(0) && !st.claims.some((c) => c.sig === sig)) {
+      st.claims.push({ at: (tx.blockTime ?? 0) * 1000, sig, lamports: (-delta).toString() });
+    }
+  });
+  st.pending = st.pending.filter((s) => !done.has(s));
+  st.scannedAt = Date.now();
+  return st;
 }
 
 /** scan new creator-vault transactions of every dev wallet (serialised, at most one run per `minIntervalMs`) */
@@ -38,13 +133,11 @@ export function refreshCreatorRevenue(opts: { force?: boolean; minIntervalMs?: n
   S.lastRun = Date.now();
   S.running = (async () => {
     const f = file();
-    const conn = readConn();
+    const budget = { left: FETCH_BUDGET };
     let changed = false;
-    for (const c of creators()) {
-      const prev = f.creators[c] ?? null;
+    for (const [creator, mints] of creatorMints()) {
       try {
-        const next = (await scanFeesHistory(conn, c, prev, { maxSignatures: 400 })) as ScanState;
-        f.creators[c] = { ...next, scannedAt: Date.now() };
+        f.creators[creator] = await scanCreator(creator, mints, f.creators[creator], budget);
         changed = true;
       } catch {
         /* RPC hiccup: the next run continues from the same point */
@@ -63,19 +156,16 @@ export function refreshCreatorRevenue(opts: { force?: boolean; minIntervalMs?: n
   return S.running;
 }
 
-/** lamports of creator fees each mint has produced (all creators), and whether every scan reached the newest tx */
+/** lamports of creator fees each mint has produced, and whether every dev wallet's history has been read */
 export function creatorRevenueByMint(): { byMint: Map<string, bigint>; complete: boolean } {
   const f = file();
   const byMint = new Map<string, bigint>();
   let complete = true;
-  for (const c of creators()) {
-    const st = f.creators[c];
-    if (!st) {
-      complete = false;
-      continue;
-    }
-    if (!st.complete) complete = false;
-    for (const [mint, r] of Object.entries(st.perMint)) byMint.set(mint, (byMint.get(mint) ?? BigInt(0)) + BigInt(r.revenue));
+  for (const creator of creatorMints().keys()) {
+    const st = f.creators[creator];
+    if (!st || st.pending.length) complete = false;
+    if (!st) continue;
+    for (const [mint, r] of Object.entries(st.perMint)) if (mint !== "?") byMint.set(mint, (byMint.get(mint) ?? BigInt(0)) + BigInt(r.lamports));
   }
   return { byMint, complete };
 }
