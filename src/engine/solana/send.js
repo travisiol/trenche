@@ -71,7 +71,11 @@ async function recheck(conn, sig, tries = 4) {
 
 /**
  * Broadcast + confirm one signed transaction.
- * opts: { lastValidBlockHeight, timeoutMs (75 s), rebroadcastMs, simulateConn, dryRun,
+ * opts: { lastValidBlockHeight, timeoutMs (75 s), rebroadcastMs (first re-broadcast after, 800 ms),
+ *         rebroadcastEveryMs (then at most every, 1500 ms — re-broadcasts carry { rebroadcast: true } so the
+ *         send connection may skip the rate-limited Sender path), simulateConn, dryRun,
+ *         subscribe?: (signature) => Promise<{ err } | null> — a push notification of the confirmation
+ *                     (WebSocket signatureSubscribe); null = unavailable → the poll falls back to pollFallbackMs,
  *         verify?: () => Promise<boolean>   — state check used when the signature is not found after expiry
  *                                              (mint/curve exists, token balance moved): true = landed,
  *         rebuild?: () => Promise<{ tx, lastValidBlockHeight }> — re-sign with a fresh blockhash when the
@@ -111,11 +115,14 @@ export async function sendAndConfirm(t, e, r, n = {}) {
         return done(!1, { error: `simulation: ${JSON.stringify(p.value.err)}${f ? " — " + f : ""}`.slice(0, 300) });
       }
     } catch {}
-  const u = async () => {
+  let lastBroadcast = 0;
+  const u = async (rebroadcast = !1) => {
+    lastBroadcast = Date.now();
     try {
       (await e.sendRawTransaction(i, {
         skipPreflight: !0,
         maxRetries: 0,
+        rebroadcast,
       }),
         d++);
       d === 1 && typeof n.onSent == "function" && n.onSent(o);
@@ -150,6 +157,7 @@ export async function sendAndConfirm(t, e, r, n = {}) {
         budgetEnd = Date.now() + Math.min(c, 60e3);
         await u();
         if (d === 0 && l) return done(!1, { error: l.slice(0, 200) });
+        push = n.subscribe ? n.subscribe(o) : null;
         return null; // keep polling with the new signature
       } catch (err) {
         return done(!1, { error: `rebuild failed: ${err.message ?? err}`.slice(0, 200), expired: !0 });
@@ -160,12 +168,25 @@ export async function sendAndConfirm(t, e, r, n = {}) {
       expired: !0,
     });
   };
-  /* poll cadence: 400 ms flat on a private RPC (n.pollMs, n.pollGrowth = 1), 600 ms growing to 2.5 s on a public one */
+  /* poll cadence: 400 ms flat on a private RPC (n.pollMs, n.pollGrowth = 1), 600 ms growing to 2.5 s on a public one.
+     With a push subscription the poll is only the safety net (n.pollMs ≈ 1.5 s) and the wait ends on the push. */
+  let push = n.subscribe ? n.subscribe(o) : null;
   const pollStart = n.pollMs ?? 600,
-    pollGrowth = n.pollGrowth ?? 1.35;
-  let poll = pollStart;
+    pollGrowth = n.pollGrowth ?? 1.35,
+    reEvery = n.rebroadcastEveryMs ?? 1500;
+  let poll = push ? pollStart : (n.pollFallbackMs ?? pollStart);
   for (;;) {
     for (; Date.now() < budgetEnd;) {
+      if (push) {
+        const v = await Promise.race([push, sleep(poll).then(() => void 0)]);
+        if (v === null) {
+          push = null; // socket unavailable: plain polling from now on
+          poll = n.pollFallbackMs ?? poll;
+        } else if (v !== void 0) {
+          if (v.err) return done(!1, { error: JSON.stringify(v.err) });
+          return done(!0);
+        }
+      } else await sleep(poll);
       const f = await statusOf(t, o);
       if (f) {
         if (f.err) return done(!1, { error: JSON.stringify(f.err) });
@@ -174,12 +195,11 @@ export async function sendAndConfirm(t, e, r, n = {}) {
       if (lastValid !== void 0 && (await t.getBlockHeight("confirmed").catch(() => 0)) > lastValid) {
         const r2 = await notFound("blockhash expired (150 blocks)");
         if (r2) return r2;
-        poll = pollStart;
+        poll = push ? pollStart : (n.pollFallbackMs ?? pollStart);
         continue;
       }
-      await sleep(poll);
       poll = Math.min(2500, Math.round(poll * pollGrowth));
-      if (Date.now() - a > s) await u();
+      if (Date.now() - a > s && Date.now() - lastBroadcast >= reEvery) await u(!0);
     }
     const r3 = await notFound("confirmation timed out");
     if (r3) return r3;

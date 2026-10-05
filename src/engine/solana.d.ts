@@ -123,6 +123,12 @@ declare module "@/engine/solana/send.js" {
     /** status poll cadence: initial ms (600) and growth factor per poll (1.35; 1 = flat) */
     pollMs?: number;
     pollGrowth?: number;
+    /** poll cadence once the push subscription is unavailable (default pollMs) */
+    pollFallbackMs?: number;
+    /** re-broadcast at most every … ms after the first rebroadcastMs (default 1500) */
+    rebroadcastEveryMs?: number;
+    /** push notification of the confirmation (WebSocket signatureSubscribe); null = unavailable */
+    subscribe?: (signature: string) => Promise<{ err: unknown } | null>;
   }
   export interface SendManyOpts extends Omit<SendOpts, "verify" | "rebuild" | "onSent"> {
     verify?: (index: number) => Promise<boolean>;

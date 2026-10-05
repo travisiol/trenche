@@ -7,6 +7,9 @@ import type { Keypair } from "@solana/web3.js";
 import { SolanaState } from "@/engine/solana/state.js";
 import { HELIUS_SENDER_URL, SOLANA_PUBLIC_RPC, normalizeSolanaRpc, withSwqosOnly } from "@/engine/solana/config.js";
 import { noteReadRpc, queuedConnection } from "./rpcqueue";
+import { SenderConnection } from "./sender";
+
+const senderConns = new Map<string, SenderConnection>();
 import type { ActivityItem, LaunchPreset, LaunchRecord, Settings, TradingPreset, TradingPresets } from "@/lib/types";
 import { DEFAULT_TIP_SOL, TRADING_PRESET_DEFAULTS } from "@/lib/types";
 
@@ -170,9 +173,14 @@ function build(): Store {
     noteReadRpc(url);
     return queuedConnection(url);
   };
+  // the send connection is a Connection on the READ RPC whose sendRawTransaction also posts to the send RPC (Helius
+  // Sender): blockhash / simulate / statuses never reach Sender, which only accepts sendTransaction — sender.ts
   sol.sendConnection = () => {
-    const url = withSwqosOnly(sol.config.sendRpcUrl ?? "");
-    return url ? queuedConnection(url) : sol.connection();
+    const read = sol.config.rpcUrl?.trim() || SOLANA_PUBLIC_RPC;
+    const send = withSwqosOnly(sol.config.sendRpcUrl ?? "");
+    const key = `${read}|${send}`;
+    if (!senderConns.has(key)) senderConns.set(key, new SenderConnection(read, send || null));
+    return senderConns.get(key)!;
   };
   const store: Store = {
     dir,

@@ -5,7 +5,8 @@ import { PublicKey } from "@solana/web3.js";
 import type { TradeBuyRequest, TradeCreated, TradeSellRequest, TradingPreset } from "@/lib/types";
 import { TRADING_PRESET_DEFAULTS, TRADING_PRESET_LIMITS } from "@/lib/types";
 import { HttpError, intIn, lamportsOf, numIn, sleep, solString } from "./api";
-import { buyWithWallets, getAccountsChunked, readConn, requireUnlocked, sellWithWallets, tipLamportsFor, vaultWallets } from "./engine";
+import { buyWithWallets, requireUnlocked, sellWithWallets, tipLamportsFor, vaultWallets } from "./engine";
+import { hotSnapshot } from "./hot";
 import { jobNew, jobNote, jobPush, jobRun, jobWait } from "./jobs";
 import { store } from "./store";
 
@@ -25,7 +26,7 @@ function index4(v: unknown, what: string): 0 | 1 | 2 | 3 {
   return i;
 }
 
-type Common = { slippageBps: number; cuPrice: number; tipSol: string; tipLamports: bigint; bundle: boolean };
+type Common = { slippageBps: number; cuPrice: number; cuPriceFixed: boolean; tipSol: string; tipLamports: bigint; bundle: boolean };
 
 function common(body: { slippageBps?: number; cuPrice?: number; tipSol?: string; bundle?: boolean }, p: TradingPreset | null): Common {
   const s = store().settings;
@@ -35,7 +36,9 @@ function common(body: { slippageBps?: number; cuPrice?: number; tipSol?: string;
   const tipLamports = tipLamportsFor(tipSol);
   const bundle = body.bundle !== undefined ? !!body.bundle : s.jitoEnabled;
   if (bundle && tipLamports <= BigInt(0) && s.cluster === "mainnet") throw new HttpError(400, "A Jito bundle needs a tip > 0 (tipSol, the preset's tip or Settings → tip).");
-  return { slippageBps, cuPrice, tipSol, tipLamports, bundle };
+  // an explicit cuPrice in the request is paid as is; otherwise Settings → cuPrice is the CEILING of the estimate
+  const cuPriceFixed = body.cuPrice !== undefined && body.cuPrice !== null && String(body.cuPrice) !== "";
+  return { slippageBps, cuPrice, cuPriceFixed, tipSol, tipLamports, bundle };
 }
 
 /** random multipliers around 1 within ±spread %, rescaled so the amounts still sum to base × n */
@@ -82,11 +85,12 @@ export async function tradeBuy(body: TradeBuyRequest): Promise<TradeCreated> {
   } else if (body.percentOfBalance !== undefined || (p && body.percentIndex !== undefined)) {
     const pct = body.percentOfBalance !== undefined ? numIn(body.percentOfBalance, 0.01, 100, 0, "percentOfBalance") : p!.buyPercents[index4(body.percentIndex, "percentIndex")];
     if (!(pct > 0)) throw new HttpError(400, "percentOfBalance must be > 0.");
-    const infos = await getAccountsChunked(readConn(), wallets.map((w) => new PublicKey(w))).catch(() => null);
-    if (!infos) throw new HttpError(503, "RPC unreachable: wallet balances could not be read. Nothing was sent.");
+    // SOL balances from the hot snapshot (memory while the token page is open, else one read)
+    const snap = await hotSnapshot(mint, wallets, 3500).catch(() => null);
+    if (!snap) throw new HttpError(503, "RPC unreachable: wallet balances could not be read. Nothing was sent.");
     amounts = new Map();
-    wallets.forEach((w, i) => {
-      const bal = BigInt(infos[i]?.lamports ?? 0);
+    wallets.forEach((w) => {
+      const bal = snap.bal.get(w)?.sol ?? BigInt(0);
       const spendable = bal - FEE_MARGIN - c.tipLamports;
       const lam = spendable > BigInt(0) ? (spendable * BigInt(Math.round(pct * 100))) / BigInt(10_000) : BigInt(0);
       if (lam > BigInt(0)) amounts.set(w, lam);
@@ -115,7 +119,7 @@ export async function tradeBuy(body: TradeBuyRequest): Promise<TradeCreated> {
           await sleep(ms);
         }
         try {
-          const out = await buyWithWallets({ mint, wallets: [active[i]], lamportsEach: amounts.get(active[i])!, slippageBps: c.slippageBps, cuPrice: c.cuPrice, tipLamports: c.tipLamports, bundle: c.bundle, job: j });
+          const out = await buyWithWallets({ mint, wallets: [active[i]], lamportsEach: amounts.get(active[i])!, slippageBps: c.slippageBps, cuPrice: c.cuPrice, cuPriceFixed: c.cuPriceFixed, tipLamports: c.tipLamports, bundle: c.bundle, job: j });
           if (out[0]?.ok) ok++;
           else lastErr = out[0]?.error ?? "not confirmed";
         } catch (e) {
@@ -127,7 +131,7 @@ export async function tradeBuy(body: TradeBuyRequest): Promise<TradeCreated> {
       if (ok === 0) throw new Error(lastErr ?? "no buy confirmed");
       return;
     }
-    await buyWithWallets({ mint, wallets: active, lamportsEach: (a) => amounts.get(a)!, slippageBps: c.slippageBps, cuPrice: c.cuPrice, tipLamports: c.tipLamports, bundle: c.bundle, job: j });
+    await buyWithWallets({ mint, wallets: active, lamportsEach: (a) => amounts.get(a)!, slippageBps: c.slippageBps, cuPrice: c.cuPrice, cuPriceFixed: c.cuPriceFixed, tipLamports: c.tipLamports, bundle: c.bundle, job: j });
   });
   return { jobId: job.id, plan, slippageBps: c.slippageBps, tipSol: c.tipSol, spreadPct, delaySec };
 }
@@ -147,7 +151,7 @@ export async function tradeSell(body: TradeSellRequest): Promise<TradeCreated> {
   const job = jobNew("sell", wallets.length, `Sell ${percent}% × ${wallets.length} · ${mint.slice(0, 6)}…${c.bundle ? " · bundle" : ""}`);
   job.extra = { mint, side: "sell", percent, bundle: c.bundle, slippageBps: c.slippageBps, tipSol: c.tipSol };
   jobRun(job, async (j) => {
-    await sellWithWallets({ mint, wallets, percent, slippageBps: c.slippageBps, cuPrice: c.cuPrice, tipLamports: c.tipLamports, bundle: c.bundle, job: j });
+    await sellWithWallets({ mint, wallets, percent, slippageBps: c.slippageBps, cuPrice: c.cuPrice, cuPriceFixed: c.cuPriceFixed, tipLamports: c.tipLamports, bundle: c.bundle, job: j });
   });
   return { jobId: job.id, plan, slippageBps: c.slippageBps, tipSol: c.tipSol, spreadPct: 0, delaySec: 0 };
 }

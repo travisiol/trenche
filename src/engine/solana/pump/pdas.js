@@ -65,7 +65,19 @@ export var PUMP_PROGRAM_ID = new PublicKey(PUMP_PROGRAM),
   PUMP_FEE_PROGRAM_ID = new PublicKey(PUMP_FEE_PROGRAM),
   ATA_PROGRAM_ID = new PublicKey(ATA_PROGRAM),
   PUMP_MAYHEM_PROGRAM_ID = new PublicKey(PUMP_MAYHEM_PROGRAM),
-  pda = (t, e) => PublicKey.findProgramAddressSync(t, e)[0],
+  /* PDA derivations are pure but cost ~0.2–1 ms each (sha256 bump search): a buy derives ~8 of them, so they are
+     memoized (bounded) — signing N transactions on the hot path no longer re-derives the same addresses. */
+  pdaCache = new Map(),
+  pda = (t, e) => {
+    const k = e.toBase58() + ":" + t.map(b => Buffer.from(b).toString("hex")).join(":");
+    let v = pdaCache.get(k);
+    if (!v) {
+      v = PublicKey.findProgramAddressSync(t, e)[0];
+      if (pdaCache.size > 20000) pdaCache.clear();
+      pdaCache.set(k, v);
+    }
+    return v;
+  },
   globalPda = () => pda([Buffer.from(SEEDS.global)], PUMP_PROGRAM_ID),
   mintAuthorityPda = () => pda([Buffer.from(SEEDS.mintAuthority)], PUMP_PROGRAM_ID),
   eventAuthorityPda = () => pda([Buffer.from(SEEDS.eventAuthority)], PUMP_PROGRAM_ID),
@@ -80,7 +92,7 @@ export var PUMP_PROGRAM_ID = new PublicKey(PUMP_PROGRAM),
   mayhemStatePda = t => pda([Buffer.from("mayhem-state"), t.toBuffer()], PUMP_MAYHEM_PROGRAM_ID);
 
 export function associatedTokenAddress(t, e, r) {
-  return PublicKey.findProgramAddressSync([t.toBuffer(), r.toBuffer(), e.toBuffer()], ATA_PROGRAM_ID)[0];
+  return pda([t.toBuffer(), r.toBuffer(), e.toBuffer()], ATA_PROGRAM_ID);
 }
 
 export var tokenProgramFor = t => new PublicKey(t === TOKEN_2022_PROGRAM ? TOKEN_2022_PROGRAM : TOKEN_PROGRAM);

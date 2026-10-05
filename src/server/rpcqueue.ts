@@ -53,6 +53,9 @@ type Stats = {
   cacheHitsAt: number[];
   lastError: string | null;
   lastErrorAt: number | null;
+  /** cumulative upstream calls / cache answers per JSON-RPC method since the process started (measurement) */
+  methods?: Record<string, number>;
+  methodHits?: Record<string, number>;
 };
 
 type RpcGlobal = {
@@ -183,6 +186,27 @@ function record(kind: "req" | "429" | "hit", latency?: number): void {
   prune(st.cacheHitsAt, now);
 }
 
+function countMethod(body: RpcBody | RpcBody[] | null, hit = false): void {
+  const st = g().stats;
+  const bag = hit ? (st.methodHits ??= {}) : (st.methods ??= {});
+  for (const b of Array.isArray(body) ? body : body ? [body] : []) {
+    const m = b.method ?? "?";
+    bag[m] = (bag[m] ?? 0) + 1;
+  }
+}
+
+/** count a call made outside the queue (the send path posts sendTransaction directly, see sender.ts) */
+export function countRpcCall(method: string): void {
+  countMethod({ method });
+  record("req");
+}
+
+/** cumulative per-method counters (upstream calls and micro-cache answers) — GET /api/rpc/health?methods=1 */
+export function rpcMethodCounts(): { calls: Record<string, number>; hits: Record<string, number> } {
+  const st = g().stats;
+  return { calls: { ...(st.methods ?? {}) }, hits: { ...(st.methodHits ?? {}) } };
+}
+
 function noteError(msg: string): void {
   const st = g().stats;
   st.lastError = msg.slice(0, 200);
@@ -225,11 +249,13 @@ export async function queuedFetch(input: RequestInfo | URL, init?: RequestInit):
     const hit = s.cache.get(key);
     if (hit && Date.now() - hit.at < hit.ttl) {
       record("hit");
+      countMethod(single, true);
       return respond(200, "OK", withId(hit.body));
     }
     const running = s.inflight.get(key);
     if (running) {
       record("hit");
+      countMethod(single, true);
       const r = await running;
       let parsed: Record<string, unknown> | null = null;
       try {
@@ -250,6 +276,7 @@ export async function queuedFetch(input: RequestInfo | URL, init?: RequestInit):
       let rateLimited = false;
       let transient = false;
       try {
+        countMethod(body);
         const res = await fetch(url, init);
         const text = await res.text();
         record("req", Date.now() - t0);

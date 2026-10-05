@@ -1,6 +1,7 @@
 /* Typed wrappers over the untyped donchain engine. Amounts are lamports/BigInt here. */
 import { PublicKey, type Connection, type VersionedTransaction } from "@solana/web3.js";
 import { isHeliusSender, SENDER_TIP_LAMPORTS } from "@/engine/solana/config.js";
+import { base58Encode } from "@/engine/solana/keys.js";
 import { latestBlockhash, sendBundleAndConfirm, sendMany, type Rebuilt, type SendResult } from "@/engine/solana/send.js";
 import {
   INITIAL_REAL_TOKENS,
@@ -19,6 +20,10 @@ import { syncPumpCluster } from "./pumpcluster";
 import { invalidateRpcCache } from "./rpcqueue";
 import { solPriceCached } from "./price";
 import { isDevnet, logActivity, store, track, type Job } from "./store";
+import { blockhashNow, cachedTokenProgram, hotDirty, hotSnapshot, rememberTokenProgram } from "./hot";
+import { CU_LIMITS, priorityFee, priorityFeeCached } from "./priority";
+import { SenderConnection, simulateSends } from "./sender";
+import { watchSignature } from "./sigsub";
 
 export { solString };
 
@@ -157,7 +162,10 @@ export function toCurveState(curve: BondingCurve, pda: PublicKey, solUsd: number
 }
 
 export async function tokenProgramOf(conn: Connection, mint: PublicKey): Promise<PublicKey> {
+  const known = cachedTokenProgram(mint.toBase58());
+  if (known) return tokenProgramFor(known);
   const info = await conn.getAccountInfo(mint, "confirmed").catch(() => null);
+  if (info) rememberTokenProgram(mint.toBase58(), info.owner.toBase58());
   return tokenProgramFor(info?.owner.toBase58() ?? TOKEN_2022_PROGRAM);
 }
 
@@ -165,7 +173,10 @@ export type TradeOpts = {
   mint: string;
   wallets: string[];
   slippageBps: number;
+  /** priority fee CEILING (µLamports / CU): the price paid is the 5 s cached estimate (priority.ts), capped here */
   cuPrice: number;
+  /** pay exactly `cuPrice` (an explicit price in the request), no estimate */
+  cuPriceFixed?: boolean;
   tipLamports: bigint;
   /** send through Jito bundles of 5 txs (needs tipLamports > 0) */
   bundle: boolean;
@@ -181,6 +192,11 @@ type DispatchHooks = {
   rebuild?: (i: number) => Promise<Rebuilt>;
   verify?: (i: number) => Promise<boolean>;
 };
+
+/** a snapshot older than this is re-read on the hot path (the ticker refreshes every 2 s while the page is open) */
+const HOT_MAX_AGE = 3500;
+
+const sigOf = (tx: VersionedTransaction): string => base58Encode(tx.signatures[0]);
 
 async function dispatch(
   txs: VersionedTransaction[],
@@ -209,19 +225,42 @@ async function dispatch(
       });
     }
     invalidateRpcCache((k) => rows.some((r) => k.includes(r.address)) || k.includes(opts.mint));
+    hotDirty(opts.mint);
     return out;
   }
+  // push confirmation: processed + confirmed subscriptions opened BEFORE the send (the socket is kept warm by the
+  // hot-state ticker), so "landed" shows ~0.4–0.8 s after the send and "confirmed" settles without polling
+  const readUrl = store().sol.config.rpcUrl;
+  const watches = new Map<string, ReturnType<typeof watchSignature>>();
+  const watch = (sig: string, k: number | null) => {
+    let w = watches.get(sig);
+    if (!w) {
+      w = watchSignature(readUrl, sig);
+      watches.set(sig, w);
+      w.processed.then((ev) => {
+        if (!ev || k === null) return;
+        hotDirty(opts.mint);
+        if (!ev.err || ev.simulated) jobNote(opts.job, `${rows[k].label}: landed (processed)`, { phase: "landed", address: rows[k].address, signature: sig, sol: rows[k].sol, ok: !ev.err });
+      });
+    }
+    return w;
+  };
+  txs.forEach((tx, k) => watch(sigOf(tx), k));
+  const sender = sendConn();
   // every transaction is journaled the moment it is broadcast ("sent") and again the moment ITS confirmation settles:
-  // the UI shows per-wallet progress within seconds instead of waiting for the slowest wallet
+  // the UI shows per-wallet progress within milliseconds instead of waiting for the slowest wallet
   const settled = new Array<TradeOutcome | null>(txs.length).fill(null);
-  const results: SendResult[] = await sendMany(conn, sendConn(), txs, {
+  const results: SendResult[] = await sendMany(conn, sender, txs, {
     lastValidBlockHeight,
     staggerMs: 0,
     rebuild: hooks.rebuild,
     verify: hooks.verify,
-    pollMs: isPublicRpc() ? 600 : 400,
+    subscribe: (sig) => watch(sig, null).confirmed,
+    // with the socket the poll is only the safety net; without it, the fast poll
+    pollMs: 1500,
+    pollFallbackMs: isPublicRpc() ? 600 : 400,
     pollGrowth: isPublicRpc() ? 1.35 : 1,
-    onSent: (k, sig) => jobNote(opts.job, `${rows[k].label}: sent`, { phase: "sent", address: rows[k].address, signature: sig }),
+    onSent: (k, sig) => jobNote(opts.job, `${rows[k].label}: sent`, { phase: "sent", address: rows[k].address, signature: sig, sol: rows[k].sol }),
     onResult: (k, r) => {
       const row = rows[k];
       noteRecovery(r, row.label);
@@ -230,6 +269,7 @@ async function dispatch(
       jobPush(opts.job, o.ok, { label: o.label, address: o.address, sol: o.sol, signature: o.signature, error: o.error ?? undefined, phase: "send" });
     },
   });
+  if (sender instanceof SenderConnection && sender.lastSkip) jobNote(opts.job, `Helius Sender skipped (${sender.lastSkip}): sent through the read RPC only.`, { phase: "send" });
   results.forEach((r, k) => {
     if (settled[k]) return out.push(settled[k]!);
     const row = rows[k];
@@ -238,6 +278,7 @@ async function dispatch(
     jobPush(opts.job, o.ok, { label: o.label, address: o.address, sol: o.sol, signature: o.signature, error: o.error ?? undefined, phase: "send" });
   });
   invalidateRpcCache((k) => rows.some((r) => k.includes(r.address)) || k.includes(opts.mint));
+  hotDirty(opts.mint);
   return out;
 }
 
@@ -254,6 +295,25 @@ async function tokenBalanceOf(conn: Connection, owner: string, mint: PublicKey, 
   }
 }
 
+/** Sender tip floor + priority fee + one job line saying what the transaction pays. Pure memory when warm. */
+async function feesFor(opts: TradeOpts): Promise<{ cuPrice: number; tipLamports: bigint }> {
+  let tipLamports = opts.tipLamports;
+  const sender = sendConn();
+  const notes: string[] = [];
+  if (!opts.bundle && sender instanceof SenderConnection && sender.requiresTip && tipLamports < sender.minTip) {
+    tipLamports = sender.minTip;
+    notes.push(`tip raised to ${solString(sender.minTip)} SOL (Helius Sender minimum, added automatically)`);
+  } else if (!opts.bundle && sender instanceof SenderConnection && sender.requiresTip && tipLamports === sender.minTip) notes.push(`tip ${solString(tipLamports)} SOL (Helius Sender minimum — no tip set)`);
+  let cuPrice = opts.cuPrice;
+  if (!opts.cuPriceFixed && !isDevnet()) {
+    const f = priorityFeeCached(opts.mint, opts.cuPrice) ?? (await priorityFee(opts.mint, opts.cuPrice));
+    cuPrice = f.microLamports;
+    notes.push(`priority ${cuPrice.toLocaleString("en-US")} µL/CU (${f.source === "helius" ? "Helius estimate, High" : f.source === "recent" ? "recent fees p75" : "estimate unavailable → cap"}, cap ${opts.cuPrice.toLocaleString("en-US")})`);
+  }
+  if (notes.length) jobNote(opts.job, `Fees: ${notes.join(" · ")}`, { phase: "fees" });
+  return { cuPrice, tipLamports };
+}
+
 /** buy `lamportsEach` of SOL on `mint` from every wallet. Fails cleanly (readable error) on empty wallets. */
 export async function buyWithWallets(opts: TradeOpts & { lamportsEach: bigint | ((address: string) => bigint) }): Promise<TradeOutcome[]> {
   requireUnlocked();
@@ -262,37 +322,43 @@ export async function buyWithWallets(opts: TradeOpts & { lamportsEach: bigint | 
   const st = store();
   const conn = readConn();
   const mintPk = new PublicKey(opts.mint);
-  const found = await fetchCurve(conn, mintPk);
-  if (!found) throw new HttpError(404, "Bonding curve not found: not a pump.fun mint, or the token already migrated.");
-  const { curve } = found;
-  if (curve.complete) throw new HttpError(409, "Token graduated to PumpSwap: buying on the curve is not possible here.");
   const wallets = vaultWallets(opts.wallets);
   const amountOf = (a: string) => (typeof opts.lamportsEach === "function" ? opts.lamportsEach(a) : opts.lamportsEach);
-  // balance guard (SOL + current token balance in one chunked read): a readable error instead of a failed broadcast;
-  // the token balance is the proof used when a signature is not found after the blockhash window
-  const tokenProgram = await tokenProgramOf(conn, mintPk);
-  const pre = await readBalancesChunked(conn, wallets.map((w) => w.address), opts.mint, tokenProgram).catch(() => null);
+  // curve + SOL + token balances + token program from the hot snapshot (no read when the page keeps it warm),
+  // blockhash from the warm cache, priority fee from its 5 s cache — all three in parallel when something is cold
+  const [snap, bh, fees] = await Promise.all([hotSnapshot(opts.mint, wallets.map((w) => w.address), HOT_MAX_AGE), blockhashNow(), feesFor(opts)]);
+  if (!snap.curve) throw new HttpError(404, "Bonding curve not found: not a pump.fun mint, or the token already migrated.");
+  const curve = snap.curve;
+  if (curve.complete) throw new HttpError(409, "Token graduated to PumpSwap: buying on the curve is not possible here.");
+  const tokenProgram = snap.tokenProgram;
+  // balance guard: a readable error instead of a failed broadcast; the token balance is the proof used when a
+  // signature is not found after the blockhash window
   const FEE_MARGIN = BigInt(3_000_000); // ATA rent + fees + priority
+  const sim = simulateSends();
   const poor: string[] = [];
-  wallets.forEach((w, i) => {
-    const bal = pre?.[i]?.sol ?? BigInt(0);
-    if (pre && bal < amountOf(w.address) + FEE_MARGIN + opts.tipLamports) poor.push(`${w.label} (${solString(bal)} SOL)`);
+  const balOf = (a: string) => snap.bal.get(a)?.sol ?? BigInt(0);
+  wallets.forEach((w) => {
+    if (balOf(w.address) < amountOf(w.address) + FEE_MARGIN + fees.tipLamports) poor.push(`${w.label} (${solString(balOf(w.address))} SOL)`);
   });
-  if (poor.length === wallets.length)
-    throw new HttpError(402, `Insufficient SOL: ${poor.join(", ")} — each wallet needs the buy amount + ~0.003 SOL for fees${opts.tipLamports > BigInt(0) ? " + the tip" : ""}.`);
-  if (poor.length) jobNote(opts.job, `Skipped (insufficient SOL): ${poor.join(", ")}`);
-  const active = wallets.filter((_w, i) => !pre || (pre[i]?.sol ?? BigInt(0)) >= amountOf(_w.address) + FEE_MARGIN + opts.tipLamports);
-  const preTokens = new Map(active.map((w) => [w.address, pre?.find((b) => b.owner === w.address)?.tokens ?? null]));
-  const rows: BuyRow[] = active.map((w) => ({ label: w.label, signer: st.sol.keypair(w.address), solIn: amountOf(w.address), cuPrice: opts.cuPrice }));
+  if (poor.length === wallets.length && !sim)
+    throw new HttpError(402, `Insufficient SOL: ${poor.join(", ")} — each wallet needs the buy amount + ~0.003 SOL for fees${fees.tipLamports > BigInt(0) ? " + the tip" : ""}.`);
+  if (poor.length) jobNote(opts.job, `${sim ? "[simulated sends] would skip" : "Skipped"} (insufficient SOL): ${poor.join(", ")}`);
+  const active = sim ? wallets : wallets.filter((w) => balOf(w.address) >= amountOf(w.address) + FEE_MARGIN + fees.tipLamports);
+  const preTokens = new Map(active.map((w) => [w.address, snap.bal.get(w.address)?.tokens ?? null]));
+  const rows: BuyRow[] = active.map((w) => ({ label: w.label, signer: st.sol.keypair(w.address), solIn: amountOf(w.address), cuPrice: fees.cuPrice }));
   const plans = planBuys(rows, { virtualTokenReserves: curve.virtualTokenReserves, virtualSolReserves: curve.virtualSolReserves, realTokenReserves: curve.realTokenReserves }, opts.slippageBps);
-  const { blockhash, lastValidBlockHeight } = await latestBlockhash(conn);
-  const build = (i: number, recentBlockhash: string) =>
-    signWith(
-      buildBuyTx({ mint: mintPk, creator: curve.creator, tokenProgram, cuPrice: opts.cuPrice, ataExists: false, tipLamports: opts.bundle || opts.tipLamports > BigInt(0) ? opts.tipLamports : BigInt(0), recentBlockhash }, plans[i]),
+  const tip = opts.bundle || fees.tipLamports > BigInt(0) ? fees.tipLamports : BigInt(0);
+  const build = (i: number, recentBlockhash: string) => {
+    const ataExists = !!snap.bal.get(active[i].address)?.ataExists;
+    return signWith(
+      buildBuyTx({ mint: mintPk, creator: curve.creator, tokenProgram, cuPrice: fees.cuPrice, cuLimit: ataExists ? CU_LIMITS.buyAtaExists : CU_LIMITS.buyNewAta, ataExists, tipLamports: tip, recentBlockhash }, plans[i]),
       rows[i].signer,
     );
-  const txs = plans.map((_p, i) => build(i, blockhash));
-  const out = await dispatch(txs, active.map((w) => ({ address: w.address, label: w.label, sol: solString(amountOf(w.address)) })), opts, lastValidBlockHeight, {
+  };
+  const txs = plans.map((_p, i) => build(i, bh.blockhash));
+  // click → signed (ms since the job started): the hot path's own cost, before the network
+  if (opts.job) opts.job.extra = { ...(opts.job.extra ?? {}), signedMs: Date.now() - opts.job.startedAt, warm: snap.fromMemory && bh.cached };
+  const out = await dispatch(txs, active.map((w) => ({ address: w.address, label: w.label, sol: solString(amountOf(w.address)) })), opts, bh.lastValidBlockHeight, {
     rebuild: async (i) => {
       const fresh = await latestBlockhash(conn);
       return { tx: build(i, fresh.blockhash), lastValidBlockHeight: fresh.lastValidBlockHeight };
@@ -327,26 +393,27 @@ export async function sellWithWallets(opts: TradeOpts & { percent: number }): Pr
   const st = store();
   const conn = readConn();
   const mintPk = new PublicKey(opts.mint);
-  const found = await fetchCurve(conn, mintPk);
-  if (!found) throw new HttpError(404, "Bonding curve not found: not a pump.fun mint, or the token already migrated.");
-  const { curve } = found;
-  if (curve.complete) throw new HttpError(409, "Token graduated to PumpSwap: selling on the curve is not possible here.");
   const wallets = vaultWallets(opts.wallets);
-  const tokenProgram = await tokenProgramOf(conn, mintPk);
-  const balances = await readBalancesChunked(conn, wallets.map((w) => w.address), opts.mint, tokenProgram);
-  const byOwner = new Map(balances.map((b) => [b.owner, b]));
+  const [snap, bh, fees] = await Promise.all([hotSnapshot(opts.mint, wallets.map((w) => w.address), HOT_MAX_AGE), blockhashNow(), feesFor(opts)]);
+  if (!snap.curve) throw new HttpError(404, "Bonding curve not found: not a pump.fun mint, or the token already migrated.");
+  const curve = snap.curve;
+  if (curve.complete) throw new HttpError(409, "Token graduated to PumpSwap: selling on the curve is not possible here.");
+  const tokenProgram = snap.tokenProgram;
+  const sim = simulateSends();
   const unreadable: string[] = [];
   const rows: SellRow[] = [];
   const rowMeta: { address: string; label: string }[] = [];
   const pct = BigInt(Math.max(1, Math.min(100, Math.round(opts.percent))));
   for (const w of wallets) {
-    const b = byOwner.get(w.address);
-    if (!b || b.tokens === null) {
+    const b = snap.bal.get(w.address);
+    let held = b?.tokens ?? null;
+    if (held === null) {
       unreadable.push(w.label);
       continue;
     }
-    if (b.tokens <= BigInt(0)) continue;
-    const tokens = pct >= BigInt(100) ? b.tokens : (b.tokens * pct) / BigInt(100);
+    if (held <= BigInt(0) && sim) held = BigInt(1_000_000_000); // measurement mode: a nominal amount so the tx is built and simulated
+    if (held <= BigInt(0)) continue;
+    const tokens = pct >= BigInt(100) ? held : (held * pct) / BigInt(100);
     if (tokens <= BigInt(0)) continue;
     rows.push({ label: w.label, signer: st.sol.keypair(w.address), tokens });
     rowMeta.push({ address: w.address, label: w.label });
@@ -354,24 +421,27 @@ export async function sellWithWallets(opts: TradeOpts & { percent: number }): Pr
   if (unreadable.length) jobNote(opts.job, `Unreadable balance (RPC): ${unreadable.join(", ")} — not sold.`);
   if (rows.length === 0)
     throw new HttpError(409, unreadable.length ? `RPC could not read the balance of ${unreadable.join(", ")}. Nothing was sold — retry.` : "Nothing to sell: these wallets hold no tokens of this mint.");
+  const before = new Map(rowMeta.map((m) => [m.address, snap.bal.get(m.address)?.tokens ?? null]));
   const plans = planSells(rows, { virtualTokenReserves: curve.virtualTokenReserves, virtualSolReserves: curve.virtualSolReserves, realTokenReserves: curve.realTokenReserves }, opts.slippageBps);
-  const { blockhash, lastValidBlockHeight } = await latestBlockhash(conn);
+  const tip = opts.bundle || fees.tipLamports > BigInt(0) ? fees.tipLamports : BigInt(0);
   const build = (i: number, recentBlockhash: string) =>
     signWith(
-      buildSellTx({ mint: mintPk, creator: curve.creator, tokenProgram, cuPrice: opts.cuPrice, tipLamports: opts.bundle || opts.tipLamports > BigInt(0) ? opts.tipLamports : BigInt(0), recentBlockhash, cashback: curve.isCashbackCoin }, plans[i]),
+      buildSellTx({ mint: mintPk, creator: curve.creator, tokenProgram, cuPrice: fees.cuPrice, cuLimit: curve.isCashbackCoin ? CU_LIMITS.sellCashback : CU_LIMITS.sell, tipLamports: tip, recentBlockhash, cashback: curve.isCashbackCoin }, plans[i]),
       rows[i].signer,
     );
-  const txs = plans.map((_p, i) => build(i, blockhash));
-  const out = await dispatch(txs, rowMeta.map((m, i) => ({ ...m, sol: solString(plans[i].expectedSol) })), opts, lastValidBlockHeight, {
+  const txs = plans.map((_p, i) => build(i, bh.blockhash));
+  // click → signed (ms since the job started): the hot path's own cost, before the network
+  if (opts.job) opts.job.extra = { ...(opts.job.extra ?? {}), signedMs: Date.now() - opts.job.startedAt, warm: snap.fromMemory && bh.cached };
+  const out = await dispatch(txs, rowMeta.map((m, i) => ({ ...m, sol: solString(plans[i].expectedSol) })), opts, bh.lastValidBlockHeight, {
     rebuild: async (i) => {
       const fresh = await latestBlockhash(conn);
       return { tx: build(i, fresh.blockhash), lastValidBlockHeight: fresh.lastValidBlockHeight };
     },
     // a sell landed when the wallet now holds fewer tokens than before the send
     verify: async (i) => {
-      const before = byOwner.get(rowMeta[i].address)?.tokens ?? null;
+      const b = before.get(rowMeta[i].address) ?? null;
       const now = await tokenBalanceOf(conn, rowMeta[i].address, mintPk, tokenProgram);
-      return before !== null && now !== null && now < before;
+      return b !== null && now !== null && now < b;
     },
   });
   const okSol = out.filter((o) => o.ok).reduce((s, o) => s + Number(o.sol), 0);
