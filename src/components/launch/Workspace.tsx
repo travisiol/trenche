@@ -1,14 +1,14 @@
 "use client";
 /** Block X launch workspace: Chart · Tasks · Token info · Activity panels + the right rail (Launch · Claim Rewards). */
 import { useState } from "react";
-import { ChevronDown, Gift, GripVertical, Info, Maximize2, Minimize2, MoreHorizontal, Pencil, Plus, Rocket, Settings2, Square, Trash2 } from "lucide-react";
-import { CANDLE_TFS, type AutoClaimStatus, type CandleTf, type JobCreated, type LaunchPreset, type LaunchState, type LaunchTaskType, type PositionsResponse, type TokenCandlesResponse, type TokenInfo, type TokenTradesResponse, type WalletGroup, type WalletInfo } from "@/lib/types";
+import { ChevronDown, ClipboardPlus, Flame, Gift, GripVertical, Maximize2, Minimize2, MoreHorizontal, Pencil, Rocket, Settings, SlidersHorizontal, Square } from "lucide-react";
+import { CANDLE_TFS, type AutoClaimStatus, type CandleTf, type LaunchPreset, type LaunchState, type LaunchTaskType, type PositionsResponse, type TokenCandlesResponse, type TokenInfo, type TokenTradesResponse, type WalletGroup, type WalletInfo } from "@/lib/types";
 import { failureMessage, post, useGet } from "@/lib/api";
 import { useSolPrice, useWallets } from "@/lib/store";
 import { tradeRowStyle } from "@/components/trade/tradeRowStyle";
-import { mergePending, trackTradeJob, usePendingTrades, type ListedTrade } from "@/lib/pendingTrades";
+import { mergePending, usePendingTrades, type ListedTrade } from "@/lib/pendingTrades";
 import { usePresetIndex, useTradingPresets } from "@/lib/presets";
-import { age, pct, short, sol, usd } from "@/lib/format";
+import { age, short, sol, usd } from "@/lib/format";
 import { toast } from "@/components/ui";
 import { cx } from "@/components/bx/ui";
 import { TxLink } from "@/components/bx/Job";
@@ -17,7 +17,8 @@ import { LiveTaskCard, TaskCard } from "./TaskEditor";
 import { TaskDialog, TASK_TYPES } from "./TaskDialog";
 import { GlobalPresetsDialog } from "./GlobalPresetsDialog";
 import { TradingPresetsDialog } from "./TradingPresetsDialog";
-import { TASK_META, type FormTask, type LaunchForm } from "./model";
+import { TASK_META, taskWallets, type FormTask, type LaunchForm } from "./model";
+import { DevTable, TaskSection, sectionDanger, type TradeCtx } from "./WalletRows";
 
 /** maximize / restore + "Reset layout" of one workspace panel (see layout.ts); absent on panels outside the workspace */
 export type PanelFrame = { maximized: boolean; onMaximize: () => void; onResetLayout: () => void };
@@ -281,26 +282,16 @@ export function TasksPanel({
   const { presets: trading } = useTradingPresets();
   const tp = trading[presetIndex];
   const set = <K extends keyof LaunchForm>(k: K, v: LaunchForm[K]) => onChange({ ...form, [k]: v });
-  const dev = wallets.find((w) => w.address === form.devWallet) ?? null;
-  const devBal = dev ? Number(balances?.[dev.address] ?? dev.sol ?? 0) : 0;
+  const devAddr = live?.dev ?? form.devWallet;
+  const dev = wallets.find((w) => w.address === devAddr) ?? null;
   const readOnly = !!live;
-  // positions walk the wallet trade history on the RPC: 15 s is plenty for a dev-wallet row
-  const positions = useGet<PositionsResponse>(live ? `/api/positions?mints=${live.mint}&wallets=${live.dev}` : null, 15000);
-  const devRow = (positions.data ?? []).find((r) => r.wallet === live?.dev && r.mint === live?.mint) ?? null;
-  const [sellBusy, setSellBusy] = useState<number | null>(null);
-  const devSell = async (percent: number) => {
-    if (!live) return;
-    setSellBusy(percent);
-    try {
-      toast(`Selling ${percent}% of the dev wallet`, "info");
-      const r = await post<JobCreated>("/api/trade/sell", { mint: live.mint, wallets: [live.dev], percent, slippageBps: tp.slippagePercent * 100, tipSol: tp.tipSol });
-      trackTradeJob(r.jobId, { mint: live.mint, side: "sell", label: `Dev sell ${percent}%` });
-    } catch (e) {
-      toast(failureMessage(e), "err");
-    } finally {
-      setSellBusy(null);
-    }
-  };
+  // the viewed mint, even when the launch state is gone after a server restart
+  const mint = live?.mint ?? launchId ?? null;
+  // one positions read for the dev + every task wallet (walks wallet trade history on the RPC: 15 s is plenty)
+  const rowWallets = Array.from(new Set([devAddr, ...(live ? live.tasks.flatMap((t) => t.wallets) : form.tasks.flatMap((t) => taskWallets(t, wallets)))].filter(Boolean))).sort();
+  const positions = useGet<PositionsResponse>(mint && rowWallets.length ? `/api/positions?mints=${mint}&wallets=${rowWallets.join(",")}` : null, 15000);
+  const posMap = new Map((positions.data ?? []).filter((r) => r.mint === mint).map((r) => [r.wallet, r] as const));
+  const ctx: TradeCtx = { mint, wallets, balances, positions: posMap, tp, presetIndex, unit, sortBy, onTraded: positions.refresh };
   const dumpAll = () => {
     if (!live || !onDump) return toast("Dump All failed — No launch wallets to sell.", "err");
     onDump();
@@ -310,8 +301,9 @@ export function TasksPanel({
     set("tasks", exists ? form.tasks.map((x) => (x.id === t.id ? t : x)) : [...form.tasks, t]);
     setDialog(null);
   };
-  const seg = (on: boolean) => cx("h-full rounded px-1.5 text-[10px] font-medium transition-colors", on ? "bg-btn-secondary text-accent" : "text-text-300 hover:text-text-100");
-  const liveTasks = live ? [...live.tasks].sort((a, b) => (sortBy === "pct" ? b.wallets.length - a.wallets.length : 0)) : [];
+  const seg = (on: boolean) => cx("h-full rounded-sm px-2 text-[11px] font-medium transition-colors", on ? "bg-accent-muted text-accent" : "text-text-300 hover:text-text-100");
+  const box = "flex h-6 items-center gap-0.5 rounded border border-line-100 bg-bg-50 p-0.5";
+  const headBtn = "inline-flex h-6 items-center gap-1.5 rounded border border-line-100 bg-bg-50 px-2 text-[11px] font-medium text-text-100 hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-40";
 
   return (
     <Panel
@@ -319,136 +311,110 @@ export function TasksPanel({
       frame={frame}
       className={className}
       right={
-        !readOnly ? (
-          <div className="flex items-center gap-1">
-            <div className="flex h-5 items-center gap-0.5 rounded bg-input-100 p-0.5">
-              <button type="button" onClick={() => setUnit("SOL")} className={seg(unit === "SOL")} title="Buy with SOL amounts">
-                SOL
-              </button>
-              <button type="button" onClick={() => setUnit("%")} className={seg(unit === "%")} title="Buy with percent of SOL balance">
-                %
-              </button>
-            </div>
-            <div className="flex h-5 items-center gap-0.5 rounded bg-input-100 p-0.5">
-              <button type="button" onClick={() => setSortBy("balance")} className={seg(sortBy === "balance")} title="Sort wallets by token balance">
-                Balance
-              </button>
-              <button type="button" onClick={() => setSortBy("pct")} className={seg(sortBy === "pct")} title="Sort wallets by holding percent">
-                %
-              </button>
-            </div>
-            <div className="relative">
-              <button type="button" onClick={() => setAddOpen((o) => !o)} className="inline-flex h-5 items-center gap-1 rounded border border-line-100 bg-bg-50 px-1.5 text-[10px] font-medium text-text-200 hover:bg-white/[0.04]">
-                <Plus className="h-3 w-3" /> Add Task <ChevronDown className="h-3 w-3" />
-              </button>
-              {addOpen ? (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setAddOpen(false)} />
-                  <div className="absolute right-0 top-6 z-20 w-44 rounded-md border border-line-100 bg-bg-50 p-1 shadow-xl">
-                    {TASK_TYPES.map((t) => (
-                      <button
-                        key={t}
-                        type="button"
-                        onClick={() => {
-                          setAddOpen(false);
-                          setDialog({ type: t });
-                        }}
-                        className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs text-text-100 hover:bg-hover-100"
-                      >
-                        {TASK_META[t].title}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              ) : null}
-            </div>
-            <button type="button" onClick={() => setGlobalOpen(true)} className="inline-flex h-5 items-center gap-1 rounded border border-line-100 bg-bg-50 px-1.5 text-[10px] font-medium text-text-200 hover:bg-white/[0.04]">
-              Presets
+        <div className="flex items-center gap-1.5">
+          <div className={box}>
+            <button type="button" onClick={() => setUnit("SOL")} className={seg(unit === "SOL")} title="Buy buttons in SOL amounts">
+              SOL
+            </button>
+            <button type="button" onClick={() => setUnit("%")} className={seg(unit === "%")} title="Buy buttons in percent of the wallet's SOL balance">
+              %
             </button>
           </div>
-        ) : (
-          <span className="text-[10px] text-text-300">{live?.restored ? "restored after restart" : live?.status}</span>
-        )
+          <div className={box}>
+            <button type="button" onClick={() => setSortBy("balance")} className={seg(sortBy === "balance")} title="Order wallets by token balance">
+              Balance
+            </button>
+            <button type="button" onClick={() => setSortBy("pct")} className={seg(sortBy === "pct")} title="Order wallets by supply percent">
+              %
+            </button>
+          </div>
+          <div className="relative">
+            <button type="button" disabled={readOnly} onClick={() => setAddOpen((o) => !o)} className={headBtn} title={readOnly ? "Tasks cannot be added once the launch runs" : "Add a task"}>
+              <ClipboardPlus className="h-3.5 w-3.5" /> Add Task <ChevronDown className="h-3 w-3" />
+            </button>
+            {addOpen ? (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setAddOpen(false)} />
+                <div className="absolute right-0 top-7 z-20 w-44 rounded-md border border-line-100 bg-bg-50 p-1 shadow-xl">
+                  {TASK_TYPES.map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => {
+                        setAddOpen(false);
+                        setDialog({ type: t });
+                      }}
+                      className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs text-text-100 hover:bg-hover-100"
+                    >
+                      {TASK_META[t].title}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
+          </div>
+          <button type="button" disabled={readOnly} onClick={() => setGlobalOpen(true)} className={headBtn} title={readOnly ? "Launch presets apply before launch" : "Launch presets"}>
+            <SlidersHorizontal className="h-3.5 w-3.5" /> Presets
+          </button>
+        </div>
       }
     >
       <div className="flex h-full min-h-0 flex-col overflow-hidden">
-        <div className="flex h-8 shrink-0 items-center justify-end gap-3 border-b border-line-50 px-3 text-[11px]">
-          <button type="button" onClick={() => setPresetsOpen(true)} className="flex h-5 w-5 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-text-100" aria-label="Trading preset settings" title="Trading preset settings">
-            <Settings2 className="h-3.5 w-3.5" />
+        <div className="flex h-11 shrink-0 items-center justify-end gap-3 border-b border-line-100 px-3 text-xs">
+          {live ? <span className="mr-auto text-[11px] text-text-300">{live.restored ? "restored after restart" : live.status}</span> : null}
+          <button type="button" onClick={() => setPresetsOpen(true)} className="flex h-6 w-6 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-text-100" aria-label="Trading preset settings" title="Trading preset settings">
+            <Settings className="h-4 w-4" />
           </button>
-          <div className="flex items-center gap-0.5">
+          <div className="flex h-7 items-center gap-0.5 rounded border border-line-100 bg-bg-50 p-0.5">
             {([0, 1, 2] as const).map((i) => (
-              <button key={i} type="button" onClick={() => setPresetIndex(i)} className={cx("rounded px-1.5 py-0.5 font-medium", presetIndex === i ? "bg-accent-muted text-accent" : "text-text-300 hover:text-text-100")} title={`Preset P${i + 1}: slippage ${trading[i].slippagePercent}% · tip ${trading[i].tipSol} SOL`}>
+              <button key={i} type="button" onClick={() => setPresetIndex(i)} className={cx("h-full rounded-sm px-2.5 font-medium", presetIndex === i ? "bg-accent-muted text-accent" : "text-text-300 hover:text-text-100")} title={`Preset P${i + 1}: buys ${trading[i].buyAmounts.join(" / ")} SOL · slippage ${trading[i].slippagePercent}% · tip ${trading[i].tipSol} SOL`}>
                 P{i + 1}
               </button>
             ))}
           </div>
           <span className="uppercase text-text-300">
-            Slippage <span className="font-mono normal-case text-text-100">{tp.slippagePercent}%</span>
+            Slippage <span className="ml-1 font-mono font-semibold normal-case text-text-100">{tp.slippagePercent}%</span>
           </span>
           <span className="uppercase text-text-300">
-            Tip (SOL) <span className="font-mono normal-case text-text-100">{tp.tipSol}</span>
+            Tip (SOL) <span className="ml-1 font-mono font-semibold normal-case text-text-100">{tp.tipSol}</span>
           </span>
-          <button type="button" onClick={() => setDetails((d) => !d)} className="flex h-5 w-5 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-text-100" aria-label={details ? "Hide details" : "Show details"} title={details ? "Hide details" : "Show details"}>
-            <ChevronDown className={cx("h-3.5 w-3.5 transition-transform", details ? "rotate-180" : "")} />
-          </button>
+          {!readOnly ? (
+            <button type="button" onClick={() => setDetails((d) => !d)} className="flex h-5 w-5 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-text-100" aria-label={details ? "Collapse every task" : "Expand every task"} title={details ? "Collapse every task" : "Expand every task"}>
+              <ChevronDown className={cx("h-3.5 w-3.5 transition-transform", details ? "rotate-180" : "")} />
+            </button>
+          ) : null}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {/* Dev task */}
-          <div className="task-card">
-            <div className="flex h-10 items-center gap-2 px-3">
-              <button type="button" onClick={() => setDevOpen((o) => !o)} className="flex h-5 w-5 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-text-100" aria-label={devOpen ? "Collapse" : "Expand"}>
-                <ChevronDown className={cx("h-3.5 w-3.5 transition-transform", devOpen ? "" : "-rotate-90")} />
+          <TaskSection
+            title="Dev"
+            info={`Buy Amount: ${form.devBuySol || "0"} SOL · Auto Sell: ${form.autoDevSellEnabled ? (form.autoDevSellMode === "ms" ? `${form.autoDevSellValue} ms` : `$${form.autoDevSellValue} MC`) : "Off"} · Auto Dump: ${form.sellOnExternalEnabled ? `${form.sellOnExternalThreshold} SOL` : "Off"}`}
+            open={devOpen}
+            onToggle={() => setDevOpen((o) => !o)}
+            right={
+              <button type="button" onClick={dumpAll} className={sectionDanger} title="Stop every task, then dump all tokens from all launch wallets">
+                <Flame className="h-3.5 w-3.5" /> Dump All
               </button>
-              <span className="text-sm font-medium text-text-100">Dev</span>
-              <span className="text-text-300" title={`Buy Amount: ${form.devBuySol || "0"} SOL · Auto Sell: ${form.autoDevSellEnabled ? (form.autoDevSellMode === "ms" ? `${form.autoDevSellValue} ms` : `$${form.autoDevSellValue} MC`) : "Off"} · Auto Dump: ${form.sellOnExternalEnabled ? `${form.sellOnExternalThreshold} SOL` : "Off"}`}>
-                <Info className="h-3 w-3" />
-              </span>
-              <button type="button" onClick={dumpAll} className="ml-auto inline-flex h-6 items-center gap-1 rounded border border-decrease/40 px-2 text-[11px] font-medium text-decrease hover:bg-decrease/10" title="Stop every task, then dump all tokens from all launch wallets">
-                <Trash2 className="h-3 w-3" /> Dump All
-              </button>
-            </div>
-            {devOpen ? (
-              !dev && !live ? (
-                <p className="px-3 pb-3 text-xs text-text-300">Select a developer wallet for this launch to manage the dev task.</p>
-              ) : (
-                <div className="flex flex-wrap items-center gap-3 border-t border-line-50 px-3 py-2 text-xs">
-                  <span className="text-text-100">{dev?.label || short(live?.dev ?? form.devWallet)}</span>
-                  <span className="font-mono text-text-300">{short(live?.dev ?? form.devWallet, 4, 4)}</span>
-                  <span className="font-mono text-text-200">{sol(devBal)} SOL</span>
-                  {live ? (
-                    <>
-                      <span className="font-mono text-text-300">{devRow ? `${sol(devRow.amount, 0)} tokens · ${pct(devRow.supplyPct, 2)}` : "—"}</span>
-                      <span className="ml-auto flex items-center gap-1">
-                        {tp.sellPercents.map((p) => (
-                          <button key={p} type="button" disabled={!devRow || !(Number(devRow.amount) > 0)} onClick={() => devSell(p)} className="h-6 rounded border border-decrease/40 px-1.5 text-[10px] font-medium text-decrease hover:bg-decrease/10 disabled:cursor-not-allowed disabled:opacity-40">
-                            Sell {p}%
-                          </button>
-                        ))}
-                      </span>
-                    </>
-                  ) : (
-                    <span className="ml-auto text-text-300">
-                      Buy {form.devBuySol || "0"} SOL · Auto Sell {form.autoDevSellEnabled ? "On" : "Off"} · Auto Dump {form.sellOnExternalEnabled ? "On" : "Off"}
-                    </span>
-                  )}
-                </div>
-              )
-            ) : null}
-            {live?.mint ?? launchId ? <AutoClaimRow mint={live?.mint ?? launchId!} /> : null}
-          </div>
+            }
+          >
+            {!devAddr ? (
+              <p className="px-3 pb-3 text-xs text-text-300">Select a developer wallet for this launch to manage the dev task.</p>
+            ) : (
+              <DevTable address={devAddr} name={dev?.label || short(devAddr)} ctx={ctx} defaultBuy={tp.buyAmounts[0]} />
+            )}
+            {mint ?? launchId ? <AutoClaimRow mint={mint ?? launchId!} /> : null}
+          </TaskSection>
           {readOnly && live ? (
             <div className="flex flex-col">
               {live.restored ? <p className="border-b border-line-50 bg-yellow-100/10 px-3 py-2 text-[11px] text-yellow-100">{live.restored.note}</p> : null}
               {!live.tasks.length ? <p className="px-3 py-4 text-xs text-text-300">No tasks on this launch.</p> : null}
-              {liveTasks.map((t) => (
-                <LiveTaskCard key={t.id} launchId={launchId ?? live.id} mint={live.mint} t={t} wallets={wallets} controls={taskControls} />
+              {live.tasks.map((t) => (
+                <LiveTaskCard key={t.id} launchId={launchId ?? live.id} t={t} ctx={ctx} controls={taskControls} />
               ))}
             </div>
           ) : (
             <>
               {form.tasks.map((t) => (
-                <TaskCard key={`${t.id}-${details}`} task={t} wallets={wallets} detailsOpen={details} onEdit={() => setDialog({ type: t.type, task: t })} onChange={(nt) => set("tasks", form.tasks.map((x) => (x.id === t.id ? nt : x)))} onRemove={() => set("tasks", form.tasks.filter((x) => x.id !== t.id))} />
+                <TaskCard key={`${t.id}-${details}`} task={t} ctx={ctx} detailsOpen={details} onEdit={() => setDialog({ type: t.type, task: t })} onChange={(nt) => set("tasks", form.tasks.map((x) => (x.id === t.id ? nt : x)))} onRemove={() => set("tasks", form.tasks.filter((x) => x.id !== t.id))} />
               ))}
               {!form.tasks.length ? <p className="px-3 py-4 text-xs text-text-300">No tasks yet.</p> : null}
             </>
