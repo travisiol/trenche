@@ -2,9 +2,9 @@
 /** Block X /sol/settings: left rail APP (Appearance · Workspace · Notifications · Keybinds · Account), content on the right. */
 import { Suspense, useEffect, useState, useSyncExternalStore } from "react";
 import { useSearchParams } from "next/navigation";
-import { Bell, Keyboard, LayoutPanelLeft, Lock, LockOpen, Palette, RotateCcw, Search, User, X } from "lucide-react";
+import { Bell, Download, Keyboard, LayoutPanelLeft, Lock, LockOpen, Palette, RotateCcw, Search, User, X } from "lucide-react";
 import type { Cluster, Settings, SettingsUpdateRequest } from "@/lib/types";
-import { failureMessage, post } from "@/lib/api";
+import { failureMessage, post, useGet } from "@/lib/api";
 import { refreshVaultDependents, settingsRes, useSettings, useVault } from "@/lib/store";
 import { setToastsMuted, toast, toastsMuted } from "@/components/ui";
 import { playSound, setSoundsMuted } from "@/lib/sounds";
@@ -428,6 +428,28 @@ function Account() {
       </div>
       <p className="text-xs text-text-300">Keys are encrypted with your passphrase in this file. Locking wipes the decrypted keys from memory; balances keep working. The passphrase is never stored.</p>
       <UnlockVaultModal open={open} onClose={() => setOpen(false)} />
+      {unlocked ? <VaultBackups /> : null}
+    </div>
+  );
+}
+
+/** automatic dated copies of the encrypted vault + a manual download (to keep on a USB key / another disk) */
+function VaultBackups() {
+  const info = useGet<{ dir: string; count: number; latest: string | null; vault: string }>("/api/vault/backup?info=1", 30000);
+  return (
+    <div className="space-y-2 pt-3">
+      <H3>Backups</H3>
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-line-100 bg-bg-50 p-3">
+        <div className="min-w-0 flex-1 text-xs text-text-300">
+          <div className="text-sm font-medium text-text-100">{info.data ? `${info.data.count} automatic cop${info.data.count === 1 ? "y" : "ies"}` : "…"}</div>
+          <div>A dated copy of the encrypted vault is written before every change (create, import, remove, restore), 100 kept.</div>
+          {info.data ? <div className="break-all font-mono text-[11px]">{info.data.dir}</div> : null}
+        </div>
+        <a href="/api/vault/backup" download className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line-100 bg-bg-100 px-3 text-xs font-medium text-text-100 hover:bg-white/[0.04]">
+          <Download className="h-3.5 w-3.5" /> Download encrypted backup
+        </a>
+      </div>
+      <p className="text-xs text-text-300">The backup is the vault file itself: encrypted, it opens only with your passphrase. Keep a copy off this PC (USB key, another disk). Without the passphrase nobody — you included — can open it.</p>
     </div>
   );
 }

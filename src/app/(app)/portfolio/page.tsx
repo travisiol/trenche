@@ -18,6 +18,7 @@ import { SharePnlButton } from "@/components/bx/SharePnl";
 import { AirdropModal, CreateModal, ExportModal, ImportModal, MoveModal, SendModal, type ModalKind } from "@/components/portfolio/BxModals";
 import { DepositDrawer, DisperseDrawer, ReverseDisperseDrawer, type DrawerKind } from "@/components/portfolio/Drawers";
 import { PrivateSendModal } from "@/components/portfolio/PrivateSend";
+import { TrashModal } from "@/components/portfolio/TrashModal";
 import { DRAG_MIME, TransferView, type TransferKind } from "@/components/portfolio/TransferView";
 
 type Win = "1D" | "7D" | "30D" | "All";
@@ -32,6 +33,7 @@ export default function PortfolioPage() {
   const settings = useSettings();
   const [tab, setTab] = useState<"wallets" | "groups">("wallets");
   const [modal, setModal] = useState<ModalKind>(null);
+  const [trashOpen, setTrashOpen] = useState(false);
   const [drawer, setDrawer] = useState<DrawerKind>(null);
   const [transfer, setTransfer] = useState<TransferKind | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -191,12 +193,16 @@ export default function PortfolioPage() {
                             type="button"
                             disabled={!sel.length || !canSign}
                             onClick={() => {
-                              if (confirm(`Remove ${sel.length} wallet${sel.length !== 1 ? "s" : ""} from the vault? Export their keys first if they hold funds.`)) bulk(() => post("/api/wallets/remove", { addresses: sel }), "Removed from the vault");
+                              if (confirm(`Move ${sel.length} wallet${sel.length !== 1 ? "s" : ""} to the trash? Their keys stay encrypted in the vault — restore them any time from Trash.`)) bulk(() => post("/api/wallets/remove", { addresses: sel }), "Moved to the trash");
                             }}
                             className={cx(tool, "hover:text-decrease")}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                             Delete
+                          </button>
+                          <button type="button" disabled={!canSign} onClick={() => setTrashOpen(true)} className={tool} title="Deleted wallets — keys kept, restorable">
+                            <Undo2 className="h-3.5 w-3.5" />
+                            Trash
                           </button>
                         </>
                       ) : null}
@@ -523,6 +529,7 @@ export default function PortfolioPage() {
       {modal === "withdraw" ? <SendModal kind="withdraw" open onClose={() => setModal(null)} {...base} /> : null}
       {modal === "airdrop" ? <AirdropModal open onClose={() => setModal(null)} {...base} /> : null}
       {drawer === "deposit" ? <DepositDrawer onClose={() => setDrawer(null)} wallets={scopeWallets} selected={sel} active={active} balances={bal} /> : null}
+      {trashOpen ? <TrashModal open onClose={() => setTrashOpen(false)} /> : null}
       {modal === "private" ? <PrivateSendModal onClose={() => setModal(null)} wallets={live} balances={bal} selected={sel} active={active} /> : null}
       {drawer === "disperse" ? <DisperseDrawer onClose={() => setDrawer(null)} wallets={live} groups={groups} balances={bal} selected={sel} active={active} scopeLabel={scopeLabel} scopeGroup={curGroup?.id ?? null} onHistory={() => { setDrawer(null); setActivityTab("disperse"); }} /> : null}
       {drawer === "reverse" ? <ReverseDisperseDrawer onClose={() => setDrawer(null)} wallets={live} groups={groups} scopeLabel={scopeLabel} scopeGroup={curGroup?.id ?? null} balances={bal} /> : null}
@@ -609,7 +616,7 @@ function WalletRow({ w, groups, active, checked, onCheck, balance, tokens, vol, 
           <button type="button" onClick={() => post("/api/wallets/update", { address: w.address, archived: !w.archived }).then(() => walletsRes.refresh()).catch((e) => toast(failureMessage(e), "err"))} className="flex h-6 w-6 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-text-100" title={w.archived ? "Unarchive" : "Archive"}>
             <Archive className="h-3 w-3" />
           </button>
-          <button type="button" disabled={!canSign} onClick={() => confirm(`Remove ${w.label || short(w.address)} from the vault? Export its key first if it holds funds.`) && post("/api/wallets/remove", { addresses: [w.address] }).then(() => walletsRes.refresh()).catch((e) => toast(failureMessage(e), "err"))} className="flex h-6 w-6 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-decrease disabled:opacity-40" title="Delete">
+          <button type="button" disabled={!canSign} onClick={() => confirm(`Move ${w.label || short(w.address)} to the trash? Its key stays encrypted in the vault — restore it any time from Trash.`) && post("/api/wallets/remove", { addresses: [w.address] }).then(() => walletsRes.refresh()).catch((e) => toast(failureMessage(e), "err"))} className="flex h-6 w-6 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-decrease disabled:opacity-40" title="Delete">
             <Trash2 className="h-3 w-3" />
           </button>
         </div>

@@ -1,4 +1,6 @@
 /* Vault (keystore) + wallet metadata + balances. Secrets never leave this module except via exportKeys. */
+import { copyFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { PublicKey } from "@solana/web3.js";
 import { assertStrongPassphrase, keystoreExists, loadKeystore, saveKeystore } from "@/engine/keystore.js";
 import { parseSolanaKey } from "@/engine/solana/keys.js";
@@ -18,12 +20,13 @@ function parseEntries(raw: unknown): KeystoreEntry[] {
   if (!Array.isArray(raw)) throw new HttpError(500, "Keystore content is not a wallet list.");
   return raw
     .filter((e): e is KeystoreEntry => !!e && typeof e === "object" && typeof (e as KeystoreEntry).secret === "string")
-    .map((e) => ({ label: String(e.label ?? ""), secret: e.secret }));
+    .map((e) => ({ label: String(e.label ?? ""), secret: e.secret, ...(typeof e.deletedAt === "number" ? { deletedAt: e.deletedAt } : {}) }));
 }
 
 function load(st = store(), entries: KeystoreEntry[]): void {
   st.vault = entries;
-  st.sol.load(entries);
+  // removed wallets stay in the encrypted vault (restorable) but are not loaded: they cannot sign anything
+  st.sol.load(entries.filter((e) => !e.deletedAt));
   // keep meta in sync: every wallet has an order
   let changed = false;
   let maxOrder = Math.max(-1, ...Object.values(st.walletMeta.meta).map((m) => m.order));
@@ -97,8 +100,38 @@ export function verifyPassphrase(passphrase: string): boolean {
   }
 }
 
-function persist(st = store()): void {
+const MAX_BACKUPS = 100;
+
+/** dated copy of the encrypted vault before every write (backups/keystore-YYYYMMDD-HHMMSS.enc.json, 100 kept) — the
+ *  same passphrase opens them; the file is encrypted, never a plain key */
+export function backupKeystore(st = store(), reason = "write"): string | null {
+  const src = st.paths.keystore;
+  if (!existsSync(src)) return null;
+  const dir = join(dirname(src), "backups");
+  mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+  const dest = join(dir, `keystore-${stamp}-${reason}.enc.json`);
+  copyFileSync(src, dest);
+  const all = readdirSync(dir)
+    .filter((f) => /^keystore-.*\.enc\.json$/.test(f))
+    .sort();
+  for (const old of all.slice(0, Math.max(0, all.length - MAX_BACKUPS))) {
+    try {
+      unlinkSync(join(dir, old));
+    } catch {
+      /* keep it */
+    }
+  }
+  return dest;
+}
+
+export function backupsDir(st = store()): string {
+  return join(dirname(st.paths.keystore), "backups");
+}
+
+function persist(st = store(), reason = "write"): void {
   if (!st.passphrase) throw new HttpError(423, "Keystore locked.");
+  backupKeystore(st, reason);
   saveKeystore(st.paths.keystore, st.passphrase, st.vault);
   load(st, st.vault);
 }
@@ -154,6 +187,9 @@ export function importWallets(lines: string[], prefix = "Imported"): { added: nu
   if (keys.length > WALLET_LIMITS.maxImport) throw new HttpError(400, `Up to ${WALLET_LIMITS.maxImport} keys per import (got ${keys.length}).`);
   const { entries, errors } = parseSolanaWalletLines(keys.join("\n"));
   if (entries.length === 0) throw new HttpError(400, errors[0] ?? "No valid Solana key in the input.");
+  const trashed = new Set(st.vault.filter((e) => e.deletedAt).map((e) => e.secret));
+  const back = entries.filter((e) => trashed.has(e.secret));
+  if (back.length) st.vault = st.vault.map((e) => (trashed.has(e.secret) && back.some((b) => b.secret === e.secret) ? { label: e.label, secret: e.secret } : e));
   const have = new Set(st.vault.map((e) => e.secret));
   const pfx = (prefix || "Imported").trim().replace(/\s+/g, " ").slice(0, 24) || "Imported";
   const re = new RegExp(`^${pfx.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} (\\d+)$`);
@@ -231,16 +267,97 @@ export function removeWallets(addresses: string[]): number {
   requireUnlocked();
   const st = store();
   const set = new Set(addresses);
-  const before = st.vault.length;
-  st.vault = st.vault.filter((e) => !set.has(pubkeyOf(e.secret) ?? ""));
-  const removed = before - st.vault.length;
+  // never erased: the key moves to the vault's trash (deletedAt), still encrypted, restorable from Portfolio
+  const now = Date.now();
+  let removed = 0;
+  st.vault = st.vault.map((e) => {
+    const a = pubkeyOf(e.secret) ?? "";
+    if (!set.has(a) || e.deletedAt) return e;
+    removed++;
+    return { ...e, label: st.walletMeta.meta[a]?.label || e.label, deletedAt: now };
+  });
   if (removed === 0) throw new HttpError(404, "None of these wallets is in the vault.");
-  persist(st);
+  persist(st, "remove");
   for (const a of addresses) delete st.walletMeta.meta[a];
   if (st.walletMeta.active && set.has(st.walletMeta.active)) st.walletMeta.active = st.sol.wallets[0]?.address ?? null;
   saveWalletMeta(st);
-  logActivity(st, { kind: "wallets", ok: true, message: `${removed} wallet(s) removed from the vault.`, wallets: addresses });
+  logActivity(st, { kind: "wallets", ok: true, message: `${removed} wallet(s) moved to the trash (keys kept, restorable).`, wallets: addresses });
   return removed;
+}
+
+/** wallets in the trash: removed from the list, keys still in the encrypted vault */
+export function removedWallets(): { address: string; label: string; deletedAt: number }[] {
+  requireUnlocked();
+  return store()
+    .vault.filter((e) => e.deletedAt)
+    .map((e) => ({ address: pubkeyOf(e.secret) ?? "", label: e.label, deletedAt: e.deletedAt! }))
+    .filter((w) => w.address)
+    .sort((a, b) => b.deletedAt - a.deletedAt);
+}
+
+/** keys found in the vault's backups (keystore.enc.json.bak + backups/*) that are no longer in the vault — e.g. wallets
+ *  deleted before the trash existed — are added to the trash. Opened with the passphrase of the unlocked vault; a
+ *  backup made under another passphrase is skipped. */
+export function recoverFromBackups(): { recovered: number; scanned: number; unreadable: number } {
+  requireUnlocked();
+  const st = store();
+  const files = [`${st.paths.keystore}.bak`];
+  try {
+    for (const f of readdirSync(backupsDir(st))) if (f.startsWith("keystore-")) files.push(join(backupsDir(st), f));
+  } catch {
+    /* no backups folder yet */
+  }
+  const have = new Set(st.vault.map((e) => e.secret));
+  const found = new Map<string, KeystoreEntry>();
+  let scanned = 0, unreadable = 0;
+  for (const f of files) {
+    if (!existsSync(f)) continue;
+    scanned++;
+    let raw: unknown;
+    try {
+      raw = loadKeystore(f, st.passphrase!);
+    } catch {
+      unreadable++;
+      continue;
+    }
+    let entries: KeystoreEntry[] = [];
+    try {
+      entries = parseEntries(raw);
+    } catch {
+      unreadable++;
+      continue;
+    }
+    for (const e of entries) if (!have.has(e.secret) && !found.has(e.secret) && pubkeyOf(e.secret)) found.set(e.secret, { label: e.label, secret: e.secret, deletedAt: Date.now() });
+  }
+  if (found.size) {
+    st.vault = [...st.vault, ...found.values()];
+    persist(st, "recover");
+    logActivity(st, { kind: "wallets", ok: true, message: `${found.size} wallet(s) recovered from backups into the trash.` });
+  }
+  return { recovered: found.size, scanned, unreadable };
+}
+
+/** back from the trash, with their label */
+export function restoreWallets(addresses: string[]): number {
+  requireUnlocked();
+  const st = store();
+  const set = new Set(addresses);
+  const labels = new Map<string, string>();
+  let restored = 0;
+  st.vault = st.vault.map((e) => {
+    const a = pubkeyOf(e.secret) ?? "";
+    if (!e.deletedAt || !set.has(a)) return e;
+    restored++;
+    labels.set(a, e.label);
+    const { deletedAt: _gone, ...rest } = e;
+    return rest;
+  });
+  if (!restored) throw new HttpError(404, "None of these wallets is in the trash.");
+  persist(st, "restore");
+  for (const [a, l] of labels) (st.walletMeta.meta[a] ??= { group: null, archived: false, order: 0 }).label = l;
+  saveWalletMeta(st);
+  logActivity(st, { kind: "wallets", ok: true, message: `${restored} wallet(s) restored from the trash.`, wallets: addresses });
+  return restored;
 }
 
 export function createGroup(name: string): WalletGroup {

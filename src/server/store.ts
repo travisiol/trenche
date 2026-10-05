@@ -13,7 +13,8 @@ const senderConns = new Map<string, SenderConnection>();
 import type { ActivityItem, LaunchPreset, LaunchRecord, Settings, TradingPreset, TradingPresets } from "@/lib/types";
 import { DEFAULT_TIP_SOL, TRADING_PRESET_DEFAULTS } from "@/lib/types";
 
-export type KeystoreEntry = { label: string; secret: string };
+/** a vault entry; `deletedAt` = removed from the wallet list by the user, key kept encrypted in the vault (restorable) */
+export type KeystoreEntry = { label: string; secret: string; deletedAt?: number };
 
 export type WalletMeta = { label?: string; group: string | null; archived: boolean; order: number };
 export type WalletMetaFile = {
