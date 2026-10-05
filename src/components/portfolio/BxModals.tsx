@@ -135,8 +135,8 @@ export function CreateModal({ open, onClose, groups, group: initialGroup, fromGr
     <WalletActionDialog title="Create Wallets" onClose={onClose} onSubmit={submit}>
       <label className="block space-y-1.5">
         <span className="text-xs text-text-300">Label prefix (optional)</span>
-        <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Wallet" className={walletInput} />
-        <p className="text-[11px] text-text-300">Numbered labels (e.g. Sniper 1, Sniper 2).</p>
+        <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={group === "__new" ? newGroupName.trim() || "Group name" : groups.find((g) => g.id === group)?.name ?? "Wallet"} className={walletInput} />
+        <p className="text-[11px] text-text-300">Numbered labels (e.g. Sniper 1, Sniper 2). Empty: named after the group (dev 1, dev 2…), else Wallet.</p>
       </label>
       <label className="block space-y-1.5">
         <span className="text-xs text-text-300">Number of wallets</span>

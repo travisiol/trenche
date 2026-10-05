@@ -154,7 +154,9 @@ export function generateWallets(count: number, label?: string, group?: string): 
   const st = store();
   if (!Number.isFinite(count) || count < 1) throw new HttpError(400, "Number of wallets: at least 1.");
   if (count > WALLET_LIMITS.maxCreate) throw new HttpError(400, `Generate up to ${WALLET_LIMITS.maxCreate} new developer wallets at once (asked ${count}).`);
-  const prefix = (label || "Wallet").trim().replace(/\s+/g, " ").slice(0, 24) || "Wallet";
+  // no prefix typed: wallets created in a group are named after it ("dev 1", "dev 2"…), numbered on their own
+  const groupName = group ? st.walletMeta.groups.find((g) => g.id === group)?.name : undefined;
+  const prefix = (label || groupName || "Wallet").trim().replace(/\s+/g, " ").slice(0, 24) || "Wallet";
   const re = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} (\\d+)$`);
   let n = Math.max(0, ...Object.values(st.walletMeta.meta).map((m) => Number(m.label?.match(re)?.[1] ?? 0)), ...st.sol.wallets.map((w) => Number(w.label.match(re)?.[1] ?? 0)));
   const fresh = generateSolanaWallets(count, prefix.replace(/\s+/g, "-"), st.vault.length).map((w) => ({ ...w, label: `${prefix} ${++n}` }));
@@ -387,6 +389,23 @@ export function renameGroup(id: string, name: string): WalletGroup {
   g.name = n;
   saveWalletMeta(st);
   return g;
+}
+
+/** label every wallet of a group "<group name> 1, 2, 3…" in their list order */
+export function numberGroupWallets(id: string): number {
+  const st = store();
+  const g = st.walletMeta.groups.find((x) => x.id === id);
+  if (!g) throw new HttpError(404, "Unknown group.");
+  const prefix = g.name.trim().slice(0, 24);
+  const members = st.sol.wallets
+    .map((w) => ({ address: w.address, order: st.walletMeta.meta[w.address]?.order ?? 0, group: st.walletMeta.meta[w.address]?.group ?? null }))
+    .filter((w) => w.group === id)
+    .sort((a, b) => a.order - b.order);
+  members.forEach((w, i) => {
+    (st.walletMeta.meta[w.address] ??= { group: id, archived: false, order: w.order }).label = `${prefix} ${i + 1}`;
+  });
+  saveWalletMeta(st);
+  return members.length;
 }
 
 /** Move several wallets into a group (or out of every group with null) in one call. */

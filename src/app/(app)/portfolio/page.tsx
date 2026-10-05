@@ -4,7 +4,7 @@
  *  funding; Consolidate / Distribute / Transfer turn the summary into the drag-and-drop transfer view.
  *  Omitted: Marketplace, Mixer, Unwrap, Convert, Swap Stocks (no provider on this server). */
 import { useMemo, useState } from "react";
-import { Archive, EyeOff, ArrowDownToLine, ArrowLeftRight, ArrowUpDown, ArrowUpFromLine, Calendar, Check, Copy, Droplet, FolderKanban, FolderPlus, KeyRound, Pencil, Plus, Search, Share2, Shuffle, Trash2, Undo2, Upload, Wallet, X } from "lucide-react";
+import { Archive, EyeOff, ListOrdered, ArrowDownToLine, ArrowLeftRight, ArrowUpDown, ArrowUpFromLine, Calendar, Check, Copy, Droplet, FolderKanban, FolderPlus, KeyRound, Pencil, Plus, Search, Share2, Shuffle, Trash2, Undo2, Upload, Wallet, X } from "lucide-react";
 import type { ActivityResponse, DashboardResponse, JobsListResponse, PositionsResponse, WalletGroup, WalletInfo } from "@/lib/types";
 import { del, failureMessage, post, useGet } from "@/lib/api";
 import { useBalances, useSettings, useSolPrice, useVault, useWallets, walletsRes } from "@/lib/store";
@@ -293,6 +293,9 @@ export default function PortfolioPage() {
                                 <span className="flex items-center gap-0.5 pr-1">
                                   <button type="button" onClick={() => { setRenaming(g.id); setDraft(g.name); }} className="flex h-5 w-5 items-center justify-center rounded text-text-300 hover:text-text-100" title="Rename group" aria-label="Rename group">
                                     <Pencil className="h-3 w-3" />
+                                  </button>
+                                  <button type="button" onClick={() => confirm(`Rename the wallets of “${g.name}” as ${g.name} 1, ${g.name} 2, ${g.name} 3…?`) && groupAction(() => post(`/api/groups/${g.id}`, { action: "number" }), `Wallets renamed ${g.name} 1, 2, 3…`)} className="flex h-5 w-5 items-center justify-center rounded text-text-300 hover:text-text-100" title={`Rename its wallets ${g.name} 1, ${g.name} 2…`} aria-label="Number the wallets after the group">
+                                    <ListOrdered className="h-3 w-3" />
                                   </button>
                                   <button type="button" onClick={() => confirm(`Delete group “${g.name}”? Its wallets stay in the vault.`) && groupAction(() => del(`/api/groups/${g.id}`), "Group deleted")} className="flex h-5 w-5 items-center justify-center rounded text-text-300 hover:text-decrease" title="Delete group" aria-label="Delete group">
                                     <Trash2 className="h-3 w-3" />
