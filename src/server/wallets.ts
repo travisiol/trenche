@@ -145,7 +145,29 @@ export function walletsResponse(): WalletsResponse {
       return { address: w.address, label: m.label || w.label, group: m.group ?? null, archived: !!m.archived, order: m.order ?? 0, sol: bal[w.address] ?? null };
     })
     .sort((a, b) => a.order - b.order);
-  return { wallets, groups: st.walletMeta.groups, active: st.walletMeta.active, unlocked: st.sol.unlocked && !!st.passphrase };
+  const listed = new Set(wallets.map((w) => w.address));
+  const history = ownedAddresses().filter((a) => !listed.has(a));
+  return { wallets, groups: st.walletMeta.groups, active: st.walletMeta.active, unlocked: st.sol.unlocked && !!st.passphrase, history };
+}
+
+/** every address that is ours: the vault's wallets, the trash (while unlocked) and every wallet a launch used —
+ *  a dev deleted after its launch still counts in that launch's positions, PnL and "you" markers */
+export function ownedAddresses(): string[] {
+  const st = store();
+  const out = new Set(st.sol.wallets.map((w) => w.address));
+  if (st.sol.unlocked) for (const e of st.vault) if (e.deletedAt) { const a = pubkeyOf(e.secret); if (a) out.add(a); }
+  for (const l of st.launches) {
+    if (l.dev) out.add(l.dev);
+    for (const w of l.wallets ?? []) out.add(w);
+  }
+  return [...out];
+}
+
+/** label of an owned address that is no longer listed (trash), else null */
+export function trashedLabel(address: string): string | null {
+  const st = store();
+  if (!st.sol.unlocked) return null;
+  return st.vault.find((e) => e.deletedAt && pubkeyOf(e.secret) === address)?.label || null;
 }
 
 /** Block X "Create Wallets": numbered labels "<prefix> n" (Sniper 1, Sniper 2…), n continuing after the existing ones */

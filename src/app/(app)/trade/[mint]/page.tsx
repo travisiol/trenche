@@ -40,7 +40,7 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
   const c = t?.curve ?? null;
   const solUsd = t?.solPrice ?? price.data?.usd ?? null;
   const rows = (positions.data ?? []).filter((r) => r.mint === mint);
-  const mine = new Set((wallets.data?.wallets ?? []).map((w) => w.address));
+  const mine = new Set([...(wallets.data?.wallets ?? []).map((w) => w.address), ...(wallets.data?.history ?? [])]);
   const supply = Number(c?.tokenTotalSupply ?? 1e15) / 1e6 || 1e9;
 
   // recently viewed strip (this machine) + server-side list for the search dialog History

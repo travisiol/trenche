@@ -259,10 +259,16 @@ export function positionPnl(rows: { costSol: string; realisedSol: string; valueS
     value += v;
     if (Number(r.amount) > 0) holding = true;
   }
-  const trading = realised + value - cost;
   const costs = Number(ledger?.costsSol ?? 0) || 0;
   const creatorFees = Number(ledger?.creatorFeesSol ?? 0) || 0;
-  const net = trading - costs + creatorFees;
+  let trading = realised + value - cost;
+  let net = trading - costs + creatorFees;
+  // position closed: the ledger's on-chain net (rent refunds included) is the Dashboard row's figure — show exactly that,
+  // trades being what it leaves once costs and creator fees are put back
+  if (!holding && ledger) {
+    net = Number(ledger.netSol) || 0;
+    trading = net + costs - creatorFees;
+  }
   const basis = cost + costs;
   return { cost, realised, value, trading, costs, creatorFees, net, pct: basis > 0 ? (net / basis) * 100 : null, holding, feesKnown: !!ledger };
 }
@@ -615,7 +621,8 @@ export function ActivityPanel({ mint, live, frame, className }: { mint: string |
   const apiRows = trades.data?.trades ?? [];
   const rows: ListedTrade[] = mergePending(apiRows, pending, apiRows[0] ? Number(apiRows[0].priceSol) : null);
   const vaultWallets = useWallets();
-  const mine = new Set((vaultWallets.data?.wallets ?? []).map((w) => w.address));
+  // ours = the vault + the trash + every launch wallet (a dev deleted after its launch is still "you")
+  const mine = new Set([...(vaultWallets.data?.wallets ?? []).map((w) => w.address), ...(vaultWallets.data?.history ?? []), ...(live ? [live.dev, ...live.tasks.flatMap((t) => t.wallets)] : [])]);
   const supply = Number(trades.data?.supplyTokens ?? 1e9) || 1e9;
   return (
     <Panel title="Activity" frame={frame} className={className}>

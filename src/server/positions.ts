@@ -3,8 +3,9 @@ import { PublicKey } from "@solana/web3.js";
 import { readPositions } from "@/engine/solana/pump/positions.js";
 import type { PositionRow } from "@/lib/types";
 import { solString } from "./api";
-import { isPublicRpc, labelOf, readConn, vaultWallets } from "./engine";
+import { isPublicRpc, labelOf, readConn } from "./engine";
 import { metaCached, resolveMeta } from "./metadata";
+import { ownedAddresses, trashedLabel } from "./wallets";
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
@@ -20,9 +21,18 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R
   return out;
 }
 
+function walletLabel(a: string): string {
+  const l = labelOf(a);
+  return l === a.slice(0, 6) ? (trashedLabel(a) ?? l) : l;
+}
+
 export async function positions(wallets: string[], mints: string[]): Promise<PositionRow[]> {
   if (wallets.length === 0 || mints.length === 0) return [];
-  const ws = vaultWallets(wallets).map((w) => ({ label: w.label, owner: new PublicKey(w.address) }));
+  // read-only: our wallets, trashed ones and launch wallets included (a dev deleted after launch keeps its position);
+  // an address that is not ours is skipped instead of failing every other wallet's row
+  const owned = new Set(ownedAddresses());
+  const ws = wallets.filter((a) => owned.has(a)).map((a) => ({ label: walletLabel(a), owner: new PublicKey(a) }));
+  if (ws.length === 0) return [];
   const conn = readConn();
   const per = isPublicRpc() ? 5 : 50;
   const rows = await mapLimit(mints.slice(0, 40), 2, async (mint): Promise<PositionRow[]> => {
@@ -42,7 +52,7 @@ export async function positions(wallets: string[], mints: string[]): Promise<Pos
       .filter((p) => p.tokens > BigInt(0) || p.spent > BigInt(0) || p.realised > BigInt(0))
       .map((p) => ({
         wallet: p.owner,
-        label: labelOf(p.owner),
+        label: walletLabel(p.owner),
         mint,
         symbol: r.symbol ?? meta?.symbol ?? null,
         name: r.name ?? meta?.name ?? null,

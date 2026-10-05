@@ -43,6 +43,9 @@ export type WalletsResponse = {
   /** active wallet address or null */
   active: string | null;
   unlocked: boolean;
+  /** our other addresses, no longer in the list: wallets in the trash + every wallet a launch used (dev included) —
+   *  their trades are still ours ("you" in Activity, launch PnL) */
+  history?: string[];
 };
 /** Block X "Create Wallets": `label` = label prefix ("Sniper" → Sniper 1, Sniper 2…), count 1..WALLET_LIMITS.maxCreate (400 above) */
 export type WalletsGenerateRequest = { count: number; label?: string; group?: string };
