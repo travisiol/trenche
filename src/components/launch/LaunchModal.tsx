@@ -12,6 +12,7 @@ import { mintAddressOfSecret } from "@/lib/base58";
 import { toast } from "@/components/ui";
 import { BxButton, BxModal, BxSwitch, cx } from "@/components/bx/ui";
 import { CropModal, urlToDataUrl } from "./ImageCrop";
+import { CopyCa } from "@/components/bx/CopyCa";
 import { useLaunchCalc } from "./calc";
 import { EMPTY_FORM, taskBuyFor, taskWallets, type LaunchForm } from "./model";
 
@@ -419,6 +420,7 @@ function LaunchModalBody({ onClose, form, onChange, wallets, balances }: Props) 
                       {fetching ? "Reserving…" : form.reservedMint ? "Release mint address" : "Fetch mint address"}
                     </button>
                     <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-300" title={form.reservedMint || form.mintAddress || undefined}>{form.mintSecret ? `Launches on ${form.mintAddress} (imported keypair)` : form.reservedMint ? form.reservedMint : form.vanity ? "A …pump address is searched when you launch" : "Reserves a …pump address from the pool"}</span>
+                    {form.reservedMint || (form.mintSecret && form.mintAddress) ? <CopyCa ca={form.reservedMint || form.mintAddress} className="h-8 shrink-0 px-2" /> : null}
                     {form.mintSecret ? (
                       <button type="button" title="Forget the imported mint keypair" onClick={() => onChange({ ...form, mintSecret: "", mintAddress: "" })} className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line-100 bg-bg-50 px-2.5 text-xs text-text-200 transition-colors hover:bg-white/[0.04]">
                         <X className="h-3.5 w-3.5 shrink-0" />
