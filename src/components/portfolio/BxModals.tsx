@@ -266,7 +266,15 @@ export function ExportModal({ open, onClose, wallets, selected, active }: Base) 
       ) : (
         <>
           <div className="flex flex-col gap-2 p-4">
-            <p className="rounded-md border border-yellow-100/30 bg-yellow-100/10 px-3 py-2 text-xs text-yellow-100">Anyone with these keys controls the wallets.</p>
+            <div className="flex flex-wrap items-center gap-2 rounded-md border border-yellow-100/30 bg-yellow-100/10 px-3 py-2 text-xs text-yellow-100">
+              <span className="min-w-0 flex-1">Anyone with these keys controls the wallets.</span>
+              <button type="button" onClick={() => copy("top", keys.map((k) => k.secret).join("\n"))} className="inline-flex shrink-0 items-center gap-1 rounded border border-yellow-100/40 px-2 py-1 font-medium text-yellow-100 hover:bg-yellow-100/10" title="Every key, one per line">
+                {copied === "top" ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />} {copied === "top" ? `Copied ${keys.length}` : `Copy all (${keys.length})`}
+              </button>
+              <button type="button" onClick={() => copy("named", keys.map((k) => `${k.label || k.address}, ${k.secret}`).join("\n"))} className="inline-flex shrink-0 items-center gap-1 rounded border border-yellow-100/40 px-2 py-1 font-medium text-yellow-100 hover:bg-yellow-100/10" title="One line per wallet: name, key">
+                {copied === "named" ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />} {copied === "named" ? "Copied" : "Copy with names"}
+              </button>
+            </div>
             {keys.map((k) => (
               <div key={k.address} className="rounded-md border border-line-100 bg-bg-50 p-3">
                 <div className="flex items-center justify-between text-xs">
