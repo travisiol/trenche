@@ -779,9 +779,9 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
     let perLaunch: import("@solana/web3.js").AddressLookupTableAccount | null = null;
     if (warm) {
       const eta = await warmTableEtaMs(conn, warm);
-      if (eta === 0) perLaunch = warm.table;
-      else if (eta !== null && eta <= TABLE_WAIT_MAX_MS) {
-        step(run, "prepare", true, `Waiting ~${(eta / 1000).toFixed(1)} s for this launch's lookup table to be finalized (a table is usable by the leaders only once rooted).`);
+      if (eta !== null && eta <= TABLE_WAIT_MAX_MS) {
+        // eta 0 without a table yet: rooted, its next finalized read (≤ 400 ms) has not run yet
+        if (eta > 0) step(run, "prepare", true, `Waiting ~${(eta / 1000).toFixed(1)} s for this launch's lookup table to be finalized (a table is usable by the leaders only once rooted).`);
         perLaunch = await awaitWarmTable(warm, eta + 2500);
       }
       if (perLaunch) {
