@@ -275,7 +275,8 @@ export const TRADING_PRESET_DEFAULTS: TradingPresets = [
 ];
 export const TRADING_PRESET_LIMITS = { maxSpreadPct: 100, maxDelaySec: 1, maxSlippagePercent: 100 } as const;
 /** Settings → default tip everywhere (tasks, trades, presets) — Block X ships 0.0002 SOL */
-export const DEFAULT_TIP_SOL = "0.0002";
+// Jito bundles at 0.0001–0.0002 never landed; 0.001 did, every time (real tests, 2026-10-06)
+export const DEFAULT_TIP_SOL = "0.001";
 export type Settings = {
   /** "mainnet" (default) or "devnet". On devnet: reads/sends on api.devnet.solana.com (or a saved RPC whose
    *  URL names devnet), Jito and the Helius Sender are disabled (bundles fall back to sequential sends, the job

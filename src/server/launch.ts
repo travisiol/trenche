@@ -184,6 +184,8 @@ function warmFromDraft(mint: PublicKey, w: LaunchWarmRequest): ReturnType<typeof
   try {
     const st = store();
     if (!st.sol.unlocked) return null;
+    // tables only serve buys INSIDE the create: Jito on, or Settings › "Bundle inside the create" off → no rent spent
+    if (st.settings.jitoEnabled === true || st.settings.bundleInCreate !== true) return null;
     const dev = String(w.devWallet ?? "").trim();
     if (!dev || registry().has(mint.toBase58())) return null;
     vaultWallets([dev]);
@@ -615,7 +617,10 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   const slippageBps = intIn(req.slippageBps, 0, 9000, st.settings.slippageBps);
   const cuPrice = intIn(req.cuPrice, 0, 50_000_000, st.settings.cuPrice);
   const devnet = isDevnet(st.settings);
-  const bundleTip = devnet ? BigInt(0) : mode === "bundle" ? (bundleTasks[0].tipLamports > BigInt(0) ? bundleTasks[0].tipLamports : tipLamportsFor(st.settings.tipSol)) : tipLamportsFor(undefined);
+  const taskTip = mode === "bundle" ? (bundleTasks[0].tipLamports > BigInt(0) ? bundleTasks[0].tipLamports : tipLamportsFor(st.settings.tipSol)) : tipLamportsFor(undefined);
+  // a Jito bundle tipping 0.0001–0.0002 SOL never landed (real tests 2026-10-06: 0.0001 dropped in every region,
+  // 0.001 landed in 1.6–1.9 s in frankfurt / amsterdam / all regions) — whatever a saved task says
+  const bundleTip = devnet ? BigInt(0) : mode === "bundle" && st.settings.jitoEnabled === true && taskTip < MIN_JITO_BUNDLE_TIP ? MIN_JITO_BUNDLE_TIP : taskTip;
   // Settings → Jito off: the bundle wallets snipe the dev — create + their buys sent together through the normal sender
   // (same path as snipers, not atomic); Jito on: one atomic Jito bundle
   const jito = mode === "bundle" && !devnet && st.settings.jitoEnabled === true;
@@ -713,6 +718,8 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   jobRun(job, async () => runLaunch(run, { pendingKeypair: pending.keypair, uri: pending.uri, devBuyLamports, slippageBps, cuPrice, launchCuPrice: intIn(req.launchCuPrice, 0, 200_000_000, st.settings.launchCuPrice ?? 10_000_000), bundleTip, jito, cashback: false, autoClaim, req, t0: clickT0 })); // pump.fun rejects cashback coins since 2026-10 (create_v2 error 6082 CashbackDeprecated): the flag is never sent
   return { jobId: job.id, id: mint, mint, mode, tasks: tasks.map((t) => ({ id: t.id, type: t.type })) };
 }
+
+const MIN_JITO_BUNDLE_TIP = BigInt(1_000_000);
 
 /** bundle wallets bought inside the create at most. Size allows 3 with both lookup tables, but a pump.fun buy runs
  *  ~10 inner instructions and a transaction may hold 64: dev + 3 fails (MaxInstructionTraceLengthExceeded), dev + 2
