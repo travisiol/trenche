@@ -229,6 +229,8 @@ export function validateForm(f: LaunchForm): string[] {
   if (!f.devWallet) out.push("Select a developer wallet first.");
   if (!(Number(f.devBuySol) >= 0)) out.push("Buy amount must be a number.");
   for (const t of f.tasks) for (const m of validateTask(t)) out.push(`${TASK_META[t.type].label}: ${m}`);
+  // the server refuses it (the dev buys inside the create): say so before the click
+  if (f.devWallet && f.tasks.some((t) => t.type === "bundle" && t.walletIds.includes(f.devWallet))) out.push("Bundle: the dev wallet buys with the create — take it out of the bundle wallets.");
   if (f.sellOnExternalEnabled && !(Number(f.sellOnExternalThreshold) > 0)) out.push("Auto Dump: set the external volume threshold.");
   if (f.autoDevSellEnabled && !(Number(f.autoDevSellValue) > 0)) out.push(f.autoDevSellMode === "ms" ? "Auto Dev Sell: set the delay in ms." : "Auto Dev Sell: set the market cap.");
   if (f.autoClaimEnabled) {

@@ -59,7 +59,8 @@ function LaunchScreen() {
   const [ctoOpen, setCtoOpen] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [launchErr, setLaunchErr] = useState<string | null>(null);
+  // tied to the form content it was raised for: an edit (e.g. the dev taken out of the bundle) hides a stale refusal
+  const [launchErrFor, setLaunchErr] = useState<{ key: string; msg: string } | null>(null);
   const [dumpJob, setDumpJob] = useState<string | null>(null);
   const [tab, setTab] = useState<"draft" | "launched">("launched");
   const [q, setQ] = useState("");
@@ -131,6 +132,7 @@ function LaunchScreen() {
   }, [draftWarmKey]);
   const prepAhead = useRef<{ key: string; mintKey: string; p: Promise<LaunchPrepareResponse | null> } | null>(null);
   const prepKeyOf = (f: LaunchForm) => JSON.stringify([f.name.trim(), f.symbol.trim(), f.description.trim(), f.twitter.trim(), f.telegram.trim(), f.website.trim(), f.imageDataUrl, f.vanity.trim(), f.reservedMint, f.mintSecret, f.devWallet, f.tasks.map(toApiTask)]);
+  const launchErr = launchErrFor && form && launchErrFor.key === prepKeyOf(form) ? launchErrFor.msg : null;
   const mintKeyOf = (f: LaunchForm) => JSON.stringify([f.vanity.trim(), f.reservedMint, f.mintSecret]);
   const prepareBody = (f: LaunchForm, warm: boolean, mint?: string) => {
     const ex = toExecuteRequest(f, "");
@@ -257,6 +259,7 @@ function LaunchScreen() {
     const clickedAt = Date.now();
     setBusy("launch");
     setLaunchErr(null);
+    const errKey = prepKeyOf(form);
     try {
       // prepared while the confirm dialog was open (same content): the click goes straight to execute
       const ahead = prepAhead.current?.key === prepKeyOf(form) ? await prepAhead.current.p : null;
@@ -272,7 +275,7 @@ function LaunchScreen() {
       launches.refresh();
       toast(`Launch sent — ${short(prep.mint, 6, 6)}`, "ok");
     } catch (e) {
-      setLaunchErr(failureMessage(e));
+      setLaunchErr({ key: errKey, msg: failureMessage(e) });
     } finally {
       setBusy(null);
     }
