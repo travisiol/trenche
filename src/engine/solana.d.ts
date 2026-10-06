@@ -530,4 +530,6 @@ declare module "@/engine/solana/pump/events.js" {
     | { kind: "trade"; mint: PublicKey; solAmount: bigint; tokenAmount: bigint; isBuy: boolean; user: PublicKey; timestamp: bigint; fee: bigint; creator: PublicKey; creatorFee: bigint; cashback: bigint };
   /** decodes the `Program data:` lines of a transaction's log messages (unknown events are skipped) */
   export function parseEventLogs(logs: string[]): PumpEvent[];
+  /** events of a getTransaction result: emit_cpi inner instructions (never truncated), the logs as a fallback */
+  export function parseTxEvents(tx: { meta?: { innerInstructions?: { instructions: { data?: unknown }[] }[] | null; logMessages?: string[] | null } | null } | null): PumpEvent[];
 }

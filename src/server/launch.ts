@@ -42,7 +42,7 @@ import { isDevnet, logActivity, saveLaunches, store, track, type Job, type Pendi
 import { loops, TradeLoop, type SavedLoop } from "./tradeloop";
 import { resolveWashPairs, washPairs } from "./wash";
 import { markDraftLaunched } from "./drafts";
-import { deactivateLaunchTable, launchLookupTable, launchTableAddresses, staticLookupTable, sweepLaunchTables } from "./alt";
+import { deactivateLaunchTable, ensureStaticLookupTable, launchLookupTable, launchTableAddresses, staticLookupTable, staticLookupTableBusy, sweepLaunchTables } from "./alt";
 import { grindVanity, takeReserved, unuseReserved } from "./vanity";
 
 /* ------------------------------------------------------------------ prepare */
@@ -621,14 +621,18 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   const devKp = st.sol.keypair(dev);
   let tables: import("@solana/web3.js").AddressLookupTableAccount[] = [];
   let launchTable: import("@solana/web3.js").AddressLookupTableAccount | null = null;
+  let haveStatic = false;
   if (inlineMax > 0) {
+    // a static table being created right now (same authority possible) must finish first: same-slot tables collide
+    await staticLookupTableBusy();
     const [stat, perLaunch] = await Promise.all([
-      staticLookupTable(conn, devKp),
+      staticLookupTable(),
       launchLookupTable(conn, devKp, launchTableAddresses(new PublicKey(mint), devKp.publicKey, bundleRows.slice(0, inlineMax).map((x) => x.signer.publicKey)), (n) => step(run, "prepare", true, n)),
     ]);
     launchTable = perLaunch;
+    haveStatic = !!stat;
     tables = [stat, perLaunch].filter((x): x is import("@solana/web3.js").AddressLookupTableAccount => !!x);
-    if (tables.length < 2) step(run, "prepare", true, `Lookup table${stat ? " for this launch" : perLaunch ? " (pump.fun static)" : "s"} not available — fewer bundle wallets fit inside the create.`);
+    if (tables.length < 2) step(run, "prepare", true, `Lookup table${stat ? " for this launch" : perLaunch ? " (pump.fun static, created once in the background for the next launch)" : "s"} not available — fewer bundle wallets fit inside the create.`);
   }
   const prepOpts = { lookupTables: tables, inlineMax };
   // the chain refused the create for its instruction trace: one inline wallet fewer, same attempt (never more than INLINE_MAX times)
@@ -714,7 +718,11 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
 
   // inline buys share the create's fate (re-checked above when the confirmation was inconclusive)
   for (let i = 0; i < inlined && i < buyOutcomes.length; i++) buyOutcomes[i] = { confirmed: created.confirmed, error: created.confirmed ? undefined : (created.error ?? "create not landed") };
-  if (launchTable) void deactivateLaunchTable(conn, devKp, launchTable).catch(() => null);
+  // after the launch (never during it): the launch table goes, the static one is created for the next launch if missing
+  void (async () => {
+    if (launchTable) await deactivateLaunchTable(conn, devKp, launchTable).catch(() => null);
+    if (inlineMax > 0 && !haveStatic) ensureStaticLookupTable(conn, devKp);
+  })();
   run.state.createSignature = created.signature ?? null;
   run.state.createConfirmed = created.confirmed;
   run.record.createSignature = created.signature ?? null;

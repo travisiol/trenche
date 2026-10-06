@@ -1,4 +1,5 @@
 import { PublicKey } from "@solana/web3.js";
+import { base58Decode } from "../keys.js";
 
 var EVENT_DISCRIMINATORS = {
     create: "1b72a94ddeeb6376",
@@ -47,6 +48,10 @@ function decodeEvent(t) {
   } catch {
     return null;
   }
+  return decodeEventBytes(e);
+}
+
+function decodeEventBytes(e) {
   if (e.length < 8) return null;
   const r = e.subarray(0, 8).toString("hex"),
     n = new BorshReader(e.subarray(8));
@@ -126,6 +131,31 @@ function decodeEvent(t) {
     return null;
   }
   return null;
+}
+
+/* Anchor emit_cpi: pump.fun also emits every event as a self-CPI whose data = EVENT_IX_TAG + event. Unlike the
+   "Program data:" logs, inner instructions are never truncated — a create carrying the dev buy + 2 bundle buys
+   overflows the 10 KB log budget and loses the later trade events (2026-10-06, Cghynn…pump). */
+var EVENT_IX_TAG = "e445a52e51cb9a1d";
+
+/** every pump.fun event of a transaction (getTransaction result): inner instructions first, the logs as a fallback */
+export function parseTxEvents(tx) {
+  const out = [];
+  for (const group of tx?.meta?.innerInstructions ?? [])
+    for (const ix of group.instructions ?? []) {
+      const raw = typeof ix.data === "string" ? ix.data : null;
+      if (!raw || raw.length < 24) continue;
+      let b;
+      try {
+        b = Buffer.from(base58Decode(raw));
+      } catch {
+        continue;
+      }
+      if (b.length < 16 || b.subarray(0, 8).toString("hex") !== EVENT_IX_TAG) continue;
+      const ev = decodeEventBytes(b.subarray(8));
+      ev && out.push(ev);
+    }
+  return out.length ? out : parseEventLogs(tx?.meta?.logMessages ?? []);
 }
 
 export function parseEventLogs(t) {

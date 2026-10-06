@@ -9,8 +9,13 @@
  *  - per-launch table: the curve, its token account, the creator vault and the ATA + volume account of the dev and of
  *    each inline wallet. Created right before the create (≈0.004 SOL rent), deactivated once the launch settled and
  *    closed ~513 slots later: the rent goes back to the dev.
- * Everything here is best effort: no table → prepareLaunch keeps what fits (the dev buy alone at worst). */
-import { AddressLookupTableProgram, ComputeBudgetProgram, PublicKey, TransactionMessage, VersionedTransaction, type AddressLookupTableAccount, type Connection, type Keypair, type TransactionInstruction } from "@solana/web3.js";
+ * Everything here is best effort: no table → prepareLaunch keeps what fits (the dev buy alone at worst).
+ *
+ * 2026-10-06 (Cghynn…pump): both tables were created IN PARALLEL by the same dev — a table address is derived from
+ * (authority, recent slot), so they got the same address, the launch then deactivated the "static" one. Now the
+ * static table is never created during a launch (background, after it / on prepare), a launch only uses an ACTIVE
+ * one, and the static address is never deactivated. Table polls bypass the RPC queue's micro-cache. */
+import { AddressLookupTableProgram, ComputeBudgetProgram, Connection as RawConnection, PublicKey, TransactionMessage, VersionedTransaction, type AddressLookupTableAccount, type Connection, type Keypair, type TransactionInstruction } from "@solana/web3.js";
 import { join } from "node:path";
 import { ensureAlt } from "@/engine/solana/alt.js";
 import { latestBlockhash, sendAndConfirm } from "@/engine/solana/send.js";
@@ -25,13 +30,43 @@ const load = (): AltFile => ({ static: null, launches: [], ...readJson<Partial<A
 const save = (f: AltFile) => writeJson(file(), f);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** the static pump.fun table, created on first use (payer = the launching dev) */
-export async function staticLookupTable(conn: Connection, payer: Keypair): Promise<AddressLookupTableAccount | null> {
-  const f = load();
-  const r = await ensureAlt(conn, payer, f.static).catch(() => null);
-  if (!r) return null;
-  if (r.address !== f.static) save({ ...load(), static: r.address });
-  return r.table;
+/** a connection without the queue's micro-cache (a table must be read fresh right after its extend) */
+function fresh(): Connection {
+  const url = store().sol.config.rpcUrl?.trim() || "https://api.mainnet-beta.solana.com";
+  return new RawConnection(url, "confirmed");
+}
+
+/** the static pump.fun table when it exists and is ACTIVE — never created here (a launch must not wait for it) */
+export async function staticLookupTable(): Promise<AddressLookupTableAccount | null> {
+  const addr = load().static;
+  if (!addr) return null;
+  try {
+    const t = (await fresh().getAddressLookupTable(new PublicKey(addr)))?.value ?? null;
+    return t && t.isActive() ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+const g = globalThis as unknown as { __trenchStaticAlt?: Promise<void> | null };
+/** create (or re-create) the static table in the background, once at a time — never while a launch builds its own
+ *  table with the same authority (their addresses would collide): call it before or after a launch */
+export function ensureStaticLookupTable(conn: Connection, payer: Keypair): void {
+  if (g.__trenchStaticAlt) return;
+  g.__trenchStaticAlt = (async () => {
+    if (await staticLookupTable()) return;
+    const r = await ensureAlt(conn, payer, null).catch(() => null);
+    if (r) save({ ...load(), static: r.address });
+  })()
+    .catch(() => undefined)
+    .finally(() => {
+      g.__trenchStaticAlt = null;
+    });
+}
+
+/** true while the static table is being created (a launch then waits for it rather than colliding with it) */
+export function staticLookupTableBusy(): Promise<void> | null {
+  return g.__trenchStaticAlt ?? null;
 }
 
 /** the accounts of one launch the create transaction touches, apart from the signers (signers cannot sit in a table) */
@@ -52,7 +87,9 @@ async function sendIxs(conn: Connection, payer: Keypair, ixs: TransactionInstruc
 /** create + fill a table for this launch in ONE transaction, then wait until it is usable (the slot after the extend) */
 export async function launchLookupTable(conn: Connection, payer: Keypair, addresses: PublicKey[], onNote?: (s: string) => void): Promise<AddressLookupTableAccount | null> {
   try {
+    // never the static table's slot: a launch table is only built when no static creation is in flight
     const recentSlot = await conn.getSlot("finalized");
+    if (load().static && (await fresh().getAddressLookupTable(AddressLookupTableProgram.createLookupTable({ authority: payer.publicKey, payer: payer.publicKey, recentSlot })[1]).catch(() => null))?.value) return null;
     const [create, address] = AddressLookupTableProgram.createLookupTable({ authority: payer.publicKey, payer: payer.publicKey, recentSlot });
     const extend = AddressLookupTableProgram.extendLookupTable({ payer: payer.publicKey, authority: payer.publicKey, lookupTable: address, addresses });
     const t0 = Date.now();
@@ -60,9 +97,12 @@ export async function launchLookupTable(conn: Connection, payer: Keypair, addres
     const f = load();
     f.launches.push({ address: address.toBase58(), authority: payer.publicKey.toBase58(), createdAt: Date.now() });
     save(f);
-    for (let i = 0; i < 30; i++) {
-      const t = (await conn.getAddressLookupTable(address, { commitment: "confirmed" }).catch(() => null))?.value;
-      const slot = await conn.getSlot("processed").catch(() => 0);
+    const rc = fresh();
+    for (let i = 0; i < 40; i++) {
+      // usable once a CONFIRMED slot is past the extend: a leader on another fork cannot resolve a fresher table
+      // (the create waited ~5 s on Cghynn…pump)
+      const t = (await rc.getAddressLookupTable(address, { commitment: "confirmed" }).catch(() => null))?.value;
+      const slot = await rc.getSlot("confirmed").catch(() => 0);
       if (t && t.state.addresses.length >= addresses.length && slot > Number(t.state.lastExtendedSlot)) {
         onNote?.(`Launch lookup table ready in ${Date.now() - t0} ms.`);
         return t;
@@ -77,6 +117,7 @@ export async function launchLookupTable(conn: Connection, payer: Keypair, addres
 
 /** after the launch settled: stop the table (it is no longer needed), closable ~513 slots later */
 export async function deactivateLaunchTable(conn: Connection, payer: Keypair, table: AddressLookupTableAccount): Promise<void> {
+  if (table.key.toBase58() === load().static) return; // never the static one
   const ok = await sendIxs(conn, payer, [AddressLookupTableProgram.deactivateLookupTable({ lookupTable: table.key, authority: payer.publicKey })]).catch(() => false);
   if (!ok) return;
   const f = load();

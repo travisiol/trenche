@@ -13,7 +13,7 @@
  * (activity.json) is no longer consulted for figures. */
 import { PublicKey, type ParsedInstruction, type ParsedTransactionWithMeta, type PartiallyDecodedInstruction, type TokenBalance } from "@solana/web3.js";
 import { JITO_BUNDLE_TIP_ACCOUNTS, JITO_TIP_ACCOUNTS } from "@/engine/solana/config.js";
-import { parseEventLogs } from "@/engine/solana/pump/events.js";
+import { parseTxEvents } from "@/engine/solana/pump/events.js";
 import { PUMP_BUYBACK_FEE_RECIPIENTS, PUMP_FEE_RECIPIENTS, PUMP_PROGRAM, bondingCurvePda } from "@/engine/solana/pump/pdas.js";
 import type { DayBreakdown, FeeBreakdown, LedgerStatus, MintPnl, PnlWindow } from "@/lib/types";
 import { isPublicRpc, readConn } from "./engine";
@@ -48,7 +48,8 @@ export type LedgerTx = {
 };
 
 type LedgerFile = {
-  v: 1;
+  /** 2 = pump events from inner instructions */
+  v: number;
   wallets: Record<string, { newest: string | null; complete: boolean; scannedAt: number }>;
   /** signatures queued for fetching (newest first) */
   pending: string[];
@@ -79,11 +80,22 @@ function ledgerPath(): string {
 function file(): LedgerFile {
   const p = ledgerPath();
   if (S.file && S.path === p) return S.file;
-  const f = readJson<LedgerFile>(p, { v: 1, wallets: {}, pending: [], attempts: {}, txs: {}, scannedAt: null });
+  const f = readJson<LedgerFile>(p, { v: 2, wallets: {}, pending: [], attempts: {}, txs: {}, scannedAt: null });
   f.wallets ??= {};
   f.pending ??= [];
   f.attempts ??= {};
   f.txs ??= {};
+  // v2 (2026-10-06): pump.fun events read from inner instructions — transactions compacted from truncated logs are
+  // fetched again (they lost the trade events of buys carried inside a create)
+  if ((f.v ?? 1) < 2) {
+    for (const [sig, t] of Object.entries(f.txs))
+      if (t.programs?.includes(PUMP_PROGRAM_STR) || t.pump?.length) {
+        delete f.txs[sig];
+        if (!f.pending.includes(sig)) f.pending.push(sig);
+      }
+    f.attempts = {};
+    f.v = 2;
+  }
   S.file = f;
   S.path = p;
   return f;
@@ -164,7 +176,8 @@ function compact(sig: string, tx: ParsedTransactionWithMeta): LedgerTx {
   for (const inner of meta?.innerInstructions ?? []) for (const ins of inner.instructions) visit(ins, false);
   const pump: LedgerTx["pump"] = [];
   if (meta?.logMessages && (programs.has(PUMP_PROGRAM_STR) || meta.logMessages.some((l) => l.includes(PUMP_PROGRAM_STR)))) {
-    for (const ev of parseEventLogs(meta.logMessages)) {
+    // inner instructions (emit_cpi): a create carrying several buys overflows the log budget and loses trade events
+    for (const ev of parseTxEvents(tx as unknown as Parameters<typeof parseTxEvents>[0])) {
       if (ev.kind === "trade") pump.push({ kind: ev.isBuy ? "buy" : "sell", mint: ev.mint.toBase58(), user: ev.user.toBase58(), sol: ev.solAmount.toString(), fee: ev.fee.toString(), creatorFee: ev.creatorFee.toString() });
       else if (ev.kind === "create") pump.push({ kind: "create", mint: ev.mint.toBase58(), user: ev.user.toBase58(), sol: "0", fee: "0", creatorFee: "0" });
       else if (ev.kind === "collectCreatorFee") pump.push({ kind: "claim", mint: null, user: ev.creator.toBase58(), sol: ev.amount.toString(), fee: "0", creatorFee: "0" });

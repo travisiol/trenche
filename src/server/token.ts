@@ -101,11 +101,24 @@ export async function tokenInfo(mint: string): Promise<TokenInfo> {
 }
 
 /** trades newest first: pump.fun swap-api (≤ 300), else the curve history read from the RPC */
+/** pump.fun's trade list MERGED with the chain's (the curve's signatures, incremental, on our RPC): pump.fun is
+ *  budgeted (12 calls/min for the whole app) and indexes a fresh coin seconds late — the chain has a trade the moment
+ *  it lands (Cghynn…pump: chart and trades "took too long to appear"). One row per signature + wallet + side: a
+ *  create carries the dev buy and the inline bundle buys under ONE signature. */
 async function tradesOf(mint: string, limit: number): Promise<{ trades: TokenTrade[]; source: "pump" | "rpc" }> {
-  const pump = await pumpTrades(mint, limit).catch(() => null);
-  if (pump && pump.length) return { trades: pump.map(({ priceUsd: _u, tokens: _t, ...t }) => t), source: "pump" };
-  const rows = await curveTradeHistory(readConn(), mint, { max: Math.min(600, Math.max(20, limit)) });
-  return { trades: rows.slice(0, limit).map((t) => ({ side: t.side, wallet: t.wallet, solAmount: t.quoteEth, priceSol: t.priceEth, blockTime: t.blockTime, slot: t.block, signature: t.hash })), source: pump ? "pump" : "rpc" };
+  const [pump, chain] = await Promise.all([
+    pumpTrades(mint, limit).catch(() => null),
+    curveTradeHistory(readConn(), mint, { max: Math.min(600, Math.max(20, limit)) }).catch(() => []),
+  ]);
+  const out = new Map<string, TokenTrade>();
+  const key = (t: { signature: string; wallet: string; side: string }) => `${t.signature}:${t.wallet}:${t.side}`;
+  for (const t of chain) {
+    const row: TokenTrade = { side: t.side, wallet: t.wallet, solAmount: t.quoteEth, priceSol: t.priceEth, blockTime: t.blockTime, slot: t.block, signature: t.hash };
+    out.set(key(row), row);
+  }
+  for (const { priceUsd: _u, tokens: _t, ...t } of pump ?? []) out.set(key(t), t); // pump.fun's row wins (same trade)
+  const trades = [...out.values()].sort((a, b) => b.slot - a.slot || b.blockTime - a.blockTime).slice(0, limit);
+  return { trades, source: pump?.length ? "pump" : "rpc" };
 }
 
 export async function tokenTrades(mint: string, limit: number): Promise<TokenTradesResponse> {
@@ -118,9 +131,9 @@ export async function tokenCandles(mint: string, tf: CandleTf): Promise<TokenCan
   let candles: Candle[] | null = null;
   let source: TokenCandlesResponse["source"] = "pump";
   if (sec <= 60) {
-    // 1s / 5s / 15s / 1m: derived locally from the per-mint trade store (the same single trades call the trade list
-    // and the stats use) — no candle call, and the newest trade is in the chart as soon as it is in the list
-    const recent = await pumpTrades(mint, 1000).catch(() => null);
+    // 1s / 5s / 15s / 1m: derived locally from the merged trade list (pump.fun + the chain) — no candle call, and the
+    // newest trade is in the chart as soon as it is in the list
+    const recent = await tradesOf(mint, 1000).then((r) => r.trades).catch(() => null);
     if (recent?.length) {
       candles = normalizeCandles(candlesFromTrades(recent, sec));
       source = "trades";

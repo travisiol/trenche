@@ -9,6 +9,7 @@ import { createV2Instruction, generateMint } from "./create.js";
 import { buyInstruction, randomBuybackFeeRecipient, randomFeeRecipient } from "./instructions.js";
 import { FRESH_CURVE, buildBuyTx, buildSellTx, planBuys, planSells, signWith, tipInstruction } from "./math.js";
 import { latestBlockhash, preflightBundle, sendAndConfirm, sendBundleAndConfirm, sendMany } from "../send.js";
+import { base58Encode } from "../keys.js";
 import {
   ATA_PROGRAM,
   SYSTEM_PROGRAM,
@@ -253,12 +254,29 @@ export async function executeLaunch(t, e, r, n = {}) {
       };
     }
   } catch {}
-  const s = o !== e && r.buyTxs.length > 0 ? o : e,
+  /* Buys in their own transactions go out the moment the create is SEEN (processed), not with it: sent together,
+     one landed before the create and failed, then its retry came 10 slots late behind a sniper (Cghynn…pump,
+     2026-10-06). A buy held back past 20 s is reported expired: the retry below re-sends it once the create landed. */
+  const createSig = base58Encode(r.createTx.signatures[0]),
+    createSeen = async () => {
+      const t0 = Date.now();
+      for (; Date.now() - t0 < 20000;) {
+        const st = (await t.getSignatureStatuses([createSig]).catch(() => null))?.value?.[0];
+        if (st) return !st.err;
+        if (await curveExists().catch(() => !1)) return !0;
+        await sleepMs(150);
+      }
+      return !1;
+    },
+    s = o !== e && r.buyTxs.length > 0 ? o : e,
     c = sendAndConfirm(t, o, r.createTx, { ...a, verify: curveExists, rebuild: n.rebuildCreate }),
-    d = sendMany(t, s, r.buyTxs, {
-      ...a,
-      staggerMs: n.spreadMs,
-    }),
+    d = r.buyTxs.length
+      ? createSeen().then(ok =>
+          ok
+            ? sendMany(t, s, r.buyTxs, { ...a, staggerMs: n.spreadMs })
+            : r.buyTxs.map(() => ({ signature: "", broadcasts: 0, confirmed: !1, ms: 0, expired: !0, error: "held back: the create was not seen yet" })),
+        )
+      : Promise.resolve([]),
     [l, u] = await Promise.all([c, d]);
   if (l.recovered) note(l.recovered === "history" ? "Create found in the transaction history after the confirmation window (RPC was rate-limited)." : "Create proven by the bonding curve on chain after the confirmation window.");
   if (l.rebuilds) note(`Create re-signed with a fresh blockhash (${l.rebuilds}×).`);

@@ -672,7 +672,7 @@ export function ActivityPanel({ mint, live, frame, className }: { mint: string |
                   const own = mine.has(t.wallet);
                   const st = tradeRowStyle(t.side, own);
                   return (
-                    <div key={t.signature} className="relative py-px">
+                    <div key={`${t.signature}:${t.wallet}:${t.side}`} className="relative py-px">
                       <div className={cx("relative flex h-[30px] cursor-pointer flex-row px-2 hover:brightness-125", st.row, t.pending === "sent" ? "opacity-60" : t.pending === "failed" ? "line-through opacity-50" : "")}>
                         <div className="relative flex w-[22.5%] items-center justify-start overflow-hidden whitespace-nowrap p-1 leading-none">
                           <div className={cx("flex items-center gap-0.5 text-[13px] font-normal leading-4", st.amount)}>

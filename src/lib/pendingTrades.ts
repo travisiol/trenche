@@ -13,7 +13,8 @@ export type PendingStatus = "sent" | "landed" | "confirmed" | "failed";
 export type PendingTrade = { mint: string; signature: string; wallet: string; side: "buy" | "sell"; solAmount: string; at: number; status: PendingStatus; error?: string };
 export type ListedTrade = TokenTrade & { pending?: PendingStatus };
 
-const rows = new Map<string, PendingTrade>(); // by signature
+const rows = new Map<string, PendingTrade>(); // by signature + wallet (a create carries the dev + inline buys)
+const keyOf = (r: { signature: string; wallet: string }) => `${r.signature}:${r.wallet}`;
 const listeners = new Set<() => void>();
 let snapshotByMint = new Map<string, PendingTrade[]>();
 let sweep: ReturnType<typeof setInterval> | null = null;
@@ -32,9 +33,9 @@ function emit() {
     sweep = setInterval(() => {
       const now = Date.now();
       let changed = false;
-      for (const [sig, r] of rows)
+      for (const [k, r] of rows)
         if ((r.status === "failed" && now - r.at > 12_000) || now - r.at > 90_000) {
-          rows.delete(sig);
+          rows.delete(k);
           changed = true;
         }
       if (changed) emit();
@@ -48,10 +49,10 @@ function emit() {
 const RANK: Record<PendingStatus, number> = { sent: 0, landed: 1, confirmed: 2, failed: 2 };
 
 function upsert(r: PendingTrade) {
-  const have = rows.get(r.signature);
+  const have = rows.get(keyOf(r));
   if (have && RANK[have.status] > RANK[r.status]) return false;
   if (have && have.status === r.status) return false;
-  rows.set(r.signature, { ...r, at: have?.at ?? r.at });
+  rows.set(keyOf(r), { ...r, at: have?.at ?? r.at });
   return true;
 }
 
@@ -97,15 +98,15 @@ const EMPTY: PendingTrade[] = [];
 /** API trades + our pending ones not listed yet (pending first, newest first); a listed signature drops its pending row */
 export function mergePending(api: TokenTrade[], pending: PendingTrade[], priceSol: number | null): ListedTrade[] {
   if (!pending.length) return api;
-  const listed = new Set(api.map((t) => t.signature));
+  const listed = new Set(api.map(keyOf));
   const extra: ListedTrade[] = pending
-    .filter((p) => !listed.has(p.signature))
+    .filter((p) => !listed.has(keyOf(p)))
     .map((p) => ({ side: p.side, wallet: p.wallet, solAmount: p.solAmount, priceSol: String(priceSol ?? 0), blockTime: Math.floor(p.at / 1000), slot: 0, signature: p.signature, pending: p.status }));
   // a listed one is done with: forget it (outside render, on the next tick)
-  const seen = pending.filter((p) => listed.has(p.signature));
+  const seen = pending.filter((p) => listed.has(keyOf(p)));
   if (seen.length)
     queueMicrotask(() => {
-      for (const p of seen) rows.delete(p.signature);
+      for (const p of seen) rows.delete(keyOf(p));
       emit();
     });
   return extra.length ? [...extra, ...api] : api;

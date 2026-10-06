@@ -1,5 +1,5 @@
 import { ComputeBudgetProgram, PublicKey, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
-import { parseEventLogs } from "./events.js";
+import { parseTxEvents } from "./events.js";
 import { PUMP_AMM_PROGRAM, TOKEN_PROGRAM, associatedTokenAddress, creatorVaultPda, userVolumePda } from "./pdas.js";
 import { claimCashbackInstruction, collectCreatorFeeInstruction } from "./instructions.js";
 import { tipInstruction } from "./math.js";
@@ -217,8 +217,8 @@ export async function scanFeesHistory(t, e, r, n = {}) {
     f = new Set(a.claims.map(h => h.sig));
   for (let h = 0; h < u.length; h++) {
     const g = u[h];
-    if (g?.meta?.logMessages) {
-      for (const _ of parseEventLogs(g.meta.logMessages))
+    if (g?.meta) {
+      for (const _ of parseTxEvents(g))
         if (_.kind === "trade") {
           const S = _;
           if (S.creator.toBase58() !== e) continue;

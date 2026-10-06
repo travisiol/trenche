@@ -10,7 +10,7 @@ import {
 } from "./pdas.js";
 import { readSolanaBalances } from "../rpc.js";
 import { solOutForTokens } from "./math.js";
-import { parseEventLogs } from "./events.js";
+import { parseTxEvents } from "./events.js";
 import { parseMintMetadata } from "./metadata.js";
 
 var GRADUATION_SOL = 85000000000n,
@@ -106,11 +106,11 @@ async function walletTradeHistory(t, e, r, n = {}) {
             if (i.seen.has(h[S])) continue;
             i.seen.add(h[S]);
             const A = g[S];
-            if (!A?.meta?.logMessages) {
+            if (!A?.meta) {
               i.complete = !1;
               continue;
             }
-            for (const k of parseEventLogs(A.meta.logMessages)) {
+            for (const k of parseTxEvents(A)) {
               if (k.kind !== "trade" || k.mint.toBase58() !== a) continue;
               const v = k;
               _.push({
@@ -179,8 +179,8 @@ export async function curveTradeHistory(conn, mint, opts = {}) {
     const nt = [];
     for (let i = 0; i < txs.length; i++) {
       const tx = txs[i];
-      if ((cache.seen.add(fresh[i].signature), !tx?.meta?.logMessages)) continue;
-      for (const ev of parseEventLogs(tx.meta.logMessages)) {
+      if ((cache.seen.add(fresh[i].signature), !tx?.meta)) continue;
+      for (const ev of parseTxEvents(tx)) {
         if (ev.kind !== "trade" || ev.mint.toBase58() !== mintStr) continue;
         const sol = Number(ev.solAmount) / 1e9,
           toks = Number(ev.tokenAmount) / 1e6;

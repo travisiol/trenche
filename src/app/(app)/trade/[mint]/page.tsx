@@ -365,7 +365,7 @@ function TradesList({ mint, mine, supply, solUsd, priceSol }: { mint: string; mi
             const own = mine.has(tr.wallet);
             const st = tradeRowStyle(tr.side, own);
             return (
-              <div key={tr.signature} className="relative py-px">
+              <div key={`${tr.signature}:${tr.wallet}:${tr.side}`} className="relative py-px">
                 <div className={cx("relative flex h-[30px] cursor-pointer flex-row px-2 hover:brightness-125", st.row, tr.pending === "sent" ? "opacity-60" : tr.pending === "failed" ? "line-through opacity-50" : "")}>
                   <div className="relative flex w-[22.5%] items-center justify-start overflow-hidden whitespace-nowrap p-1 leading-none">
                     <div className={cx("flex items-center gap-0.5 text-[13px] font-normal leading-4", st.amount)}>

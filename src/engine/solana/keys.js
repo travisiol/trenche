@@ -7,7 +7,7 @@ var BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxy
     return t;
   })();
 
-function base58Decode(t) {
+export function base58Decode(t) {
   if (t.length === 0) return new Uint8Array();
   const e = [0];
   for (const r of t) {
