@@ -542,7 +542,9 @@ export function normalizeTasks(req: Pick<LaunchExecuteRequest, "tasks" | "cuPric
       const minI = numIn(t.minIntervalSec, 0, TASK_LIMITS.maxIntervalSec, d.minIntervalSec, `${type} minIntervalSec`);
       const maxI = numIn(t.maxIntervalSec, 0, TASK_LIMITS.maxIntervalSec, d.maxIntervalSec, `${type} maxIntervalSec`);
       if (maxI < minI) throw new HttpError(400, `Task ${type}: Max (s) must be ≥ Min (s).`);
-      const perWallet = t.maxTradesPerWallet !== undefined && t.maxTradesPerWallet !== null && String(t.maxTradesPerWallet) !== "" ? intIn(t.maxTradesPerWallet, 1, TASK_LIMITS.maxTradesPerWallet, TASK_LIMITS.maxTradesPerWallet, `${type} maxTradesPerWallet`) : TASK_LIMITS.maxTradesPerWallet;
+      // empty "Max trades per wallet": Volume runs until stopped; Buy buys ONCE per wallet (Block X's Buy task has no such
+      // field — an empty one looped up to 10 000 buys)
+      const perWallet = t.maxTradesPerWallet !== undefined && t.maxTradesPerWallet !== null && String(t.maxTradesPerWallet) !== "" ? intIn(t.maxTradesPerWallet, 1, TASK_LIMITS.maxTradesPerWallet, TASK_LIMITS.maxTradesPerWallet, `${type} maxTradesPerWallet`) : type === "buy" ? 1 : TASK_LIMITS.maxTradesPerWallet;
       const duration = t.maxDurationMinutes !== undefined && t.maxDurationMinutes !== null && String(t.maxDurationMinutes) !== "" ? intIn(t.maxDurationMinutes, 1, TASK_LIMITS.maxDurationMinutes, TASK_LIMITS.maxDurationMinutes, `${type} maxDurationMinutes`) : null;
       const slippagePct = numIn(t.slippagePercent, 0, TASK_LIMITS.maxSlippagePercent, d.slippagePercent, `${type} slippagePercent`);
       const mode = type === "buy" ? "buy" : t.tradeMode === "buy" || t.tradeMode === "sell" || t.tradeMode === "both" ? t.tradeMode : d.tradeMode;

@@ -188,6 +188,19 @@ export class TradeLoop {
         }
         while (this.paused && !this.stopped) await sleep(250);
         if (this.stopped) break;
+        // Buy task (Block X: Min (s) / Max (s) only): the delay comes BEFORE each wallet's buy — "buy 0.1 between 2 and
+        // 5 s", once per wallet (2026-10-06: it bought at once, then looped). Volume keeps trade-then-wait.
+        if (c.type === "buy" && c.maxDelayMs > 0) {
+          const gap = c.minDelayMs + Math.random() * Math.max(0, c.maxDelayMs - c.minDelayMs);
+          this.nextAt = Date.now() + gap;
+          jobWait(this.job, gap);
+          this.emit();
+          const until = Date.now() + gap;
+          while (Date.now() < until && !this.stopped) await sleep(Math.min(250, until - Date.now()));
+          this.nextAt = 0;
+          while (this.paused && !this.stopped) await sleep(250);
+          if (this.stopped) break;
+        }
         const wallet = c.wallets[i % c.wallets.length];
         i++;
         const side = this.pickSide();
@@ -220,6 +233,7 @@ export class TradeLoop {
           break;
         }
         if (this.done >= c.totalTrades) break;
+        if (c.type === "buy") continue; // its delay is taken before the next wallet's buy
         const gap = c.minDelayMs + Math.random() * Math.max(0, c.maxDelayMs - c.minDelayMs);
         this.nextAt = Date.now() + gap;
         jobWait(this.job, gap);

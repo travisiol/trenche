@@ -299,10 +299,10 @@ export function TaskDialog({ type, initial, form, wallets, groups, balances, uni
                 <p className="text-[11px] text-text-300">Delay between wallet buys · 0 = all instant</p>
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                   <F label="Min delay (sec)">
-                    <input type="number" min={0} max={TASK_LIMITS.maxSniperDelaySec} step={0.1} value={task.minDelaySec} onChange={(e) => set("minDelaySec", Number(e.target.value) || 0)} className={num} />
+                    <DecimalInput value={task.minDelaySec} onChange={(v) => set("minDelaySec", v)} className={num} />
                   </F>
                   <F label="Max delay (sec)">
-                    <input type="number" min={0} max={TASK_LIMITS.maxSniperDelaySec} step={0.1} value={task.maxDelaySec} onChange={(e) => set("maxDelaySec", Number(e.target.value) || 0)} className={num} />
+                    <DecimalInput value={task.maxDelaySec} onChange={(v) => set("maxDelaySec", v)} className={num} />
                   </F>
                   <F label="Slippage %">
                     <input inputMode="decimal" placeholder="20" value={task.slippagePercent} onChange={(e) => set("slippagePercent", Number(e.target.value) || 0)} className={num} />
@@ -344,10 +344,10 @@ export function TaskDialog({ type, initial, form, wallets, groups, balances, uni
                     </F>
                   ) : null}
                   <F label="Min (s)">
-                    <input type="number" min={0} value={task.minIntervalSec} onChange={(e) => set("minIntervalSec", Number(e.target.value) || 0)} className={num} />
+                    <DecimalInput value={task.minIntervalSec} onChange={(v) => set("minIntervalSec", v)} className={num} />
                   </F>
                   <F label="Max (s)">
-                    <input type="number" min={0} value={task.maxIntervalSec} onChange={(e) => set("maxIntervalSec", Number(e.target.value) || 0)} className={num} />
+                    <DecimalInput value={task.maxIntervalSec} onChange={(v) => set("maxIntervalSec", v)} className={num} />
                   </F>
                   {type === "volume" ? (
                     <>
@@ -412,6 +412,28 @@ export function TaskDialog({ type, initial, form, wallets, groups, balances, uni
         </div>
       </div>
     </div>
+  );
+}
+
+/** seconds with decimals: "0,5" or "0.5" (a type=number input fed back through Number() turned "0." into 0 at every
+ *  keystroke, so no decimal could be typed). Keeps what is typed, reports the number once it parses. */
+function DecimalInput({ value, onChange, className }: { value: number; onChange: (v: number) => void; className?: string }) {
+  const [text, setText] = useState(() => String(value ?? 0));
+  const shown = Number(text.replace(",", ".")) === value || text === "" ? text : String(value);
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={shown}
+      onChange={(e) => {
+        const raw = e.target.value.replace(/[^0-9.,]/g, "");
+        setText(raw);
+        const n = Number(raw.replace(",", "."));
+        if (raw !== "" && Number.isFinite(n)) onChange(n);
+        else if (raw === "") onChange(0);
+      }}
+      className={className}
+    />
   );
 }
 
@@ -571,10 +593,10 @@ function WashSetup({ task, set, form, wallets, groups, balances }: { task: FormT
         <p className="text-[11px] text-text-300">Random, in seconds. 0 = no delay.</p>
         <div className="grid grid-cols-2 gap-3 sm:w-1/2">
           <F label="Min">
-            <input type="number" min={0} max={TASK_LIMITS.maxWashDelaySec} value={task.washMinDelaySec} onChange={(e) => set("washMinDelaySec", Number(e.target.value) || 0)} className={num} />
+            <DecimalInput value={task.washMinDelaySec} onChange={(v) => set("washMinDelaySec", v)} className={num} />
           </F>
           <F label="Max">
-            <input type="number" min={0} max={TASK_LIMITS.maxWashDelaySec} value={task.washMaxDelaySec} onChange={(e) => set("washMaxDelaySec", Number(e.target.value) || 0)} className={num} />
+            <DecimalInput value={task.washMaxDelaySec} onChange={(v) => set("washMaxDelaySec", v)} className={num} />
           </F>
         </div>
       </section>
