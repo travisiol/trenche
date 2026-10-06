@@ -833,6 +833,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
     const t = o.bundleTip * BigInt(JITO_TIP_LADDER[Math.min(attempt, JITO_TIP_LADDER.length - 1)]);
     return t > JITO_TIP_CAP ? JITO_TIP_CAP : t;
   };
+  let rateRetries = 0;
   for (let attempt = 0; attempt <= maxAttempts; attempt++) {
     let prep: LaunchPrep;
     try {
@@ -870,6 +871,14 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
       }
       created = r.create;
       buyOutcomes = [...Array.from({ length: inlined }, () => ({ confirmed: r.create.confirmed, error: r.create.confirmed ? undefined : (r.create.error ?? "create not landed") })), ...r.buys];
+      // refused at the door by Jito's rate limit even after waiting: same tip again, a few times (never counted as a lost auction)
+      if (!created.confirmed && /rate limit/i.test(created.error ?? "") && rateRetries < 4) {
+        rateRetries++;
+        step(run, "bundle", false, `Jito rate limit — sending the same bundle again in 1.5 s (${rateRetries}/4).`);
+        await sleep(1500);
+        attempt--;
+        continue;
+      }
       if (!created.confirmed && attempt < maxAttempts) {
         step(run, "bundle", false, `Bundle not landed with a ${solString(tipFor(attempt))} SOL tip — raising it.`);
         continue;

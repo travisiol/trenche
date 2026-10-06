@@ -248,7 +248,12 @@ var JITO_BLOCK_ENGINES = [
   "https://mainnet.block-engine.jito.wtf",
   "https://ny.mainnet.block-engine.jito.wtf",
   "https://amsterdam.mainnet.block-engine.jito.wtf",
+  "https://frankfurt.mainnet.block-engine.jito.wtf",
 ];
+/* where launch bundles go by default: ONE region (a bundle reaches the leader from any region — real landings from
+   frankfurt and amsterdam alone, 2026-10-06), so one launch = one sendBundle against Jito's 1/s-per-IP limit; three
+   regions at once got every one refused on a shared IP. TRENCH_JITO_REGION overrides. */
+var JITO_DEFAULT_REGION = process.env.TRENCH_JITO_REGION || "https://frankfurt.mainnet.block-engine.jito.wtf";
 
 async function submitTo(base, body) {
   const res = await fetch(base + "/api/v1/bundles", {
@@ -365,10 +370,19 @@ export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
   const sigs = txs.map(signatureOf);
   let bundleId;
   const regions = [];
-  try {
-    bundleId = await submitJitoBundle(txs, { ...opts, onAccepted: base => regions.push(base) });
-  } catch (e) {
-    return { ok: !1, bundleId: null, sigs, error: e.message };
+  // "Rate limit exceeded … Retry after 1000ms" (1 sendBundle per second per IP, shared IPs hit it sooner): wait what
+  // Jito asks and send the same bundle again — a refusal at the door is not a lost auction (2026-10-06)
+  for (let k = 0; ; k++) {
+    try {
+      bundleId = await submitJitoBundle(txs, { ...opts, blockEngineUrl: opts.blockEngineUrl || JITO_DEFAULT_REGION, onAccepted: base => regions.push(base) });
+      break;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e),
+        limited = /rate limit|429|retry after/i.test(msg);
+      if (!limited || k >= 6) return { ok: !1, bundleId: null, sigs, error: msg, rateLimited: limited };
+      const after = Number(/retry after (\d+)/i.exec(msg)?.[1] ?? 1000);
+      await sleep(Math.min(5000, after + 150 + Math.floor(Math.random() * 250)));
+    }
   }
   const timeoutMs = opts.timeoutMs ?? 45000,
     t0 = Date.now();
