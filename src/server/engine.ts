@@ -460,6 +460,13 @@ export async function sellWithWallets(opts: TradeOpts & { percent: number }): Pr
 
 /** devnet has no Jito block engine: bundles become plain sequential sends and the job says so */
 export function devnetPlain<T extends TradeOpts>(opts: T): T {
+  // mainnet with an Astralane key that may not send bundles: Jito's public endpoint drops our pump.fun bundles (real
+  // tests 2026-10-06 — a Dump All "bundle" never landed), so a bundle request goes as parallel sends (Sender + RPC)
+  const st = store();
+  if (!isDevnet() && opts.bundle && (st.settings.astralaneKey ?? "").trim() && st.settings.astralaneBundles !== true) {
+    jobNote(opts.job, "Sent as parallel transactions: the public Jito endpoint drops our pump.fun bundles and the Astralane key has no bundle access.", { phase: "cluster" });
+    return { ...opts, bundle: false };
+  }
   if (!isDevnet() || (!opts.bundle && opts.tipLamports === BigInt(0))) return opts;
   jobNote(opts.job, "Devnet: Jito is mainnet-only — sent as sequential transactions without tip (no atomic bundle).", { phase: "cluster" });
   return { ...opts, bundle: false, tipLamports: BigInt(0) };
