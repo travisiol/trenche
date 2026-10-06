@@ -46,6 +46,9 @@ import { isDevnet, logActivity, saveLaunches, store, track, type Job, type Pendi
 import { loops, TradeLoop, type SavedLoop } from "./tradeloop";
 import { resolveWashPairs, washPairs } from "./wash";
 import { markDraftLaunched } from "./drafts";
+import { ledgerMissing, ledgerReadNow } from "./ledger";
+import { liveTrades } from "./livefeed";
+import { refreshCreatorRevenue } from "./creatorRevenue";
 import { SenderConnection } from "./sender";
 import { awaitWarmTable, deactivateLaunchTable, ensureStaticLookupTable, staticLookupTable, sweepLaunchTables, takeWarmTable, warmLaunchTable, warmTableEtaMs, warmTableFor, warmTableStatus } from "./alt";
 import { grindVanity, isReserved, peekReserved, takeReserved, unuseReserved } from "./vanity";
@@ -1014,6 +1017,21 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
     throw new Error(run.state.error);
   }
   run.state.status = "live";
+  // the Tasks PnL needs the create's costs from the ledger: read the create (and our buys seen by the live feed) NOW,
+  // every 0.5 s until they are in, instead of waiting for the next PnL poll (the badge was wrong ~10 s after launch)
+  if (created.signature) {
+    const createSig = created.signature;
+    void (async () => {
+      for (let i = 0; i < 16; i++) {
+        const owned = new Set(run.record.wallets);
+        const sigs = [createSig, ...liveTrades(mint).filter((t) => owned.has(t.wallet)).map((t) => t.signature)];
+        await ledgerReadNow(sigs).catch(() => null);
+        if (!ledgerMissing(sigs).length) break;
+        await sleep(500);
+      }
+      void refreshCreatorRevenue({ minIntervalMs: 0 }).catch(() => null);
+    })();
+  }
   pendings().delete(mint);
   markDraftLaunched(run.state.draftId ?? null, mint);
   saveRuntimeSoon();

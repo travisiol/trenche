@@ -43,6 +43,15 @@ export function applyLive(mint: string, rows: PositionRow[], trades: ReceivedTra
     if (t.receivedAt > readSentAt) r.amount = String(Math.max(0, Number(r.amount) + (t.side === "buy" ? 1 : -1) * Number(t.tokens)));
     map.set(t.wallet, r);
   }
+  // floor: the live feed's window is the most recent run of trades, so a wallet's signed sum over it (buys − sells) is
+  // at most what it holds — a positions read whose balance was not fresh yet (right after a launch) said 0 and the
+  // badge showed −(everything spent) for ~10 s
+  const implied = new Map<string, number>();
+  for (const t of mine) implied.set(t.wallet, (implied.get(t.wallet) ?? 0) + (t.side === "buy" ? 1 : -1) * Number(t.tokens));
+  for (const [w, n] of implied) {
+    const r = map.get(w);
+    if (r && n > Number(r.amount)) r.amount = String(n);
+  }
   const out = [...map.values()];
   if (!last || out.some((r) => r.onCurve === false)) return out;
   // quote every holding at the live reserves, one after the other (the engine's sequential quote: they cannot all

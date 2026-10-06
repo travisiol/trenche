@@ -1,6 +1,6 @@
 "use client";
 /** Block X launch workspace: Chart · Tasks · Token info · Activity panels + the right rail (Launch · Claim Rewards). */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ClipboardPlus, Flame, Gift, GripVertical, Maximize2, Minimize2, MoreHorizontal, Pencil, Rocket, Settings, SlidersHorizontal, Square } from "lucide-react";
 import { type AutoClaimStatus, type LaunchPreset, type LaunchState, type LaunchTaskType, type MintPnl, type PositionsResponse, type TokenInfo, type TokenTradesResponse, type WalletGroup, type WalletInfo } from "@/lib/types";
 import { failureMessage, post, useGet } from "@/lib/api";
@@ -335,6 +335,16 @@ export function TasksPanel({
   const positions = useGet<PositionsResponse>(mint && rowWallets.length ? `/api/positions?mints=${mint}&wallets=${rowWallets.join(",")}` : null, 8000);
   const price = useSolPrice();
   const mintPnl = useGet<MintPnlResponse>(mint ? `/api/pnl/mint?mint=${mint}` : null, 10000);
+  // the ledger does not hold every transaction we know of yet (a launch, a trade just landed): ask again in 1.5 s
+  // rather than at the next 10 s tick — until then the badge's costs / fees are short
+  const pnlCovered = mintPnl.data?.covered;
+  const refreshMintPnl = mintPnl.refresh;
+  const pnlAt = mintPnl.at;
+  useEffect(() => {
+    if (!mint || pnlCovered !== false) return;
+    const t = setTimeout(refreshMintPnl, 1500);
+    return () => clearTimeout(t);
+  }, [mint, pnlCovered, pnlAt, refreshMintPnl]);
   // live: every trade on the curve moves the price, ours move balances / cost / realised at once (useLivePnl)
   const lp = useLivePnl(mint, rowWallets, positions, mintPnl);
   const posMap = lp.posMap;
