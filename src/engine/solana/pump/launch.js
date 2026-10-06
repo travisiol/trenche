@@ -174,9 +174,11 @@ export async function prepareLaunch(
             cuPrice: v[x].cuPrice ?? n.cuPrice,
             cuLimit: 13e4,
             ataExists: !1,
-            // Jito: ONE tip per bundle (the create carries the first bundle's; each later bundle of 5 starts with a tipped
-            // buy) — every tx tipping paid the tip 2–5 times. Sender (no Jito) needs its tip on every tx.
-            tipLamports: n.jitoTip ? ((x + 1) % 5 === 0 ? n.tipLamports : 0n) : n.tipLamports,
+            // Jito: ONE tip per bundle of 5 = [create, b0..b3], [b4..b8]… on the LAST tx of each bundle (Jito's advice),
+            // or on the create when it already carries one (with lookup tables only — without, it has no room: a launch
+            // bundle with no tip at all was refused "must write lock at least one tip account", 2026-10-06). Every tx
+            // tipping paid it 2–5 times. Sender (no Jito) needs its tip on every tx.
+            tipLamports: n.jitoTip ? (((x + 2) % 5 === 0 || x === k.length - 1) && !(x <= 3 && h) ? n.tipLamports : 0n) : n.tipLamports,
             jitoTip: !!n.jitoTip,
             recentBlockhash: i,
           },
