@@ -228,13 +228,17 @@ const IDLE: Resource<unknown> = {
   mutate: () => {},
   setPath: () => {},
 };
-export function useGet<T>(path: string | null, intervalMs = 0): ResourceState<T> & { refresh: () => void } {
-  const key = path ?? "";
-  let res = cache.get(`${key}|${intervalMs}`) as Resource<T> | undefined;
-  if (!res && path) {
+/** the resource useGet(path, intervalMs) reads — for non-React consumers (trade stream) sharing the same poll */
+export function sharedResource<T>(path: string, intervalMs = 0): Resource<T> {
+  let res = cache.get(`${path}|${intervalMs}`) as Resource<T> | undefined;
+  if (!res) {
     res = createResource<T>(path, intervalMs);
-    cache.set(`${key}|${intervalMs}`, res as Resource<unknown>);
+    cache.set(`${path}|${intervalMs}`, res as Resource<unknown>);
   }
+  return res;
+}
+export function useGet<T>(path: string | null, intervalMs = 0): ResourceState<T> & { refresh: () => void } {
+  const res = path ? sharedResource<T>(path, intervalMs) : undefined;
   const active = (res ?? IDLE) as Resource<T>;
   const state = useSyncExternalStore(active.subscribe, active.getSnapshot, () => SERVER_SNAPSHOT as ResourceState<T>);
   return { ...state, refresh: active.refresh };

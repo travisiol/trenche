@@ -1,10 +1,10 @@
 "use client";
 /** Block X /sol/trading/[mint]: 68px token header · chart (1s…1m, MC/Price) · Trades list · right panel (Buy/Sell, Token info) · Positions/Wallets. */
 import { CopyCa } from "@/components/bx/CopyCa";
-import { use, useEffect, useMemo, useState } from "react";
+import { use, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { Check, ChevronDown, Copy, ExternalLink, Globe, UserRoundCog, UsersRound, Zap } from "lucide-react";
-import { CANDLE_TFS, type CandleTf, type PositionsResponse, type TokenCandlesResponse, type TokenHoldersResponse, type TokenInfo, type TokenTradesResponse, type JobCreated } from "@/lib/types";
+import { type PositionsResponse, type TokenHoldersResponse, type TokenInfo, type TokenTradesResponse, type JobCreated } from "@/lib/types";
 import { failureMessage, post, useGet } from "@/lib/api";
 import { useSettings, useSolPrice, useVault, useWallets } from "@/lib/store";
 import { age, pct, short, sol, solscanAccount, usd } from "@/lib/format";
@@ -12,20 +12,23 @@ import { toast } from "@/components/ui";
 import { cx } from "@/components/bx/ui";
 import { TxLink, useExplorerSuffix } from "@/components/bx/Job";
 import { pushRecent } from "@/components/bx/recent";
-import { CandleChart } from "@/components/trade/Chart";
+import { TokenChart } from "@/components/trade/Chart";
 import { InstantTrade, InstantTradeButton, TradePanel } from "@/components/trade/TradePanel";
 import { tradeRowStyle } from "@/components/trade/tradeRowStyle";
 import { mergePending, trackTradeJob, usePendingTrades, type ListedTrade } from "@/lib/pendingTrades";
 
-const TF: CandleTf[] = CANDLE_TFS;
+const LG = "(min-width: 1024px)";
+const subscribeLg = (cb: () => void) => {
+  const m = window.matchMedia(LG);
+  m.addEventListener("change", cb);
+  return () => m.removeEventListener("change", cb);
+};
+const isLg = () => window.matchMedia(LG).matches;
 
 export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
   const { mint } = use(params);
   // token info 3 s (pump.fun coin row + cached curve read), candles 3 s, positions 15 s (RPC history walk)
   const token = useGet<TokenInfo>(`/api/token/${mint}`, 3000);
-  const [tf, setTf] = useState<CandleTf>("1s");
-  const [mode, setMode] = useState<"MC" | "Price">("MC");
-  const candles = useGet<TokenCandlesResponse>(`/api/token/${mint}/candles?tf=${tf}`, 3000);
   const positions = useGet<PositionsResponse>(`/api/positions?mints=${mint}`, 15000);
   const holders = useGet<TokenHoldersResponse>(`/api/token/${mint}/holders`, 15000);
   const wallets = useWallets();
@@ -40,7 +43,10 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
   const c = t?.curve ?? null;
   const solUsd = t?.solPrice ?? price.data?.usd ?? null;
   const rows = (positions.data ?? []).filter((r) => r.mint === mint);
-  const mine = new Set([...(wallets.data?.wallets ?? []).map((w) => w.address), ...(wallets.data?.history ?? [])]);
+  const walletKey = [...(wallets.data?.wallets ?? []).map((w) => w.address), ...(wallets.data?.history ?? [])].join(",");
+  const mine = useMemo(() => new Set(walletKey ? walletKey.split(",") : []), [walletKey]);
+  // one chart only (desktop grid or mobile column): two would each poll the candle history
+  const lg = useSyncExternalStore(subscribeLg, isLg, () => true);
   const supply = Number(c?.tokenTotalSupply ?? 1e15) / 1e6 || 1e9;
 
   // recently viewed strip (this machine) + server-side list for the search dialog History
@@ -55,7 +61,6 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
   const priceUsd = onCurve && solUsd ? c.priceSol * solUsd : null;
   // the current pump.fun curve layout keeps realSolReserves at 1 lamport (SOL sits elsewhere): below 0.001 SOL the field is unusable → "—"
   const liqSol = onCurve && Number(c.realSolReserves) >= 1e6 ? Number(c.realSolReserves) / 1e9 : null;
-  const chartCandles = (candles.data?.candles ?? []).map((k) => (mode === "MC" && solUsd ? { ...k, open: k.open * supply * solUsd, high: k.high * supply * solUsd, low: k.low * supply * solUsd, close: k.close * supply * solUsd } : k));
   const r = 23;
   const circ = 2 * Math.PI * r;
 
@@ -153,37 +158,7 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
         </div>
         <div className="min-h-0 bg-bg-100 lg:col-start-1 lg:row-start-2 xl:col-span-1">
           <section className="h-full min-h-0 overflow-hidden bg-bg-100">
-            <section className="relative h-full min-h-0 w-full" aria-label="Price chart">
-              <div className="absolute left-2 top-2 z-10 flex flex-wrap items-center gap-1">
-                <div className="inline-flex items-center rounded border border-line-100 bg-bg-50 p-px">
-                  {TF.map((x) => (
-                    <button key={x} type="button" onClick={() => setTf(x)} className={cx("h-5 rounded px-1.5 text-[10px] font-medium transition-colors", tf === x ? "bg-bg-100 text-text-100" : "text-text-300 hover:text-text-100")}>
-                      {x}
-                    </button>
-                  ))}
-                </div>
-                <div className="inline-flex items-center rounded border border-line-100 bg-bg-50 p-px">
-                  {(["MC", "Price"] as const).map((m) => (
-                    <button key={m} type="button" onClick={() => setMode(m)} className={cx("h-5 rounded px-1.5 text-[10px] font-medium transition-colors", mode === m ? "bg-bg-100 text-text-100" : "text-text-300 hover:text-text-100")}>
-                      {m}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="h-full min-h-0 w-full">
-                {candles.data?.source === "rpc" ? <span className="absolute right-16 top-2 z-10 rounded border border-yellow-100/40 bg-yellow-100/10 px-1.5 text-[10px] text-yellow-100" title="pump.fun's candle API did not answer: candles built from the curve history read on the RPC">RPC</span> : null}
-                {candles.error ? (
-                  <div className="flex h-full items-center justify-center text-xs text-decrease">{failureMessage(candles.error)}</div>
-                ) : !chartCandles.length ? (
-                  <div className="flex h-full flex-col items-center justify-center gap-1 text-center">
-                    <p className="text-sm text-text-200">{candles.loading ? "Loading chart…" : "No trade yet on the curve"}</p>
-                    <p className="text-xs text-text-300">Candles are built from the bonding-curve history as soon as a trade lands.</p>
-                  </div>
-                ) : (
-                  <CandleChart candles={chartCandles} live={null} fill mode={mode === "MC" && solUsd ? "mc" : "price"} fitKey={`${mint}|${tf}`} />
-                )}
-              </div>
-            </section>
+            {lg ? <TokenChart mint={mint} solUsd={solUsd} supplyTokens={supply} mine={mine} creator={t?.creator ?? null} /> : null}
           </section>
         </div>
         <div className="relative min-h-0 bg-bg-100 lg:col-start-1 lg:row-start-3 xl:col-start-2 xl:row-span-2 xl:row-start-1">
@@ -278,7 +253,7 @@ export default function TradePage({ params }: PageProps<"/trade/[mint]">) {
       <InstantTrade mint={mint} symbol={t?.symbol ?? null} rows={rows} open={instant} onClose={() => setInstant(false)} />
       {/* mobile */}
       <div className="flex min-h-0 flex-1 flex-col lg:hidden">
-        <div className="h-[min(210px,34svh)] shrink-0 overflow-hidden border-b border-line-100">{chartCandles.length ? <CandleChart candles={chartCandles} live={null} height={210} mode={mode === "MC" && solUsd ? "mc" : "price"} fitKey={`${mint}|${tf}`} /> : <div className="flex h-full items-center justify-center text-xs text-text-300">No trade yet</div>}</div>
+        <div className="h-[min(210px,34svh)] shrink-0 overflow-hidden border-b border-line-100">{!lg ? <TokenChart mint={mint} solUsd={solUsd} supplyTokens={supply} mine={mine} creator={t?.creator ?? null} /> : null}</div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           <TradePanel mint={mint} symbol={t?.symbol ?? null} rows={rows} />
           <div className="h-[320px]">{tradesList}</div>

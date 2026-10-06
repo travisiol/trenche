@@ -5,13 +5,14 @@
 import { PublicKey } from "@solana/web3.js";
 import { curveTradeHistory } from "@/engine/solana/pump/positions.js";
 import { INITIAL_REAL_TOKENS, TOKEN_2022_PROGRAM, associatedTokenAddress, bondingCurvePda, tokenProgramFor } from "@/engine/solana/pump/pdas.js";
-import type { Candle, CandleTf, CurveState, StatsWindow, TokenCandlesResponse, TokenHolder, TokenHoldersResponse, TokenInfo, TokenStatsResponse, TokenTrade, TokenTradesResponse, WindowStats } from "@/lib/types";
+import type { Candle, CandleTf, ChartMark, CurveState, StatsWindow, TokenCandlesResponse, TokenHolder, TokenHoldersResponse, TokenInfo, TokenStatsResponse, TokenTrade, TokenTradesResponse, WindowStats } from "@/lib/types";
 import { HttpError } from "./api";
 import { PUMP_SUPPLY_TOKENS, fetchCurve, readConn, toCurveState, tokenProgramOf } from "./engine";
 import { feedCard, feedSolUsd } from "./feed";
 import { imageUrl, rememberMeta, resolveMeta } from "./metadata";
 import { solPrice } from "./price";
 import { store } from "./store";
+import { ownedAddresses } from "./wallets";
 import { TF_SECONDS, aggregateCandles, candlesFromTrades, normalizeCandles, pumpCandles, pumpCoin, pumpTrades, type PumpCoin } from "./pumpapi";
 
 /** creator of a mint, remembered for the process (launch records first, then the curve read once) */
@@ -105,10 +106,56 @@ export async function tokenInfo(mint: string): Promise<TokenInfo> {
  *  budgeted (12 calls/min for the whole app) and indexes a fresh coin seconds late — the chain has a trade the moment
  *  it lands (Cghynn…pump: chart and trades "took too long to appear"). One row per signature + wallet + side: a
  *  create carries the dev buy and the inline bundle buys under ONE signature. */
-async function tradesOf(mint: string, limit: number): Promise<{ trades: TokenTrade[]; source: "pump" | "rpc" }> {
+/** curveTradeHistory shared by concurrent callers: chart + trades + stats open together on a fresh coin and each
+ *  started the same signature scan + getTransaction batch (3× the RPC work, all queued behind each other) */
+/** curveTradeHistory reads its new transactions 2 at a time (engine code): 20 trades on a fresh coin = 10 round trips
+ *  ≈ 2 s before the first candle. Fetch them first 4 at a time with the exact same RPC params — the RPC queue's
+ *  cache (getTransaction 60 s, getSignaturesForAddress 2 s) then answers the engine's calls instantly. 4 lanes, not
+ *  8: the launch engine shares the queue. Each signature is warmed once per process. */
+const warmed = new Map<string, Set<string>>();
+async function warmCurveTxs(mint: string): Promise<void> {
+  const conn = readConn();
+  const sigs = await conn.getSignaturesForAddress(bondingCurvePda(new PublicKey(mint)), { limit: 100 }).catch(() => []);
+  let seen = warmed.get(mint);
+  if (!seen) {
+    seen = new Set();
+    warmed.set(mint, seen);
+    if (warmed.size > 200) warmed.delete(warmed.keys().next().value!);
+  }
+  const todo = sigs.filter((s) => !s.err && !seen.has(s.signature)).slice(0, 30);
+  let i = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(4, todo.length) }, async () => {
+      while (i < todo.length) {
+        const s = todo[i++];
+        const tx = await conn.getTransaction(s.signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => null);
+        if (tx) seen.add(s.signature); // not found yet: retried on the next call
+      }
+    }),
+  );
+}
+
+const chainInflight = new Map<string, { max: number; p: Promise<Awaited<ReturnType<typeof curveTradeHistory>>> }>();
+function chainTrades(mint: string, max: number) {
+  const run = chainInflight.get(mint);
+  if (run && run.max >= max) return run.p;
+  const p = warmCurveTxs(mint)
+    .then(() => curveTradeHistory(readConn(), mint, { max }))
+    .catch(() => [])
+    .finally(() => {
+      if (chainInflight.get(mint)?.p === p) chainInflight.delete(mint);
+    });
+  chainInflight.set(mint, { max, p });
+  return p;
+}
+
+async function tradesOf(mint: string, limit: number, opts: { pumpWaitMs?: number } = {}): Promise<{ trades: TokenTrade[]; source: "pump" | "rpc" }> {
+  const pumpCall = pumpTrades(mint, limit).catch(() => null);
+  // pumpWaitMs: do not hold the chain's answer for pump.fun's (8 s timeout) — the call keeps filling its store
+  const pumpCapped = opts.pumpWaitMs === undefined ? pumpCall : Promise.race([pumpCall, new Promise<null>((r) => setTimeout(() => r(null), opts.pumpWaitMs))]);
   const [pump, chain] = await Promise.all([
-    pumpTrades(mint, limit).catch(() => null),
-    curveTradeHistory(readConn(), mint, { max: Math.min(600, Math.max(20, limit)) }).catch(() => []),
+    pumpCapped,
+    chainTrades(mint, Math.min(600, Math.max(20, limit))),
   ]);
   const out = new Map<string, TokenTrade>();
   const key = (t: { signature: string; wallet: string; side: string }) => `${t.signature}:${t.wallet}:${t.side}`;
@@ -126,14 +173,25 @@ export async function tokenTrades(mint: string, limit: number): Promise<TokenTra
   return { mint, trades, supplyTokens: "1000000000", source };
 }
 
+/** chart markers: trades of our wallets (vault, trash, launch wallets) and of the coin's creator */
+function marksOf(trades: TokenTrade[], creator: string | null): ChartMark[] {
+  const ours = new Set(ownedAddresses());
+  return trades
+    .filter((t) => t.blockTime > 0 && (ours.has(t.wallet) || t.wallet === creator))
+    .map((t) => ({ time: t.blockTime, side: t.side, solAmount: t.solAmount, wallet: t.wallet, dev: t.wallet === creator, signature: t.signature }));
+}
+
 export async function tokenCandles(mint: string, tf: CandleTf): Promise<TokenCandlesResponse> {
   const sec = TF_SECONDS[tf];
   let candles: Candle[] | null = null;
   let source: TokenCandlesResponse["source"] = "pump";
+  // the chart's first paint: pump.fun gets 1.5 s, the chain's list answers alone after that (a fresh coin is on the
+  // chain before pump.fun indexes it); the trade list also gives the markers, on every timeframe
+  const [recent, creator] = await Promise.all([tradesOf(mint, 1000, { pumpWaitMs: 1500 }).then((r) => r.trades).catch(() => null), creatorOf(mint).catch(() => null)]);
+  const marks = marksOf(recent ?? [], creator);
   if (sec <= 60) {
     // 1s / 5s / 15s / 1m: derived locally from the merged trade list (pump.fun + the chain) — no candle call, and the
     // newest trade is in the chart as soon as it is in the list
-    const recent = await tradesOf(mint, 1000).then((r) => r.trades).catch(() => null);
     if (recent?.length) {
       candles = normalizeCandles(candlesFromTrades(recent, sec));
       source = "trades";
@@ -142,12 +200,9 @@ export async function tokenCandles(mint: string, tf: CandleTf): Promise<TokenCan
     // 5m and up: pump.fun candles (cached 30 s), the trade store as a fallback
     const coin = await coinOf(mint);
     candles = await pumpCandles(mint, tf, coin?.createdAt ?? null).catch(() => null);
-    if (!candles?.length) {
-      const recent = await pumpTrades(mint, 1000).catch(() => null);
-      if (recent?.length) {
-        candles = normalizeCandles(candlesFromTrades(recent, sec));
-        source = "trades";
-      }
+    if (!candles?.length && recent?.length) {
+      candles = normalizeCandles(candlesFromTrades(recent, sec));
+      source = "trades";
     }
   }
   if (!candles || !candles.length) {
@@ -155,7 +210,7 @@ export async function tokenCandles(mint: string, tf: CandleTf): Promise<TokenCan
     candles = aggregateCandles(candlesFromTrades(rows.map((t) => ({ blockTime: t.blockTime, priceSol: t.priceEth, solAmount: t.quoteEth })), 1), sec);
     source = "rpc";
   }
-  return { mint, tf, candles, trades: candles.reduce((n, c) => n + (c.volume > 0 ? 1 : 0), 0), source };
+  return { mint, tf, candles, trades: candles.reduce((n, c) => n + (c.volume > 0 ? 1 : 0), 0), source, marks, creator };
 }
 
 const WINDOWS: Record<StatsWindow, number> = { "5m": 300, "1h": 3600, "6h": 6 * 3600, "24h": 24 * 3600 };

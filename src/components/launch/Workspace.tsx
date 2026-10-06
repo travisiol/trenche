@@ -1,8 +1,8 @@
 "use client";
 /** Block X launch workspace: Chart · Tasks · Token info · Activity panels + the right rail (Launch · Claim Rewards). */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronDown, ClipboardPlus, Flame, Gift, GripVertical, Maximize2, Minimize2, MoreHorizontal, Pencil, Rocket, Settings, SlidersHorizontal, Square } from "lucide-react";
-import { CANDLE_TFS, type AutoClaimStatus, type CandleTf, type LaunchPreset, type LaunchState, type LaunchTaskType, type MintPnl, type PositionsResponse, type TokenCandlesResponse, type TokenInfo, type TokenTradesResponse, type WalletGroup, type WalletInfo } from "@/lib/types";
+import { type AutoClaimStatus, type LaunchPreset, type LaunchState, type LaunchTaskType, type MintPnl, type PositionsResponse, type TokenInfo, type TokenTradesResponse, type WalletGroup, type WalletInfo } from "@/lib/types";
 import { failureMessage, post, useGet } from "@/lib/api";
 import { useSolPrice, useWallets } from "@/lib/store";
 import { tradeRowStyle } from "@/components/trade/tradeRowStyle";
@@ -13,7 +13,7 @@ import { toast } from "@/components/ui";
 import { cx } from "@/components/bx/ui";
 import { CopyCa } from "@/components/bx/CopyCa";
 import { TxLink } from "@/components/bx/Job";
-import { CandleChart } from "@/components/trade/Chart";
+import { TokenChart } from "@/components/trade/Chart";
 import { LiveTaskCard, TaskCard } from "./TaskEditor";
 import { TaskDialog, TASK_TYPES } from "./TaskDialog";
 import { GlobalPresetsDialog } from "./GlobalPresetsDialog";
@@ -187,18 +187,16 @@ export function AutoClaimRow({ mint }: { mint: string }) {
 }
 
 /* ------------------------------------------------------------------ Chart */
-/** candles every 3 s while the mint is viewed (server cache: N clients = 1 pump.fun call); MC mode = price × supply × SOL/USD */
+/** TokenChart (trade/Chart.tsx): server history + the live trade stream; token info on the launch page's own poll
+ *  key (4 s) so no second request; our wallets = vault + trash, the server adds every launch wallet to the marks */
 export function ChartPanel({ mint, frame, className }: { mint: string | null; frame?: PanelFrame; className?: string }) {
-  const [tf, setTf] = useState<CandleTf>("1s");
-  const [mode, setMode] = useState<"MC" | "Price">("MC");
-  const candles = useGet<TokenCandlesResponse>(mint ? `/api/token/${mint}/candles?tf=${tf}` : null, 3000);
-  const token = useGet<TokenInfo>(mint ? `/api/token/${mint}` : null, 5000);
+  const token = useGet<TokenInfo>(mint ? `/api/token/${mint}` : null, 4000);
   const price = useSolPrice();
+  const vault = useWallets();
   const solUsd = token.data?.solPrice ?? price.data?.usd ?? null;
   const supply = Number(token.data?.curve?.tokenTotalSupply ?? 1e15) / 1e6 || 1e9;
-  const mc = mode === "MC" && solUsd;
-  const rows = (candles.data?.candles ?? []).map((k) => (mc ? { ...k, open: k.open * supply * solUsd, high: k.high * supply * solUsd, low: k.low * supply * solUsd, close: k.close * supply * solUsd } : k));
-  const seg = (on: boolean) => cx("h-5 rounded px-1.5 text-[10px] font-medium transition-colors", on ? "bg-bg-100 text-text-100" : "text-text-300 hover:text-text-100");
+  const walletKey = [...(vault.data?.wallets ?? []).map((w) => w.address), ...(vault.data?.history ?? [])].join(",");
+  const mine = useMemo(() => new Set(walletKey ? walletKey.split(",") : []), [walletKey]);
   return (
     <Panel title="Chart" frame={frame} className={className}>
       {!mint ? (
@@ -209,32 +207,7 @@ export function ChartPanel({ mint, frame, className }: { mint: string | null; fr
           </div>
         </section>
       ) : (
-        <section className="relative h-full min-h-0 w-full" aria-label="Price chart">
-          <div className="absolute left-2 top-2 z-10 flex flex-wrap items-center gap-1">
-            <div className="inline-flex items-center rounded border border-line-100 bg-bg-50 p-px">
-              {CANDLE_TFS.map((x) => (
-                <button key={x} type="button" onClick={() => setTf(x)} className={seg(tf === x)}>
-                  {x}
-                </button>
-              ))}
-            </div>
-            <div className="inline-flex items-center rounded border border-line-100 bg-bg-50 p-px">
-              {(["MC", "Price"] as const).map((m) => (
-                <button key={m} type="button" onClick={() => setMode(m)} className={seg(mode === m)}>
-                  {m}
-                </button>
-              ))}
-            </div>
-            {candles.data?.source === "rpc" ? <span className="rounded border border-yellow-100/40 bg-yellow-100/10 px-1.5 text-[10px] text-yellow-100" title="pump.fun's candle API did not answer: candles built from the curve history read on the RPC">RPC</span> : null}
-          </div>
-          {candles.error ? (
-            <div className="flex h-full items-center justify-center px-4 text-center text-xs text-decrease">{failureMessage(candles.error)}</div>
-          ) : !rows.length ? (
-            <div className="flex h-full items-center justify-center text-xs text-text-300">{candles.loading ? "Loading…" : "No trade on the curve yet."}</div>
-          ) : (
-            <CandleChart candles={rows} live={null} fill mode={mc ? "mc" : "price"} fitKey={`${mint}|${tf}`} unitLabel={undefined} />
-          )}
-        </section>
+        <TokenChart mint={mint} solUsd={solUsd} supplyTokens={supply} mine={mine} creator={token.data?.creator ?? null} />
       )}
     </Panel>
   );

@@ -530,8 +530,10 @@ export type Candle = {
   /** SOL traded in the bucket */
   volume: number;
 };
-/** GET /api/token/[mint]/candles?tf= */
-export type TokenCandlesResponse = { mint: string; tf: CandleTf; candles: Candle[]; trades: number; source: "pump" | "trades" | "rpc" };
+/** one of OUR trades (vault / trash / launch wallets) or the dev's, drawn as a marker on the chart */
+export type ChartMark = { time: number; side: "buy" | "sell"; solAmount: string; wallet: string; dev: boolean; signature: string };
+/** GET /api/token/[mint]/candles?tf= — `marks`: our + the dev's trades among the trades the server read */
+export type TokenCandlesResponse = { mint: string; tf: CandleTf; candles: Candle[]; trades: number; source: "pump" | "trades" | "rpc"; marks?: ChartMark[]; creator?: string | null };
 
 /** Block X trading page "window stats" (5m +25.9% · Vol · Buys · Sells · Net Vol.) */
 export type StatsWindow = "5m" | "1h" | "6h" | "24h";
