@@ -17,7 +17,7 @@ export const maxDuration = 60;
  *  status, polled 30 s. Built to find why every launch bundle reported "Invalid" (2026-10-06). */
 export const POST = route(async (req: Request) => {
   requireUnlocked();
-  type Body = { wallet?: string; tipLamports?: number; /** one block engine only (e.g. https://ny.mainnet.block-engine.jito.wtf) */ region?: string; /** "two" (default): self-transfer then tip · "one": a single tx with both · "tx": the single tx via Jito's sendTransaction (control: not a bundle) */ mode?: "one" | "two" | "tx" | "pumpbuy"; /** pumpbuy: a live pump.fun coin and the SOL (lamports) to buy */ mint?: string; lamports?: number; /** pumpbuy variants */ tipInBuy?: boolean; cuPrice?: number; cuLimit?: number; /** send through Astralane (Settings key): every tx tips an Astralane wallet */ astralane?: boolean };
+  type Body = { wallet?: string; tipLamports?: number; /** one block engine only (e.g. https://ny.mainnet.block-engine.jito.wtf) */ region?: string; /** "two" (default): self-transfer then tip · "one": a single tx with both · "tx": the single tx via Jito's sendTransaction (control: not a bundle) */ mode?: "one" | "two" | "tx" | "pumpbuy"; /** pumpbuy: a live pump.fun coin and the SOL (lamports) to buy */ mint?: string; lamports?: number; /** pumpbuy variants */ tipInBuy?: boolean; cuPrice?: number; cuLimit?: number; /** send through Astralane (Settings key): every tx tips an Astralane wallet */ astralane?: boolean; /** with astralane: send the tipped buy alone through Astralane sendTransaction (Free tier) */ astralaneTx?: boolean };
   const body = await readBody<Body>(req).catch(() => ({}) as Body);
   const st = store();
   const bal = st.balances?.map ?? {};
@@ -64,7 +64,18 @@ export const POST = route(async (req: Request) => {
   let submitError: string | null = null;
   // one region by default (Jito: 1 sendBundle/s per IP)
   const regionList = [body.region ?? JITO_BLOCK_ENGINES.find((u) => u.includes("frankfurt")) ?? JITO_BLOCK_ENGINES[0]];
-  if (mode === "tx") {
+  if (astra && body.astralaneTx && pumpTxs) {
+    // Astralane fast lane (Free key): the tipped buy alone, sendTransaction
+    try {
+      const res = await fetch(`https://fr.gateway.astralane.io/iris?api-key=${encodeURIComponent(astra)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "sendTransaction", params: [Buffer.from(pumpTxs[0].serialize()).toString("base64"), { encoding: "base64", skipPreflight: true, maxRetries: 0 }] }) });
+      const data = (await res.json().catch(() => ({}))) as { result?: string; error?: { message?: string } };
+      if (data.result) accepted["astralane-tx"] = data.result;
+      else refused["astralane-tx"] = data.error?.message ?? `HTTP ${res.status}`;
+    } catch (e) {
+      refused["astralane-tx"] = e instanceof Error ? e.message : String(e);
+    }
+    signatures.splice(1);
+  } else if (mode === "tx") {
     // control: Jito's plain transaction endpoint (no bundle, no auction state) — lands like any send if Jito takes it
     await Promise.all(
       regionList.map(async (base) => {
@@ -89,7 +100,7 @@ export const POST = route(async (req: Request) => {
   await new Promise((r) => setTimeout(r, 400)); // let the other regions answer
   const timeline: { ms: number; best: string | null; regions: Record<string, string | null>; landed: boolean[] }[] = [];
   let landedAll = false;
-  if (bundleId || mode === "tx") {
+  if (bundleId || mode === "tx" || (astra && body.astralaneTx)) {
     for (let i = 0; i < 30 && Date.now() - t0 < 32_000; i++) {
       let regions: Record<string, string | null> = {};
       const best = bundleId && !astra ? await jitoBundleStatus(bundleId, { regions: regionList, perRegion: (r) => (regions = r) }) : null;

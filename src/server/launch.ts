@@ -46,6 +46,7 @@ import { isDevnet, logActivity, saveLaunches, store, track, type Job, type Pendi
 import { loops, TradeLoop, type SavedLoop } from "./tradeloop";
 import { resolveWashPairs, washPairs } from "./wash";
 import { markDraftLaunched } from "./drafts";
+import { SenderConnection } from "./sender";
 import { awaitWarmTable, deactivateLaunchTable, ensureStaticLookupTable, staticLookupTable, sweepLaunchTables, takeWarmTable, warmLaunchTable, warmTableEtaMs, warmTableFor, warmTableStatus } from "./alt";
 import { grindVanity, isReserved, peekReserved, takeReserved, unuseReserved } from "./vanity";
 
@@ -624,7 +625,9 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   const bundleTip = devnet ? BigInt(0) : mode === "bundle" && st.settings.jitoEnabled === true && taskTip < MIN_JITO_BUNDLE_TIP ? MIN_JITO_BUNDLE_TIP : taskTip;
   // Settings → Jito off: the bundle wallets snipe the dev — create + their buys sent together through the normal sender
   // (same path as snipers, not atomic); Jito on: one atomic Jito bundle
-  const jito = mode === "bundle" && !devnet && st.settings.jitoEnabled === true;
+  // with an Astralane key, Jito's public endpoint is never used (it drops our pump.fun bundles): bundles only when the
+  // key may send them (Settings.astralaneBundles, VIP tier), else the Astralane fast lane
+  const jito = mode === "bundle" && !devnet && st.settings.jitoEnabled === true && (!(st.settings.astralaneKey ?? "").trim() || st.settings.astralaneBundles === true);
   if (jito && bundleTip < BigInt(1000)) throw new HttpError(400, "A Jito bundle needs a tip (bundle task `tip` or Settings → default tip).");
 
   // balance pre-checks: a readable refusal instead of a failed broadcast — a reserved …pump address goes back to the pool
@@ -724,6 +727,16 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
 }
 
 const MIN_JITO_BUNDLE_TIP = BigInt(1_000_000);
+/** Astralane Free tier: 0.001 SOL minimum tip per transaction (docs "Send Txn Fee Tiers") */
+const ASTRALANE_MIN_TIP = BigInt(1_000_000);
+const astraConns = new Map<string, SenderConnection>();
+/** a send connection whose sendRawTransaction posts to Astralane's Frankfurt gateway AND the read RPC (same signature) */
+function astralaneConn(key: string): SenderConnection {
+  const read = store().sol.config.rpcUrl?.trim() || "https://api.mainnet-beta.solana.com";
+  const k = `${read}|${key}`;
+  if (!astraConns.has(k)) astraConns.set(k, new SenderConnection(read, `https://fr.gateway.astralane.io/iris?api-key=${encodeURIComponent(key)}`));
+  return astraConns.get(k)!;
+}
 /** tip multipliers of the successive Jito attempts of one launch (0.001 → 0.003 → 0.01 SOL), never above the cap */
 const JITO_TIP_LADDER = [1, 3, 10];
 const JITO_TIP_CAP = BigInt(20_000_000);
@@ -816,14 +829,18 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   }
   // Astralane (Settings key): every tx of the bundle tips, the create too — it only has room for a tip with the static
   // pump.fun lookup table, so the bundle path always carries it when the table is active
-  const astralaneKey = o.jito ? (st.settings.astralaneKey ?? "").trim() : "";
+  // Astralane key: Jito on + bundles allowed on the key (VIP) → the bundle goes through Astralane's sendBundle;
+  // otherwise (Free key: sendBundle answers 401, 2026-10-06) → create and buys through Astralane's sendTransaction
+  // fast lane, buys as soon as the create is seen — not atomic, every wallet its own trader, 0.001 SOL tip per tx
+  const astralaneKey = !devnet && run.state.mode === "bundle" ? (st.settings.astralaneKey ?? "").trim() : "";
   const astralane = astralaneKey ? { key: astralaneKey } : undefined;
+  const astraTx = !!astralane && !o.jito;
   if (astralane && !tables.length) {
     const stat = await staticLookupTable().catch(() => null);
     if (stat) tables = [stat];
     else step(run, "prepare", true, "pump.fun lookup table not ready: the create carries no Astralane tip (built in the background for the next launch).");
   }
-  if (astralane) step(run, "bundle", true, "Bundle sent through Astralane (Settings key).");
+  if (astralane) step(run, "bundle", true, astraTx ? "Create and buys sent through Astralane's fast lane (Free key: no bundles — not atomic, every wallet its own trader)." : "Bundle sent through Astralane (Settings key).");
   const prepOpts = { lookupTables: tables, inlineMax };
   // the chain refused the create for its instruction trace: one inline wallet fewer, same attempt (never more than INLINE_MAX times)
   const shrinkInline = (error: string | undefined): boolean => {
@@ -854,7 +871,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
         conn,
         { dev: st.sol.keypair(dev), name: run.state.name, symbol: run.state.symbol, uri: o.uri, devBuyLamports: o.devBuyLamports, mint: o.pendingKeypair, cashback: o.cashback },
         bundleRows,
-        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? (o.jito ? tipFor(attempt) : o.bundleTip) : tipLamportsFor(undefined), jitoTip: astralane ? ("astralane" as const) : o.jito, ...prepOpts, recentBlockhash: bh ? { blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight } : undefined },
+        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? (o.jito ? tipFor(attempt) : astraTx ? ASTRALANE_MIN_TIP : o.bundleTip) : tipLamportsFor(undefined), jitoTip: astralane ? ("astralane" as const) : o.jito, ...prepOpts, recentBlockhash: bh ? { blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight } : undefined },
       );
     } catch (e) {
       created = { confirmed: false, error: e instanceof Error ? e.message : String(e) };
@@ -901,9 +918,9 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
       const prepArgs = [
         { dev: st.sol.keypair(dev), name: run.state.name, symbol: run.state.symbol, uri: o.uri, devBuyLamports: o.devBuyLamports, mint: o.pendingKeypair, cashback: o.cashback },
         bundleRows,
-        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : tipLamportsFor(undefined), ...prepOpts },
+        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : astraTx ? ASTRALANE_MIN_TIP : tipLamportsFor(undefined), jitoTip: astraTx ? ("astralane" as const) : undefined, ...prepOpts },
       ] as const;
-      const r = await engineExecuteLaunch(conn, sendConn(), prep, {
+      const r = await engineExecuteLaunch(conn, astraTx ? astralaneConn(astralaneKey) : sendConn(), prep, {
         // the create really never landed (not in the history, no curve): re-sign it with a fresh blockhash (2× max)
         rebuildCreate: async () => {
           const fresh = await prepareLaunch(conn, prepArgs[0], prepArgs[1], prepArgs[2]);

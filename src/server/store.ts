@@ -36,6 +36,8 @@ export type StoredSettings = {
   /** Astralane API key (portal.astralane.io): when set, launch bundles go through Astralane instead of the public Jito
    *  endpoint (which drops our pump.fun bundles — 6 real tests, 2026-10-06). Never sent to the browser. */
   astralaneKey: string;
+  /** the Astralane key may send bundles (VIP tier): Jito-on launches then use Astralane sendBundle */
+  astralaneBundles?: boolean;
   jitoEnabled: boolean;
   /** Launch Token modal "Auto-claim rewards → dev wallet" default (true) */
   autoClaimRewards: boolean;
