@@ -1,8 +1,8 @@
 /* Launch pipeline: /api/launch/prepare (IPFS metadata + mint keypair kept in memory) and
  * /api/launch/execute with the Block X task model (bundle · sniper · buy · volume · wash), auto-dump
  * and sell-on-external. Live state is streamed on /api/launch/[id]/stream. */
+import { createHash } from "node:crypto";
 import { PublicKey } from "@solana/web3.js";
-import { getSolBalance } from "@/engine/solana/rpc.js";
 import { generateMint } from "@/engine/solana/pump/create.js";
 import { base58Encode, parseSolanaKey } from "@/engine/solana/keys.js";
 import { executeLaunch as engineExecuteLaunch, launchBundle, prepareLaunch, type LaunchPrep } from "@/engine/solana/pump/launch.js";
@@ -21,6 +21,8 @@ import type {
   LaunchTask,
   LaunchTaskState,
   LaunchTaskType,
+  LaunchWarmRequest,
+  LaunchWarmResponse,
   SniperTask,
   TradeTask,
   WashPair,
@@ -30,7 +32,9 @@ import { TASK_DEFAULTS, TASK_LIMITS } from "@/lib/types";
 import { HttpError, intIn, lamportsOf, numIn, sleep, solString } from "./api";
 import { armAutodump, autodumpStatus, disarmAutodump, disarmTaskWatches } from "./autodump";
 import { armAutoclaim, autoclaimStatusOrNull, normalizeAutoClaim } from "./autoclaim";
-import { buyWithWallets, groupWallets, labelOf, readConn, requireUnlocked, sendConn, tipLamportsFor, vaultWallets } from "./engine";
+import { buyWithWallets, getAccountsChunked, groupWallets, labelOf, readConn, requireUnlocked, sendConn, tipLamportsFor, vaultWallets } from "./engine";
+import { blockhashNow, touchHot } from "./hot";
+import { watchSignature } from "./sigsub";
 import { jobNew, jobNote, jobPush, jobRun } from "./jobs";
 import { registerRuntimeProducer, RESTORE_NOTE, restoreSection, saveRuntimeSoon } from "./persist";
 import { solPriceCached } from "./price";
@@ -42,8 +46,8 @@ import { isDevnet, logActivity, saveLaunches, store, track, type Job, type Pendi
 import { loops, TradeLoop, type SavedLoop } from "./tradeloop";
 import { resolveWashPairs, washPairs } from "./wash";
 import { markDraftLaunched } from "./drafts";
-import { deactivateLaunchTable, ensureStaticLookupTable, launchLookupTable, launchTableAddresses, staticLookupTable, staticLookupTableBusy, sweepLaunchTables } from "./alt";
-import { grindVanity, takeReserved, unuseReserved } from "./vanity";
+import { awaitWarmTable, deactivateLaunchTable, ensureStaticLookupTable, staticLookupTable, sweepLaunchTables, takeWarmTable, warmLaunchTable, warmTableEtaMs, warmTableFor, warmTableStatus } from "./alt";
+import { grindVanity, isReserved, peekReserved, takeReserved, unuseReserved } from "./vanity";
 
 /* ------------------------------------------------------------------ prepare */
 
@@ -73,15 +77,24 @@ export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<Laun
       throw new HttpError(400, "mintSecret: not a valid keypair (base58 secret key or [1,2,3,…] byte array expected).");
     }
     if (!endsWithSuffix(keypair.publicKey.toBase58())) throw new HttpError(400, `The imported mint ${keypair.publicKey.toBase58()} does not end with "${suffix}".`);
-    if (pendings().has(keypair.publicKey.toBase58()) || registry().has(keypair.publicKey.toBase58())) throw new HttpError(409, "This mint keypair was already prepared or launched here.");
+    // prepared again (ahead of the click, then on it) is fine; launched is not
+    if (registry().has(keypair.publicKey.toBase58())) throw new HttpError(409, "This mint keypair was already launched here.");
     mintSource = "imported";
+  } else if (req.mint !== undefined && String(req.mint).trim() !== "" && !isReserved(String(req.mint).trim()) && pendings().has(String(req.mint).trim())) {
+    // a mint prepared earlier (ahead of the click, then the metadata changed): same address, its warm lookup table stays valid
+    const addr = String(req.mint).trim();
+    if (registry().has(addr)) throw new HttpError(409, "This mint was already launched.");
+    if (!endsWithSuffix(addr)) throw new HttpError(400, `The prepared mint ${addr} does not end with "${suffix}".`);
+    keypair = pendings().get(addr)!.keypair;
+    mintSource = "generated";
   } else if (req.mint !== undefined && String(req.mint).trim() !== "") {
     const addr = String(req.mint).trim();
     if (!endsWithSuffix(addr)) throw new HttpError(400, `The reserved mint ${addr} does not end with "${suffix}".`);
     // a reservation marked used by a launch that never broadcast (refused at a guard, server restarted…) is still free:
     // only a mint in the launch registry has really been created on-chain by this server
     if (!registry().has(addr)) unuseReserved(addr);
-    keypair = takeReserved(addr);
+    // ahead of the click the reservation is only read: execute marks it used (a dialog closed without launching keeps it)
+    keypair = req.warm ? peekReserved(addr) : takeReserved(addr);
     mintSource = "reserved";
   } else if (suffix) {
     const r = await grindVanity(suffix, { caseSensitive: true, timeoutMs: 180_000 });
@@ -92,7 +105,10 @@ export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<Laun
     keypair = generateMint();
     mintSource = "generated";
   }
-  const uri = await uploadPumpMetadata({
+  const mint = keypair.publicKey.toBase58();
+  // the launch's lookup table starts now (it needs ~13 s to be rooted), in parallel with the IPFS upload
+  if (req.launch) warmFromDraft(keypair.publicKey, req.launch);
+  const meta = {
     name,
     symbol,
     description: req.description ? String(req.description).slice(0, 1000) : undefined,
@@ -101,13 +117,25 @@ export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<Laun
     twitter: req.twitter ? String(req.twitter) : undefined,
     telegram: req.telegram ? String(req.telegram) : undefined,
     website: req.website ? String(req.website) : undefined,
-  });
-  const mint = keypair.publicKey.toBase58();
-  let image: string | null = null;
-  const j = await fetchUriJson(uri, 5000).catch(() => null);
-  if (j && typeof j.image === "string") image = imageUrl(ipfsToHttp(j.image));
+  };
+  // same metadata = same upload (prepared ahead of the click, then again on it): one IPFS round trip, not two
+  const up = await uploadOnce(meta);
+  const uri = up.uri;
   const pm = pendings();
-  pm.set(mint, { keypair, uri, name, symbol, image, at: Date.now(), reserved: mintSource === "reserved" });
+  const pending: PendingMint = { keypair, uri, name, symbol, image: up.image, at: Date.now(), reserved: mintSource === "reserved" };
+  pm.set(mint, pending);
+  // the image URL (read back from the metadata JSON, up to 5 s on a slow gateway) never holds the launch: filled in later
+  if (!up.image)
+    void up.imageP.then((image) => {
+      if (!image) return;
+      pending.image = image;
+      const rec = st.launches.find((l) => l.mint === mint);
+      if (rec && !rec.image) {
+        rec.image = image;
+        saveLaunches(st);
+      }
+      saveRuntimeSoon();
+    });
   // keep memory bounded
   if (pm.size > 50) {
     const oldest = [...pm.entries()].sort((a, b) => a[1].at - b[1].at)[0];
@@ -116,6 +144,88 @@ export async function prepareLaunchMeta(req: LaunchPrepareRequest): Promise<Laun
   saveRuntimeSoon();
   logActivity(st, { kind: "launch", ok: true, message: `Launch prepared: ${symbol} · mint ${mintSource} · metadata ${uri}`, mint, data: { uri, mintSource } });
   return { uri, mint, name, symbol, mintSource };
+}
+
+type UploadMeta = Parameters<typeof uploadPumpMetadata>[0];
+type Upload = { uri: string; image: string | null; imageP: Promise<string | null> };
+const uploads = globalThis as unknown as { __trenchUploads?: Map<string, Promise<Upload>> };
+
+/** IPFS upload once per identical metadata (in flight or done, 30 entries): a prepare ahead of the click and the
+ *  click's own prepare share it. A failed upload is forgotten (the next prepare retries). */
+function uploadOnce(meta: UploadMeta): Promise<Upload> {
+  const m = (uploads.__trenchUploads ??= new Map());
+  const key = createHash("sha256").update(JSON.stringify(meta)).digest("hex");
+  let p = m.get(key);
+  if (!p) {
+    p = uploadPumpMetadata(meta).then((uri) => {
+      const u: Upload = { uri, image: null, imageP: Promise.resolve(null) };
+      u.imageP = fetchUriJson(uri, 5000)
+        .then((j) => (j && typeof j.image === "string" ? imageUrl(ipfsToHttp(j.image)) : null))
+        .catch(() => null)
+        .then((image) => (u.image = image));
+      return u;
+    });
+    m.set(key, p);
+    p.catch(() => m.delete(key));
+    if (m.size > 30) m.delete(m.keys().next().value!);
+  }
+  return p;
+}
+
+/** the bundle wallets that will buy inside the create (first INLINE_MAX of the bundle tasks, same order as runLaunch) */
+function inlineBuyers(req: Pick<LaunchExecuteRequest, "tasks">, dev: string): string[] {
+  const tasks = normalizeTasks({ tasks: req.tasks ?? [] }, dev);
+  return tasks.flatMap((t) => (t.type === "bundle" ? t.wallets : [])).slice(0, INLINE_MAX);
+}
+
+/** start the lookup table of a coming launch (no bundle wallet → no table needed). Never throws: a draft that is not
+ *  launchable yet simply gets no table. */
+function warmFromDraft(mint: PublicKey, w: LaunchWarmRequest): ReturnType<typeof warmLaunchTable> | null {
+  try {
+    const st = store();
+    if (!st.sol.unlocked) return null;
+    const dev = String(w.devWallet ?? "").trim();
+    if (!dev || registry().has(mint.toBase58())) return null;
+    vaultWallets([dev]);
+    const buyers = inlineBuyers(w, dev);
+    if (!buyers.length) return null;
+    if (!isDevnet(st.settings)) warmStaticFrom(dev);
+    else ensureStaticLookupTable(readConn(), st.sol.keypair(dev));
+    return warmLaunchTable(readConn(), st.sol.keypair(dev), mint, buyers.map((b) => new PublicKey(b)));
+  } catch {
+    return null;
+  }
+}
+
+/** mainnet static table: built by the richest vault wallet (≈0.008 SOL once), else by the dev */
+function warmStaticFrom(dev: string): void {
+  const st = store();
+  const bal = st.balances?.map ?? {};
+  const best = st.sol.wallets.map((w) => [w.address, Number(bal[w.address] ?? 0)] as const).sort((a, b) => b[1] - a[1])[0];
+  ensureStaticLookupTable(readConn(), st.sol.keypair(best && best[1] > 0.02 ? best[0] : dev));
+}
+
+/** POST /api/launch/warm: the draft knows its mint (reserved / imported / prepared), dev and bundle wallets — the
+ *  launch's lookup table is built now, so it is rooted when Launch is clicked */
+export function warmLaunch(req: LaunchWarmRequest): LaunchWarmResponse {
+  requireUnlocked();
+  let mint: PublicKey | null = null;
+  if (req.mintSecret && String(req.mintSecret).trim()) {
+    try {
+      mint = parseSolanaKey(String(req.mintSecret).trim()).publicKey;
+    } catch {
+      throw new HttpError(400, "mintSecret: not a valid keypair.");
+    }
+  } else if (req.mint && String(req.mint).trim()) {
+    try {
+      mint = new PublicKey(String(req.mint).trim());
+    } catch {
+      throw new HttpError(400, "mint: not an address.");
+    }
+  }
+  if (!mint) return { mint: null, table: warmTableStatus(null) };
+  const w = warmFromDraft(mint, req);
+  return { mint: mint.toBase58(), table: warmTableStatus(w) };
 }
 
 /* ------------------------------------------------------------------ runtime */
@@ -471,6 +581,9 @@ export function normalizeTasks(req: Pick<LaunchExecuteRequest, "tasks" | "cuPric
 /* ------------------------------------------------------------------ execute */
 
 export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<LaunchExecuteResponse> {
+  const arrived = Date.now();
+  const clicked = Number(req.clickedAt);
+  const clickT0 = Number.isFinite(clicked) && clicked <= arrived && arrived - clicked < 120_000 ? clicked : arrived;
   requireUnlocked();
   const st = store();
   const mint = String(req.mint ?? "").trim();
@@ -516,18 +629,31 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   };
   const conn = readConn();
   const CREATE_COST = BigInt(30_000_000); // mint rent + ATA + fees ≈ 0.02–0.03 SOL
-  const devBal = await getSolBalance(conn, dev).catch(() => null);
+  // ONE read for the dev and every bundle wallet (was 1 + one per bundle task, in series), while the blockhash warms up
+  touchHot();
+  void blockhashNow().catch(() => null);
+  const bundleAddrs = bundleTasks.flatMap((t) => t.wallets);
+  const infos = await getAccountsChunked(
+    conn,
+    [dev, ...bundleAddrs].map((w) => new PublicKey(w)),
+  ).catch(() => null);
+  const devBal = infos ? BigInt(infos[0]?.lamports ?? 0) : null;
   if (devBal === null) refuse(503, "RPC unreachable: the dev balance could not be read. Nothing was sent.");
-  // bundle: + the launch lookup table rent (≈0.004, back to the dev once closed) and, the first time, the static one (≈0.008)
+  // bundle: + the static lookup table rent the first time (≈0.008); the launch table was paid when it was prepared
   const devNeed = devBuyLamports + CREATE_COST + (mode === "bundle" ? bundleTip + BigInt(12_000_000) : BigInt(0));
   if (devBal! < devNeed) refuse(402, `Dev wallet holds ${solString(devBal!)} SOL but needs at least ${solString(devNeed)} SOL (dev buy + creation + fees${mode === "bundle" ? " + tip + lookup tables" : ""}). Nothing was sent.`);
+  let k = 1;
   for (const t of bundleTasks) {
-    const infos = await conn.getMultipleAccountsInfo(t.wallets.map((w) => new PublicKey(w)), "confirmed").catch(() => null);
-    t.wallets.forEach((w, i) => {
-      const bal = BigInt(infos?.[i]?.lamports ?? 0);
+    for (const w of t.wallets) {
+      const bal = BigInt(infos?.[k++]?.lamports ?? 0);
       const need = t.amounts.get(w)! + BigInt(3_000_000) + bundleTip;
-      if (infos && bal < need) refuse(402, `Bundle wallet ${w.slice(0, 6)}… holds ${solString(bal)} SOL but needs ${solString(need)} SOL (buy + fees + tip). Nothing was sent.`);
-    });
+      if (bal < need) refuse(402, `Bundle wallet ${w.slice(0, 6)}… holds ${solString(bal)} SOL but needs ${solString(need)} SOL (buy + fees + tip). Nothing was sent.`);
+    }
+  }
+  // prepared ahead of the click (warm): the reservation is marked used only now, once every check passed
+  if (pending.reserved) {
+    unuseReserved(mint);
+    takeReserved(mint);
   }
 
   const allWallets = [...new Set([dev, ...tasks.flatMap((t) => t.wallets)])];
@@ -584,7 +710,7 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   saveLaunches(st);
   track(st, mint);
   job.extra = { mint, mode, phase: "preparing" };
-  jobRun(job, async () => runLaunch(run, { pendingKeypair: pending.keypair, uri: pending.uri, devBuyLamports, slippageBps, cuPrice, launchCuPrice: intIn(req.launchCuPrice, 0, 200_000_000, st.settings.launchCuPrice ?? 10_000_000), bundleTip, jito, cashback: false, autoClaim, req })); // pump.fun rejects cashback coins since 2026-10 (create_v2 error 6082 CashbackDeprecated): the flag is never sent
+  jobRun(job, async () => runLaunch(run, { pendingKeypair: pending.keypair, uri: pending.uri, devBuyLamports, slippageBps, cuPrice, launchCuPrice: intIn(req.launchCuPrice, 0, 200_000_000, st.settings.launchCuPrice ?? 10_000_000), bundleTip, jito, cashback: false, autoClaim, req, t0: clickT0 })); // pump.fun rejects cashback coins since 2026-10 (create_v2 error 6082 CashbackDeprecated): the flag is never sent
   return { jobId: job.id, id: mint, mint, mode, tasks: tasks.map((t) => ({ id: t.id, type: t.type })) };
 }
 
@@ -592,13 +718,35 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
  *  ~10 inner instructions and a transaction may hold 64: dev + 3 fails (MaxInstructionTraceLengthExceeded), dev + 2
  *  landed on devnet with and without the Sender tip (scripts/prove-inline-devnet.mjs, 2026-10-06) */
 const INLINE_MAX = 2;
+/** at the click, a launch table this close to being rooted is waited for (inline wallets are worth a short wait);
+ *  further away the create goes now with what is rooted (fewer inline wallets) */
+const TABLE_WAIT_MAX_MS = 4000;
 const TRACE_LIMIT = /MaxInstructionTraceLength|TooManyInstructionTrace|InstructionTrace/i;
 
 // launch lookup tables: closed (rent back to the dev) once their cool-down is over — every 5 min, one sweeper per process
 const sweeper = globalThis as unknown as { __trenchAltSweep?: ReturnType<typeof setInterval> };
 if (!sweeper.__trenchAltSweep) sweeper.__trenchAltSweep = setInterval(() => void sweepLaunchTables(readConn()).catch(() => null), 5 * 60_000);
 
-type RunOpts = { pendingKeypair: import("@solana/web3.js").Keypair; uri: string; devBuyLamports: bigint; slippageBps: number; cuPrice: number; /** bundle buys in their own tx + snipers (Settings → Launch priority) */ launchCuPrice: number; bundleTip: bigint; /** atomic Jito bundle (Settings → Jito on) */ jito: boolean; cashback: boolean; autoClaim: { minSol: string; intervalSec: number } | null; req: LaunchExecuteRequest };
+type RunOpts = { pendingKeypair: import("@solana/web3.js").Keypair; uri: string; devBuyLamports: bigint; slippageBps: number; cuPrice: number; /** bundle buys in their own tx + snipers (Settings → Launch priority) */ launchCuPrice: number; bundleTip: bigint; /** atomic Jito bundle (Settings → Jito on) */ jito: boolean; cashback: boolean; autoClaim: { minSol: string; intervalSec: number } | null; req: LaunchExecuteRequest; /** the Launch click (client clock, same machine) or the execute request's arrival: every timing step is measured from it */ t0: number };
+
+/** the click → send path: the create is visible (signature, "pending") the moment it is broadcast, not once confirmed */
+function markCreateSent(run: LaunchRun, sig: string, t0: number): void {
+  const at = Date.now();
+  run.state.createSignature = sig;
+  run.state.createSentAt = at;
+  run.record.createSignature = sig;
+  saveLaunches(store());
+  step(run, "create", true, `Create sent · +${at - t0} ms after the click`, { signature: sig });
+  emit(run, { type: "state", data: launchStateOf(run) });
+}
+
+/** a leader executed the create (processed): the token exists on that fork — confirmation follows ~1 s later */
+function markCreateLanded(run: LaunchRun, t0: number): void {
+  const at = Date.now();
+  run.state.createLandedAt = at;
+  step(run, "create", true, `Create landed (processed) · +${at - t0} ms after the click, ${run.state.createSentAt ? at - run.state.createSentAt : "?"} ms after the send`, { signature: run.state.createSignature });
+  emit(run, { type: "state", data: launchStateOf(run) });
+}
 
 async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   const st = store();
@@ -609,7 +757,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   const rowAddr = bundleTasks.flatMap((t) => t.wallets);
   const retries = bundleTasks.length ? Math.max(...bundleTasks.map((t) => t.autoRetryCount)) : 0;
   const devnet = isDevnet(st.settings);
-  step(run, "prepare", true, `Preparing ${run.state.mode} launch · dev buy ${solString(o.devBuyLamports)} SOL · ${bundleRows.length} bundle wallet(s)${devnet ? " · devnet" : ""}`);
+  step(run, "prepare", true, `Preparing ${run.state.mode} launch · dev buy ${solString(o.devBuyLamports)} SOL · ${bundleRows.length} bundle wallet(s)${devnet ? " · devnet" : ""} · +${Date.now() - o.t0} ms after the click`);
   if (!devnet && run.state.mode === "bundle" && !o.jito) step(run, "info", true, "Jito off (Settings): the bundle wallets buy right behind the dev — create and buys sent together, not atomic.");
   if (devnet && run.state.mode === "bundle") step(run, "info", true, "Devnet: Jito is mainnet-only — the bundle is sent as sequential transactions (create first, then the buys), no tip, not atomic.");
   run.state.status = "sending";
@@ -625,16 +773,29 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   let launchTable: import("@solana/web3.js").AddressLookupTableAccount | null = null;
   let haveStatic = false;
   if (inlineMax > 0) {
-    // a static table being created right now (same authority possible) must finish first: same-slot tables collide
-    await staticLookupTableBusy();
-    const [stat, perLaunch] = await Promise.all([
-      staticLookupTable(),
-      launchLookupTable(conn, devKp, launchTableAddresses(new PublicKey(mint), devKp.publicKey, bundleRows.slice(0, inlineMax).map((x) => x.signer.publicKey)), (n) => step(run, "prepare", true, n)),
-    ]);
+    // tables are only used once ROOTED (leaders resolve them against their root bank, ~13 s behind): the launch table
+    // was built ahead of the click (warmLaunchTable); a launch never builds one itself — it would hold the create ~13 s
+    const buyers = bundleRows.slice(0, inlineMax).map((x) => x.signer.publicKey.toBase58());
+    const warm = warmTableFor(mint, dev, buyers);
+    const statP = staticLookupTable();
+    let perLaunch: import("@solana/web3.js").AddressLookupTableAccount | null = null;
+    if (warm) {
+      const eta = await warmTableEtaMs(conn, warm);
+      if (eta !== null && eta <= TABLE_WAIT_MAX_MS) {
+        // eta 0 without a table yet: rooted, its next finalized read (≤ 400 ms) has not run yet
+        if (eta > 0) step(run, "prepare", true, `Waiting ~${(eta / 1000).toFixed(1)} s for this launch's lookup table to be finalized (a table is usable by the leaders only once rooted).`);
+        perLaunch = await awaitWarmTable(warm, eta + 2500);
+      }
+      if (perLaunch) {
+        takeWarmTable(warm);
+        step(run, "prepare", true, `Launch lookup table ready (prepared ${((Date.now() - warm.startedAt) / 1000).toFixed(1)} s before) · +${Date.now() - o.t0} ms`);
+      } else step(run, "prepare", true, `This launch's lookup table is not finalized yet (${eta === null ? "its transaction has not landed" : `~${(eta / 1000).toFixed(1)} s left`}) — launching now without it: fewer bundle wallets fit inside the create.`);
+    } else step(run, "prepare", true, "No lookup table was prepared for this launch (the draft had no known mint before the click) — fewer bundle wallets fit inside the create.");
+    const stat = await statP;
     launchTable = perLaunch;
     haveStatic = !!stat;
     tables = [stat, perLaunch].filter((x): x is import("@solana/web3.js").AddressLookupTableAccount => !!x);
-    if (tables.length < 2) step(run, "prepare", true, `Lookup table${stat ? " for this launch" : perLaunch ? " (pump.fun static, created once in the background for the next launch)" : "s"} not available — fewer bundle wallets fit inside the create.`);
+    if (!stat) step(run, "prepare", true, "pump.fun static lookup table not available (or not finalized yet) — it is created in the background for the next launch.");
   }
   const prepOpts = { lookupTables: tables, inlineMax };
   // the chain refused the create for its instruction trace: one inline wallet fewer, same attempt (never more than INLINE_MAX times)
@@ -650,11 +811,14 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     let prep: LaunchPrep;
     try {
+      // the warm blockhash (≤ 20 s old, refreshed every 2 s while the launch page is open) on the first attempt; a
+      // retry takes a fresh one
+      const bh = attempt === 0 ? await blockhashNow().catch(() => null) : null;
       prep = await prepareLaunch(
         conn,
         { dev: st.sol.keypair(dev), name: run.state.name, symbol: run.state.symbol, uri: o.uri, devBuyLamports: o.devBuyLamports, mint: o.pendingKeypair, cashback: o.cashback },
         bundleRows,
-        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? o.bundleTip : tipLamportsFor(undefined), jitoTip: o.jito, ...prepOpts },
+        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? o.bundleTip : tipLamportsFor(undefined), jitoTip: o.jito, ...prepOpts, recentBlockhash: bh ? { blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight } : undefined },
       );
     } catch (e) {
       created = { confirmed: false, error: e instanceof Error ? e.message : String(e) };
@@ -669,6 +833,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
         onStep: (s) => {
           if (s.phase === "preflight") step(run, "bundle", true, s.simulated ? "Bundle checked: signatures valid, whole bundle simulated OK (simulateBundle)." : "Signatures valid · this RPC has no simulateBundle: only the create is simulated before sending.");
           if (s.phase === "bundle") step(run, "bundle", true, `Sending Jito bundle ${s.index + 1}/${s.total ?? 1}…`);
+          if (s.phase === "bundle" && s.index === 0) markCreateSent(run, base58Encode(prep.createTx.signatures[0]), o.t0);
         },
       });
       if (!r.create.confirmed && shrinkInline(r.create.error)) {
@@ -696,6 +861,10 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
           return { tx: fresh.createTx, lastValidBlockHeight: fresh.lastValidBlockHeight };
         },
         onNote: (note) => step(run, "info", true, note),
+        // push confirmation (processed + confirmed) on the read RPC's WebSocket, kept warm by the hot-state ticker
+        watch: (sig) => watchSignature(st.sol.config.rpcUrl, sig),
+        onSent: (sig) => markCreateSent(run, sig, o.t0),
+        onSeen: () => markCreateLanded(run, o.t0),
       });
       if (!r.create.confirmed && !r.create.signature && shrinkInline(r.create.error)) {
         attempt--;
@@ -731,7 +900,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   run.record.createConfirmed = created.confirmed;
   run.record.createError = created.confirmed ? null : (created.error ?? "unknown");
   jobPush(run.job, created.confirmed, { phase: "create", label: "create", address: dev, signature: created.signature ?? null, error: created.confirmed ? undefined : created.error });
-  step(run, "create", created.confirmed, created.confirmed ? `Token created: ${mint}` : `Creation failed: ${created.error ?? "unknown"}`, { signature: created.signature ?? null });
+  step(run, "create", created.confirmed, created.confirmed ? `Token created: ${mint} · confirmed +${Date.now() - o.t0} ms after the click` : `Creation failed: ${created.error ?? "unknown"}`, { signature: created.signature ?? null });
   for (const t of bundleTasks) {
     let sent = 0,
       failed = 0;

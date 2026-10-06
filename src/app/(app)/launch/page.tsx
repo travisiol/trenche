@@ -113,6 +113,59 @@ function LaunchScreen() {
   };
   const problems = form ? validateForm(form) : ["No draft"];
 
+  /* Ahead of the Launch click. The create's lookup table is usable by the leaders only once rooted, ~13 s after its
+     creation (BkzF3c… landed 37 slots after its table): it must exist before the click.
+     - a draft whose mint is known (reserved …pump / imported keypair) builds its table once dev + bundle wallets are set;
+     - opening the confirm dialog prepares the whole launch (IPFS upload, mint, table): the click only sends execute. */
+  const launchable = !!form && isDraft && canSign && !problems.length;
+  const draftWarmKey = launchable && form && (form.reservedMint || form.mintSecret) ? JSON.stringify([form.reservedMint, form.mintSecret, form.devWallet, form.tasks.map(toApiTask)]) : null;
+  useEffect(() => {
+    if (!draftWarmKey || !form) return;
+    const f = form;
+    const t = setTimeout(() => {
+      const ex = toExecuteRequest(f, "");
+      post("/api/launch/warm", { mint: f.reservedMint || undefined, mintSecret: f.mintSecret || undefined, devWallet: ex.devWallet, tasks: ex.tasks }).catch(() => {});
+    }, 1500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the fields the table depends on
+  }, [draftWarmKey]);
+  const prepAhead = useRef<{ key: string; mintKey: string; p: Promise<LaunchPrepareResponse | null> } | null>(null);
+  const prepKeyOf = (f: LaunchForm) => JSON.stringify([f.name.trim(), f.symbol.trim(), f.description.trim(), f.twitter.trim(), f.telegram.trim(), f.website.trim(), f.imageDataUrl, f.vanity.trim(), f.reservedMint, f.mintSecret, f.devWallet, f.tasks.map(toApiTask)]);
+  const mintKeyOf = (f: LaunchForm) => JSON.stringify([f.vanity.trim(), f.reservedMint, f.mintSecret]);
+  const prepareBody = (f: LaunchForm, warm: boolean, mint?: string) => {
+    const ex = toExecuteRequest(f, "");
+    return {
+      name: f.name.trim(),
+      symbol: f.symbol.trim(),
+      description: f.description.trim() || undefined,
+      twitter: f.twitter.trim() || undefined,
+      telegram: f.telegram.trim() || undefined,
+      website: f.website.trim() || undefined,
+      imageDataUrl: f.imageDataUrl,
+      vanitySuffix: f.mintSecret || f.reservedMint ? undefined : f.vanity.trim() || undefined,
+      // a generated / vanity mint prepared ahead is kept when only the metadata changed (its table stays valid)
+      mint: f.reservedMint || mint || undefined,
+      mintSecret: f.mintSecret || undefined,
+      warm: warm || undefined,
+      launch: warm ? { devWallet: ex.devWallet, tasks: ex.tasks } : undefined,
+    };
+  };
+  /** the mint a previous prepare-ahead generated for the same mint options (none for reserved / imported) */
+  const aheadMint = async (f: LaunchForm): Promise<string | undefined> => {
+    const a = prepAhead.current;
+    if (!a || a.mintKey !== mintKeyOf(f) || f.reservedMint || f.mintSecret) return undefined;
+    return (await a.p)?.mint;
+  };
+  useEffect(() => {
+    if (!confirm || !launchable || !form) return;
+    const key = prepKeyOf(form);
+    if (prepAhead.current?.key === key) return;
+    const f = form;
+    const p = aheadMint(f).then((mint) => post<LaunchPrepareResponse>("/api/launch/prepare", prepareBody(f, true, mint)).catch(() => null));
+    prepAhead.current = { key, mintKey: mintKeyOf(f), p };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per dialog opening / form content
+  }, [confirm, launchable, form]);
+
   /** Opens (or creates) a draft in the workspace. */
   const openDraft = (f: LaunchForm, withModal: boolean) => {
     setForm(f);
@@ -201,22 +254,15 @@ function LaunchScreen() {
 
   const launch = async () => {
     if (!form) return;
+    const clickedAt = Date.now();
     setBusy("launch");
     setLaunchErr(null);
     try {
-      const prep = await post<LaunchPrepareResponse>("/api/launch/prepare", {
-        name: form.name.trim(),
-        symbol: form.symbol.trim(),
-        description: form.description.trim() || undefined,
-        twitter: form.twitter.trim() || undefined,
-        telegram: form.telegram.trim() || undefined,
-        website: form.website.trim() || undefined,
-        imageDataUrl: form.imageDataUrl,
-        vanitySuffix: form.mintSecret || form.reservedMint ? undefined : form.vanity.trim() || undefined,
-        mint: form.reservedMint || undefined,
-        mintSecret: form.mintSecret || undefined,
-      });
-      const r = await post<LaunchExecuteResponse>("/api/launch/execute", toExecuteRequest(form, prep.mint));
+      // prepared while the confirm dialog was open (same content): the click goes straight to execute
+      const ahead = prepAhead.current?.key === prepKeyOf(form) ? await prepAhead.current.p : null;
+      const prep = ahead ?? (await post<LaunchPrepareResponse>("/api/launch/prepare", prepareBody(form, false, await aheadMint(form))));
+      prepAhead.current = null;
+      const r = await post<LaunchExecuteResponse>("/api/launch/execute", { ...toExecuteRequest(form, prep.mint), clickedAt });
       const id = r.id ?? r.mint ?? prep.mint;
       await deleteDraft(form.id).catch(() => {});
       setForm(null);

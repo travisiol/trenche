@@ -664,7 +664,15 @@ export type LaunchPrepareRequest = LaunchMetadata & {
   /** only "SOL" is supported here — anything else → 400 (Block X offers USDC/xStocks, DONCHAIN does not) */
   quote?: string;
   launchpad?: string;
+  /** prepared AHEAD of the Launch click (confirm dialog opened): a reserved mint is not marked used yet (execute does),
+   *  and `launch` (dev + tasks of the draft) starts the launch's lookup table right away */
+  warm?: boolean;
+  launch?: LaunchWarmRequest;
 };
+/** POST /api/launch/warm — build the lookup table of a coming launch before its click (it is only usable ~13 s after
+ *  its creation, once rooted). The mint: a reserved / pending address (`mint`) or an imported keypair (`mintSecret`). */
+export type LaunchWarmRequest = { mint?: string; mintSecret?: string; devWallet: string; tasks: LaunchTask[] };
+export type LaunchWarmResponse = { mint: string | null; table: { state: "none" | "building" | "rooting" | "ready" | "failed"; address: string | null; ms: number; error: string | null } };
 export type LaunchPrepareResponse = { uri: string; mint: string; name: string; symbol: string; /** "generated" | "vanity" | "reserved" | "imported" */ mintSource: "generated" | "vanity" | "reserved" | "imported" };
 
 /** POST /api/launch/mint — Block X "Fetch mint address": grinds a keypair whose address ends with `suffix`
@@ -940,6 +948,8 @@ export type LaunchExecuteRequest = {
   cashback?: boolean;
   /** the draft this launch came from: marked launched (row moves to the Launched tab) once the create confirms */
   draftId?: string;
+  /** client epoch ms of the Launch click (measurement: the job steps say how long after it the create was sent) */
+  clickedAt?: number;
 };
 export type LaunchExecuteResponse = JobCreated & {
   /** launch id (= mint) for /api/launch/[id]/* */
@@ -1007,6 +1017,9 @@ export type LaunchState = {
   /** set when the launch was restored from disk after a server restart (its loops are "stopped", resumable) */
   restored?: { at: number; note: string };
   draftId?: string | null;
+  /** epoch ms: the create was broadcast / seen executed by a leader (processed) — both before its confirmation */
+  createSentAt?: number | null;
+  createLandedAt?: number | null;
 };
 /** SSE on GET /api/launch/[id]/stream: `state` (full snapshot first), then `step`, `task_status`,
  *  `done`, `error` */

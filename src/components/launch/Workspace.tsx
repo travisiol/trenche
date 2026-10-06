@@ -402,7 +402,7 @@ export function TasksPanel({
     >
       <div className="flex h-full min-h-0 flex-col overflow-hidden">
         <div className="flex h-11 shrink-0 items-center justify-end gap-3 border-b border-line-100 px-3 text-xs">
-          {live ? <span className="mr-auto text-[11px] text-text-300">{live.restored ? "restored after restart" : live.status}</span> : null}
+          {live ? <span className="mr-auto text-[11px] text-text-300">{live.restored ? "restored after restart" : live.status === "sending" && live.createLandedAt ? "landed — confirming" : live.status === "sending" && live.createSignature ? "create sent — landing" : live.status}</span> : null}
           <button type="button" onClick={() => setPresetsOpen(true)} className="flex h-6 w-6 items-center justify-center rounded text-text-300 hover:bg-hover-200 hover:text-text-100" aria-label="Trading preset settings" title="Trading preset settings">
             <Settings className="h-4 w-4" />
           </button>

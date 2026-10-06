@@ -205,6 +205,20 @@ export function takeReserved(mint: string): Keypair {
   return kp;
 }
 
+/** the keypair of a reserved, unused mint WITHOUT marking it used (a launch prepared ahead of its click: /api/launch/
+ *  execute marks it used) */
+export function peekReserved(mint: string): Keypair {
+  const r = bag().mints.get(mint);
+  if (!r) throw new HttpError(404, "Unknown reserved mint: fetch one with POST /api/launch/mint first (reserved mints live in runtime.json).");
+  if (r.usedAt) throw new HttpError(409, "This reserved mint was already used by a launch.");
+  return Keypair.fromSecretKey(Buffer.from(r.secret, "base64"));
+}
+
+/** is this mint a reserved one (pool or "Fetch mint address")? */
+export function isReserved(mint: string): boolean {
+  return bag().mints.has(mint);
+}
+
 /** a launch that was refused before anything was sent hands the reserved mint back (usedAt cleared) */
 export function unuseReserved(mint: string): void {
   const r = bag().mints.get(mint);
