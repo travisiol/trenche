@@ -5,7 +5,7 @@
  *  Omitted: Marketplace, Mixer, Unwrap, Convert, Swap Stocks (no provider on this server). */
 import { useMemo, useState } from "react";
 import { Archive, EyeOff, ListOrdered, ArrowDownToLine, ArrowLeftRight, ArrowUpDown, ArrowUpFromLine, Calendar, Check, Copy, Droplet, FolderKanban, FolderPlus, KeyRound, Pencil, Plus, Search, Share2, Shuffle, Trash2, Undo2, Upload, Wallet, X } from "lucide-react";
-import type { ActivityResponse, DashboardResponse, JobsListResponse, PositionsResponse, WalletGroup, WalletInfo } from "@/lib/types";
+import type { ActivityResponse, DashboardResponse, JobsListResponse, LaunchesResponse, PositionsResponse, WalletGroup, WalletInfo } from "@/lib/types";
 import { del, failureMessage, post, useGet } from "@/lib/api";
 import { useBalances, useSettings, useSolPrice, useVault, useWallets, walletsRes } from "@/lib/store";
 import { short, sol, usd } from "@/lib/format";
@@ -23,7 +23,7 @@ import { DRAG_MIME, TransferView, type TransferKind } from "@/components/portfol
 
 type Win = "1D" | "7D" | "30D" | "All";
 const WIN_KEY: Record<Win, "24h" | "7d" | "30d" | "all"> = { "1D": "24h", "7D": "7d", "30D": "30d", All: "all" };
-type SortKey = "sol" | "vol" | "tokens";
+type SortKey = "sol" | "vol" | "tokens" | "launches";
 
 export default function PortfolioPage() {
   const vault = useVault();
@@ -61,6 +61,7 @@ export default function PortfolioPage() {
   const activity = useGet<ActivityResponse>("/api/activity?limit=500", 10000);
   const dash = useGet<DashboardResponse>(live.length ? "/api/dashboard" : null, 30000);
   const jobs = useGet<JobsListResponse>("/api/jobs", 4000);
+  const launches = useGet<LaunchesResponse>("/api/dev/launches", 30000);
   const curGroup = tab === "groups" ? (groups.find((g) => g.id === group) ?? groups[0] ?? null) : null;
   /** where Create / Import put new wallets: the group shown on either tab (Groups tab, or a group sub-tab of Developer Wallets) */
   const targetGroup = tab === "groups" ? curGroup?.id : groups.some((g) => g.id === filter) ? filter : undefined;
@@ -90,6 +91,17 @@ export default function PortfolioPage() {
     }
     return m;
   }, [activity.data]);
+  /** launches each wallet created as the dev: landed (token exists) + failed attempts */
+  const launchesOf = useMemo(() => {
+    const m = new Map<string, { ok: number; failed: number }>();
+    for (const l of launches.data?.launches ?? []) {
+      const cur = m.get(l.dev) ?? { ok: 0, failed: 0 };
+      if (l.status === "launched") cur.ok++;
+      else if (l.status === "failed") cur.failed++;
+      m.set(l.dev, cur);
+    }
+    return m;
+  }, [launches.data]);
   const pnl = dash.data?.pnl[WIN_KEY[win]];
   /** NET of every fee (on-chain ledger, every vault wallet) */
   const realised = pnl ? Number(pnl.netSol) : null;
@@ -108,12 +120,12 @@ export default function PortfolioPage() {
     if (needle) list = list.filter((w) => w.label.toLowerCase().includes(needle) || w.address.toLowerCase().includes(needle));
     list = [...list].sort((a, b) => a.order - b.order);
     if (sort) {
-      const v = (w: WalletInfo) => (sort.key === "sol" ? balanceOf(w.address) : sort.key === "vol" ? (volOf.get(w.address)?.sol ?? 0) : (tokensOf.get(w.address) ?? 0));
+      const v = (w: WalletInfo) => (sort.key === "sol" ? balanceOf(w.address) : sort.key === "vol" ? (volOf.get(w.address)?.sol ?? 0) : sort.key === "launches" ? (launchesOf.get(w.address)?.ok ?? 0) : (tokensOf.get(w.address) ?? 0));
       list.sort((a, b) => (v(b) - v(a)) * sort.dir);
     }
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- balanceOf closes over bal/all
-  }, [all, live, filter, q, sort, volOf, tokensOf, bal, tab, curGroup]);
+  }, [all, live, filter, q, sort, volOf, tokensOf, launchesOf, bal, tab, curGroup]);
   const sel = [...selected].filter((a) => all.some((w) => w.address === a));
   const allChecked = rows.length > 0 && rows.every((w) => selected.has(w.address));
   const toggleSort = (key: SortKey) => setSort((s) => (s?.key === key ? (s.dir === 1 ? { key, dir: -1 } : null) : { key, dir: 1 }));
@@ -321,6 +333,7 @@ export default function PortfolioPage() {
                   <table className="w-full min-w-[760px] table-fixed border-collapse">
                     <colgroup>
                       <col />
+                      <col className="w-24" />
                       <col className="w-28" />
                       <col className="w-28" />
                       <col className="w-28" />
@@ -340,6 +353,7 @@ export default function PortfolioPage() {
                             {transfer ? <span className="text-[10px] text-accent">drag rows into the {transfer} zones →</span> : null}
                           </div>
                         </th>
+                        <SortTh label="Launches" onClick={() => toggleSort("launches")} on={sort?.key === "launches"} title="Sort by launches made as the dev" />
                         <SortTh label="Vol" onClick={() => toggleSort("vol")} on={sort?.key === "vol"} title="Sort by volume" />
                         <SortTh label="Tokens" onClick={() => toggleSort("tokens")} on={sort?.key === "tokens"} title="Sort by tokens" />
                         <SortTh label="SOL" onClick={() => toggleSort("sol")} on={sort?.key === "sol"} title="Sort by SOL" />
@@ -349,13 +363,13 @@ export default function PortfolioPage() {
                     <tbody>
                       {wallets.error ? (
                         <tr>
-                          <td colSpan={5} className="px-4 py-8 text-center text-xs text-decrease">
+                          <td colSpan={6} className="px-4 py-8 text-center text-xs text-decrease">
                             {failureMessage(wallets.error)}
                           </td>
                         </tr>
                       ) : !rows.length ? (
                         <tr>
-                          <td colSpan={5} className="px-4 py-8 text-center text-xs text-text-300">
+                          <td colSpan={6} className="px-4 py-8 text-center text-xs text-text-300">
                             {wallets.loading && !wallets.data ? "Loading wallets…" : tab === "groups" ? (groups.length ? "No wallets in this group yet." : "No groups yet. Create one with New Group.") : filter === "archived" ? "No archived wallet." : q ? "No wallet matches." : "No developer wallets yet. Create one to manage launches."}
                           </td>
                         </tr>
@@ -371,6 +385,7 @@ export default function PortfolioPage() {
                             balance={balanceOf(w.address)}
                             tokens={tokensOf.get(w.address) ?? 0}
                             vol={volOf.get(w.address) ?? null}
+                            launches={launchesOf.get(w.address) ?? null}
                             canSign={canSign}
                             dragPayload={selected.has(w.address) ? sel.join(",") : w.address}
                             draggable={!!transfer}
@@ -566,7 +581,7 @@ function Action({ icon, label, onClick, disabled }: { icon: React.ReactNode; lab
   );
 }
 
-function WalletRow({ w, groups, active, checked, onCheck, balance, tokens, vol, canSign, dragPayload, draggable, onExport }: { w: WalletInfo; groups: WalletGroup[]; active: boolean; checked: boolean; onCheck: (v: boolean) => void; balance: number; tokens: number; vol: { sol: number; approx: boolean } | null; canSign: boolean; dragPayload: string; draggable: boolean; onExport: (address: string) => void }) {
+function WalletRow({ w, groups, active, checked, onCheck, balance, tokens, vol, launches, canSign, dragPayload, draggable, onExport }: { w: WalletInfo; groups: WalletGroup[]; active: boolean; checked: boolean; onCheck: (v: boolean) => void; balance: number; tokens: number; vol: { sol: number; approx: boolean } | null; launches: { ok: number; failed: number } | null; canSign: boolean; dragPayload: string; draggable: boolean; onExport: (address: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [label, setLabel] = useState(w.label);
   const [copied, setCopied] = useState(false);
@@ -613,6 +628,10 @@ function WalletRow({ w, groups, active, checked, onCheck, balance, tokens, vol, 
             </button>
           </div>
         </div>
+      </td>
+      <td className="px-2 py-2 font-mono tabular-nums text-text-200" title={launches ? `${launches.ok} token(s) launched as the dev${launches.failed ? ` · ${launches.failed} failed attempt(s)` : ""}` : "No launch as the dev"}>
+        {launches?.ok ? launches.ok : "—"}
+        {launches?.failed ? <span className="ml-1 text-[10px] text-text-300">+{launches.failed} failed</span> : null}
       </td>
       <td className="px-2 py-2 font-mono tabular-nums text-text-200">{vol ? `${vol.approx ? "≈" : ""}${sol(vol.sol)}` : "—"}</td>
       <td className="px-2 py-2 font-mono tabular-nums text-text-200">{tokens}</td>
