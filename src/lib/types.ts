@@ -305,6 +305,8 @@ export type Settings = {
   cuPrice: number;
   /** launch priority (bundle wallets not inside the create, sniper tasks), µL/CU — default 10 M; the create pays 1.5× */
   launchCuPrice: number;
+  /** Jito off: first 2 bundle wallets buy inside the create (atomic; trackers show the dev as the only buyer) */
+  bundleInCreate: boolean;
   /** default Jito tip in SOL (decimal string) — DEFAULT_TIP_SOL (0.0002) */
   tipSol: string;
   /** legacy quick-buy amounts P1..P3 in SOL (decimal strings) = tradingPresets[n].buyAmounts[0]; kept for the old UI */

@@ -263,22 +263,31 @@ async function submitTo(base, body) {
 }
 
 /* Same bundle to every regional block engine at once (same bundle id: Jito dedups) — the leader's region gets it
-   first. Resolves with the first accepted id; throws the first refusal only when every region refused. */
+   first. Resolves with the first accepted id; throws the first refusal only when every region refused.
+   `accepted` (opts.onAccepted) lists the regions that took it: in-flight statuses are REGION-LOCAL — asking another
+   region answers "Invalid" (unknown), which is what every launch bundle reported until 2026-10-06. */
 export async function submitJitoBundle(txs, opts = {}) {
-  const encoded = txs.map(tx => base58Encode(tx.serialize())),
+  const encoded = txs.map(tx => Buffer.from(tx.serialize()).toString("base64")),
     body = JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
       method: "sendBundle",
-      params: [encoded, { encoding: "base58" }],
+      params: [encoded, { encoding: "base64" }],
     }),
-    engines = opts.blockEngineUrl ? [opts.blockEngineUrl] : JITO_BLOCK_ENGINES;
+    engines = opts.blockEngineUrl ? [opts.blockEngineUrl] : JITO_BLOCK_ENGINES,
+    results = engines.map(base =>
+      submitTo(base, body).then(
+        id => (opts.onAccepted?.(base, id), id),
+        e => (opts.onRefused?.(base, e instanceof Error ? e.message : String(e)), Promise.reject(e)),
+      ),
+    );
   try {
-    return await Promise.any(engines.map(base => submitTo(base, body)));
+    return await Promise.any(results);
   } catch (e) {
     throw e instanceof AggregateError ? e.errors[0] : e;
   }
 }
+export { JITO_BLOCK_ENGINES };
 
 /* Before a bundle leaves: Jito drops a bundle silently (status "Invalid") when one transaction fails its simulation or
    carries a bad signature, so check both here. 1) every required signature verified locally (ed25519); 2) the whole
@@ -326,9 +335,9 @@ export async function preflightBundle(readConn, txs) {
 
 /* Jito's own view of a bundle: Invalid (unknown / > 5 min) · Pending · Failed (dropped by every region — usually a
    transaction that fails simulation) · Landed. null when the call itself fails. */
-export async function jitoBundleStatus(bundleId, opts = {}) {
+async function statusAt(base, bundleId) {
   try {
-    const res = await fetch((opts.blockEngineUrl || JITO_BLOCK_ENGINES[0]) + "/api/v1/getInflightBundleStatuses", {
+    const res = await fetch(base + "/api/v1/getInflightBundleStatuses", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getInflightBundleStatuses", params: [[bundleId]] }),
@@ -339,6 +348,14 @@ export async function jitoBundleStatus(bundleId, opts = {}) {
     return null;
   }
 }
+var STATUS_RANK = { Landed: 4, Pending: 3, Failed: 2, Invalid: 1 };
+/* the best verdict among the regions that accepted the bundle (opts.regions; default every region) */
+export async function jitoBundleStatus(bundleId, opts = {}) {
+  const regions = opts.blockEngineUrl ? [opts.blockEngineUrl] : opts.regions?.length ? opts.regions : JITO_BLOCK_ENGINES,
+    all = await Promise.all(regions.map(base => statusAt(base, bundleId)));
+  if (opts.perRegion) opts.perRegion(Object.fromEntries(regions.map((b, i) => [b, all[i]])));
+  return all.filter(Boolean).sort((a, b) => (STATUS_RANK[b] ?? 0) - (STATUS_RANK[a] ?? 0))[0] ?? null;
+}
 
 // Envoie le bundle puis confirme via les signatures de ses tx (elles ne confirment que
 // si le bundle entier a atterri — atomique). Renvoie {ok, bundleId, sigs, landed, error}.
@@ -347,8 +364,9 @@ export async function jitoBundleStatus(bundleId, opts = {}) {
 export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
   const sigs = txs.map(signatureOf);
   let bundleId;
+  const regions = [];
   try {
-    bundleId = await submitJitoBundle(txs, opts);
+    bundleId = await submitJitoBundle(txs, { ...opts, onAccepted: base => regions.push(base) });
   } catch (e) {
     return { ok: !1, bundleId: null, sigs, error: e.message };
   }
@@ -362,7 +380,7 @@ export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
     // Jito's verdict every ~3 s: two "Failed" in a row = dropped (a tx fails simulation), stop waiting
     if (Date.now() - jitoAt > 3000) {
       jitoAt = Date.now();
-      jito = (await jitoBundleStatus(bundleId, opts)) ?? jito;
+      jito = (await jitoBundleStatus(bundleId, { ...opts, regions })) ?? jito;
       failedSeen = jito === "Failed" ? failedSeen + 1 : 0;
       if (failedSeen >= 2) break;
     }

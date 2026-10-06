@@ -151,9 +151,10 @@ declare module "@/engine/solana/send.js" {
     opts?: SendManyOpts,
   ): Promise<SendResult[]>;
   export function latestBlockhash(conn: Connection): Promise<{ blockhash: string; lastValidBlockHeight: number }>;
-  export function submitJitoBundle(txs: VersionedTransaction[], opts?: { blockEngineUrl?: string }): Promise<string>;
+  export function submitJitoBundle(txs: VersionedTransaction[], opts?: { blockEngineUrl?: string; onAccepted?: (region: string, id: string) => void; onRefused?: (region: string, error: string) => void }): Promise<string>;
+  export const JITO_BLOCK_ENGINES: string[];
   export function preflightBundle(readConn: Connection, txs: VersionedTransaction[]): Promise<{ error: string | null; simulated: boolean }>;
-  export function jitoBundleStatus(bundleId: string, opts?: { blockEngineUrl?: string }): Promise<"Invalid" | "Pending" | "Failed" | "Landed" | null>;
+  export function jitoBundleStatus(bundleId: string, opts?: { blockEngineUrl?: string; regions?: string[]; perRegion?: (statuses: Record<string, string | null>) => void }): Promise<"Invalid" | "Pending" | "Failed" | "Landed" | null>;
   export interface BundleResult {
     ok: boolean;
     bundleId: string | null;

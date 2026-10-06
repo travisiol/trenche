@@ -40,6 +40,9 @@ export type StoredSettings = {
   cuPrice: number;
   /** launch buys racing the snipers (bundle wallets in their own tx, sniper tasks), µL/CU — the create goes ×1.5 above */
   launchCuPrice: number;
+  /** Jito off: the first 2 bundle wallets buy INSIDE the create (atomic, but trackers then show ONE trader — the dev —
+   *  for the whole buy). Off by default since 2026-10-06: the owner wants every wallet to show as its own trader */
+  bundleInCreate: boolean;
   tipSol: string;
   presets: [string, string, string];
   /** Block X Trading Presets P1..P3 */
@@ -123,6 +126,7 @@ const DEFAULT_SETTINGS: StoredSettings = {
   // 2026-10-06, his 16 launches: external buys landing in the create's block paid 3.3 M µL/CU median (max 55 M);
   // ours paid 2 M and mostly landed one block late. 10 M ≈ 0.0013 SOL per buy (130 k CU limit)
   launchCuPrice: 10_000_000,
+  bundleInCreate: false,
   tipSol: DEFAULT_TIP_SOL,
   presets: ["0.1", "0.2", "0.5"],
   tradingPresets: TRADING_PRESET_DEFAULTS,
@@ -355,6 +359,7 @@ export function publicSettings(s: StoredSettings): Settings {
     slippageBps: s.slippageBps,
     cuPrice: s.cuPrice,
     launchCuPrice: s.launchCuPrice ?? 10_000_000,
+    bundleInCreate: s.bundleInCreate === true,
     tipSol: s.tipSol,
     presets: s.presets,
     // a Store singleton built by an older version of this module (HMR) has no tradingPresets yet

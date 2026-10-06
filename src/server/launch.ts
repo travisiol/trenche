@@ -617,7 +617,9 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
 
   // the first bundle wallets buy INSIDE the create, right behind the dev: nobody can get between them. It needs lookup
   // tables to fit (static pump.fun table + one per launch); without them prepareLaunch keeps whatever fits
-  const inlineMax = run.state.mode === "bundle" ? Math.min(INLINE_MAX, bundleRows.length) : 0;
+  // Jito: every wallet in its own transaction inside the atomic bundle (each shows as its own trader); Jito off: inside
+  // the create only when Settings asks for it (atomic, but trackers then see the dev as the only buyer)
+  const inlineMax = run.state.mode === "bundle" && !o.jito && st.settings.bundleInCreate === true ? Math.min(INLINE_MAX, bundleRows.length) : 0;
   const devKp = st.sol.keypair(dev);
   let tables: import("@solana/web3.js").AddressLookupTableAccount[] = [];
   let launchTable: import("@solana/web3.js").AddressLookupTableAccount | null = null;

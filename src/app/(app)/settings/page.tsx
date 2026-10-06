@@ -182,7 +182,7 @@ function Workspace() {
 }
 
 function WorkspaceForm({ initial }: { initial: Settings }) {
-  const [f, setF] = useState<SettingsUpdateRequest>({ cluster: initial.cluster, rpcUrl: initial.rpcUrl, sendRpcUrl: initial.sendRpcUrl, jitoEnabled: initial.jitoEnabled, autoClaimRewards: initial.autoClaimRewards !== false, slippageBps: initial.slippageBps, cuPrice: initial.cuPrice, launchCuPrice: initial.launchCuPrice, tipSol: initial.tipSol });
+  const [f, setF] = useState<SettingsUpdateRequest>({ cluster: initial.cluster, rpcUrl: initial.rpcUrl, sendRpcUrl: initial.sendRpcUrl, jitoEnabled: initial.jitoEnabled, autoClaimRewards: initial.autoClaimRewards !== false, slippageBps: initial.slippageBps, cuPrice: initial.cuPrice, launchCuPrice: initial.launchCuPrice, bundleInCreate: initial.bundleInCreate, tipSol: initial.tipSol });
   const [pumpKey, setPumpKey] = useState("");
   const [heliusKey, setHeliusKey] = useState("");
   const [clearPump, setClearPump] = useState(false);
@@ -270,8 +270,11 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
         <Row title="Jito tip (SOL)" desc="Paid once per bundle.">
           <BxInput type="number" step="0.0001" min={0} value={f.tipSol ?? ""} onChange={(e) => set("tipSol", e.target.value)} className={num} />
         </Row>
-        <Row title="Send through Jito by default" desc="Bundles land together or not at all (mainnet only).">
+        <Row title="Send through Jito by default" desc="Bundles land together or not at all (mainnet only). Every bundle wallet buys in its own transaction: trackers show each one as its own trader.">
           <BxSwitch checked={!!f.jitoEnabled} onChange={(v) => set("jitoEnabled", v)} />
+        </Row>
+        <Row title="Bundle inside the create (Jito off)" desc="The first 2 bundle wallets buy in the create transaction itself: no sniper between them, but trackers (Axiom, GMGN…) show the dev as the only buyer.">
+          <BxSwitch checked={!!f.bundleInCreate} onChange={(v) => set("bundleInCreate", v)} />
         </Row>
       </div>
       <div className="space-y-3">
