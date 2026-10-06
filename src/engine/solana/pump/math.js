@@ -6,7 +6,7 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
-import { JITO_BUNDLE_TIP_ACCOUNTS, JITO_TIP_ACCOUNTS } from "../config.js";
+import { ASTRALANE_TIP_ACCOUNTS, JITO_BUNDLE_TIP_ACCOUNTS, JITO_TIP_ACCOUNTS } from "../config.js";
 import {
   ATA_PROGRAM,
   INITIAL_REAL_TOKENS,
@@ -162,7 +162,7 @@ export function buildBuyTx(t, e) {
         microLamports: t.cuPrice,
       }),
       ...(t.ataExists ? [] : [createAtaInstruction(e.owner, e.owner, t.mint, r)]),
-      ...(t.tipLamports && t.tipLamports > 0n ? [tipInstruction(e.owner, t.tipLamports, void 0, !!t.jitoTip)] : []),
+      ...(t.tipLamports && t.tipLamports > 0n ? [tipInstruction(e.owner, t.tipLamports, void 0, t.jitoTip ?? !1)] : []),
       buyInstruction(
         {
           mint: t.mint,
@@ -186,7 +186,8 @@ export function buildBuyTx(t, e) {
 
 /** tip transfer: `jito` = a transaction of a Jito bundle (block-engine tip accounts), else Helius Sender's */
 export function tipInstruction(t, e, r, jito = !1) {
-  const list = jito ? JITO_BUNDLE_TIP_ACCOUNTS : JITO_TIP_ACCOUNTS,
+  // jito: true = Jito block-engine tip accounts, "astralane" = Astralane's, false = Helius Sender's
+  const list = jito === "astralane" ? ASTRALANE_TIP_ACCOUNTS : jito ? JITO_BUNDLE_TIP_ACCOUNTS : JITO_TIP_ACCOUNTS,
     n = (r ?? Math.floor(Math.random() * list.length)) % list.length;
   return SystemProgram.transfer({
     fromPubkey: t,
@@ -246,7 +247,7 @@ export function buildSellTx(t, e) {
         e.minSolOutput,
         t.cashback,
       ),
-      ...(t.tipLamports && t.tipLamports > 0n ? [tipInstruction(e.owner, t.tipLamports, void 0, !!t.jitoTip)] : []),
+      ...(t.tipLamports && t.tipLamports > 0n ? [tipInstruction(e.owner, t.tipLamports, void 0, t.jitoTip ?? !1)] : []),
     ];
   return new VersionedTransaction(
     new TransactionMessage({

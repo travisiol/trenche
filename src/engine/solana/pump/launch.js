@@ -98,7 +98,7 @@ export async function prepareLaunch(
           ComputeBudgetProgram.setComputeUnitLimit({ units: (hasDevBuy ? 26e4 : 15e4) + j * 12e4 }),
           ComputeBudgetProgram.setComputeUnitPrice({ microLamports: l }),
           createV2Instruction({ mint: a.publicKey, user: e.dev.publicKey, creator: e.dev.publicKey, name: e.name, symbol: e.symbol, uri: q, cashback: e.cashback }),
-          ...(F ? [tipInstruction(e.dev.publicKey, n.tipLamports, void 0, !!n.jitoTip)] : []),
+          ...(F ? [tipInstruction(e.dev.publicKey, n.tipLamports, void 0, n.jitoTip ?? !1)] : []),
           ...(hasDevBuy ? buyIxs(e.dev, devPlan) : []),
           ...signers.flatMap((x, k) => buyIxs(x, rowPlans[k])),
         ],
@@ -147,7 +147,7 @@ export async function prepareLaunch(
         uri: e.uri,
         cashback: e.cashback,
       }),
-      ...(D ? [tipInstruction(e.dev.publicKey, n.tipLamports, void 0, !!n.jitoTip)] : []),
+      ...(D ? [tipInstruction(e.dev.publicKey, n.tipLamports, void 0, n.jitoTip ?? !1)] : []),
     ];
     ((p = new VersionedTransaction(
       new TransactionMessage({
@@ -178,8 +178,9 @@ export async function prepareLaunch(
             // or on the create when it already carries one (with lookup tables only — without, it has no room: a launch
             // bundle with no tip at all was refused "must write lock at least one tip account", 2026-10-06). Every tx
             // tipping paid it 2–5 times. Sender (no Jito) needs its tip on every tx.
-            tipLamports: n.jitoTip ? (((x + 2) % 5 === 0 || x === k.length - 1) && !(x <= 3 && h) ? n.tipLamports : 0n) : n.tipLamports,
-            jitoTip: !!n.jitoTip,
+            // Astralane: EVERY tx of a bundle tips (their rule), bundles of 4
+            tipLamports: n.jitoTip === "astralane" ? n.tipLamports : n.jitoTip ? (((x + 2) % 5 === 0 || x === k.length - 1) && !(x <= 3 && h) ? n.tipLamports : 0n) : n.tipLamports,
+            jitoTip: n.jitoTip ?? !1,
             recentBlockhash: i,
           },
           P,
@@ -409,7 +410,8 @@ export async function launchBundle(readConn, prep, opts = {}) {
   const onStep = typeof opts.onStep == "function" ? opts.onStep : () => {},
     all = [prep.createTx, ...prep.buyTxs],
     chunks = [];
-  for (let i = 0; i < all.length; i += 5) chunks.push(all.slice(i, i + 5));
+  const per = Math.max(1, Math.min(5, opts.maxPerBundle ?? 5)); // Jito 5, Astralane 4
+  for (let i = 0; i < all.length; i += per) chunks.push(all.slice(i, i + per));
   const buys = [],
     bundleErrors = [];
   let created = { confirmed: !1, error: "not sent" };
@@ -428,6 +430,7 @@ export async function launchBundle(readConn, prep, opts = {}) {
     const r = await sendBundleAndConfirm(readConn, chunks[ci], {
         timeoutMs: opts.timeoutMs ?? 45000,
         blockEngineUrl: opts.blockEngineUrl,
+        astralane: opts.astralane,
         // the first bundle holds the create: after the window, the curve's existence proves it landed (RPC 429 ≠ lost)
         verify: ci === 0 ? async () => !!(await readConn.getAccountInfo(bondingCurvePda(prep.mint.publicKey), "confirmed").catch(() => null)) : void 0,
       }),

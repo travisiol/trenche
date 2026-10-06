@@ -185,6 +185,8 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
   const [f, setF] = useState<SettingsUpdateRequest>({ cluster: initial.cluster, rpcUrl: initial.rpcUrl, sendRpcUrl: initial.sendRpcUrl, jitoEnabled: initial.jitoEnabled, autoClaimRewards: initial.autoClaimRewards !== false, slippageBps: initial.slippageBps, cuPrice: initial.cuPrice, launchCuPrice: initial.launchCuPrice, bundleInCreate: initial.bundleInCreate, tipSol: initial.tipSol });
   const [pumpKey, setPumpKey] = useState("");
   const [heliusKey, setHeliusKey] = useState("");
+  const [astraKey, setAstraKey] = useState("");
+  const [clearAstra, setClearAstra] = useState(false);
   const [clearPump, setClearPump] = useState(false);
   const [clearHelius, setClearHelius] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -197,9 +199,13 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
       else if (clearPump) body.pumpportalKey = "";
       if (heliusKey) body.heliusKey = heliusKey;
       else if (clearHelius) body.heliusKey = "";
+      if (astraKey) body.astralaneKey = astraKey;
+      else if (clearAstra) body.astralaneKey = "";
       await post("/api/settings", body);
       setPumpKey("");
       setHeliusKey("");
+      setAstraKey("");
+      setClearAstra(false);
       settingsRes.refresh();
       refreshVaultDependents();
       toast("Settings saved", "ok");
@@ -241,6 +247,16 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
             {initial.hasHeliusKey ? (
               <BxButton size="sm" className="h-9" variant={clearHelius ? "danger" : "secondary"} onClick={() => setClearHelius((c) => !c)}>
                 {clearHelius ? "Will clear" : "Clear"}
+              </BxButton>
+            ) : null}
+          </div>
+        </Row>
+        <Row title="Astralane API key" desc={initial.hasAstralaneKey ? "A key is stored — launch bundles go through Astralane (Jito on)." : "Launch bundles through Astralane (portal.astralane.io): the public Jito endpoint drops our pump.fun bundles."}>
+          <div className="flex gap-1.5">
+            <BxInput type="password" value={astraKey} onChange={(e) => setAstraKey(e.target.value)} placeholder={initial.hasAstralaneKey ? "••••••••" : "Not set"} className="h-9 w-[200px] font-mono text-xs" autoComplete="off" />
+            {initial.hasAstralaneKey ? (
+              <BxButton size="sm" className="h-9" variant={clearAstra ? "danger" : "secondary"} onClick={() => setClearAstra((c) => !c)}>
+                {clearAstra ? "Will clear" : "Clear"}
               </BxButton>
             ) : null}
           </div>

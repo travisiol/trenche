@@ -814,6 +814,16 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
     tables = [stat, perLaunch].filter((x): x is import("@solana/web3.js").AddressLookupTableAccount => !!x);
     if (!stat) step(run, "prepare", true, "pump.fun static lookup table not available (or not finalized yet) — it is created in the background for the next launch.");
   }
+  // Astralane (Settings key): every tx of the bundle tips, the create too — it only has room for a tip with the static
+  // pump.fun lookup table, so the bundle path always carries it when the table is active
+  const astralaneKey = o.jito ? (st.settings.astralaneKey ?? "").trim() : "";
+  const astralane = astralaneKey ? { key: astralaneKey } : undefined;
+  if (astralane && !tables.length) {
+    const stat = await staticLookupTable().catch(() => null);
+    if (stat) tables = [stat];
+    else step(run, "prepare", true, "pump.fun lookup table not ready: the create carries no Astralane tip (built in the background for the next launch).");
+  }
+  if (astralane) step(run, "bundle", true, "Bundle sent through Astralane (Settings key).");
   const prepOpts = { lookupTables: tables, inlineMax };
   // the chain refused the create for its instruction trace: one inline wallet fewer, same attempt (never more than INLINE_MAX times)
   const shrinkInline = (error: string | undefined): boolean => {
@@ -844,7 +854,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
         conn,
         { dev: st.sol.keypair(dev), name: run.state.name, symbol: run.state.symbol, uri: o.uri, devBuyLamports: o.devBuyLamports, mint: o.pendingKeypair, cashback: o.cashback },
         bundleRows,
-        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? (o.jito ? tipFor(attempt) : o.bundleTip) : tipLamportsFor(undefined), jitoTip: o.jito, ...prepOpts, recentBlockhash: bh ? { blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight } : undefined },
+        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? (o.jito ? tipFor(attempt) : o.bundleTip) : tipLamportsFor(undefined), jitoTip: astralane ? ("astralane" as const) : o.jito, ...prepOpts, recentBlockhash: bh ? { blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight } : undefined },
       );
     } catch (e) {
       created = { confirmed: false, error: e instanceof Error ? e.message : String(e) };
@@ -856,6 +866,8 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
     if (o.jito) {
       if (attempt > 0) step(run, "bundle", true, `Jito bundle again with a ${solString(tipFor(attempt))} SOL tip (attempt ${attempt + 1}/${maxAttempts + 1}).`);
       const r = await launchBundle(conn, prep, {
+        astralane,
+        maxPerBundle: astralane ? 4 : 5,
         // a landing bundle lands in 1–2 s (real tests): 9 s then a higher tip — the curve check after the window still
         // catches a late landing
         timeoutMs: attempt < maxAttempts ? 9_000 : 30_000,

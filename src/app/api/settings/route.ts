@@ -67,6 +67,11 @@ export const POST = route(async (req: Request) => {
     const m = /api-key=([A-Za-z0-9-]+)/.exec(raw);
     s.heliusKey = m ? m[1] : raw.replace(/^https?:\/\/[^?]*\??/, "").trim();
   }
+  if (body.astralaneKey !== undefined) {
+    // the bare key, or a gateway URL pasted whole ("…/iris?api-key=<key>")
+    const raw = String(body.astralaneKey).trim();
+    s.astralaneKey = /api-key=([^&\s]+)/.exec(raw)?.[1] ?? raw;
+  }
   if (body.jitoEnabled !== undefined) s.jitoEnabled = !!body.jitoEnabled;
   if (body.autoClaimRewards !== undefined) s.autoClaimRewards = !!body.autoClaimRewards;
   if (body.slippageBps !== undefined) s.slippageBps = intIn(body.slippageBps, 0, 9000, 1000, "slippageBps");

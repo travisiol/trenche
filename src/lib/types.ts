@@ -296,6 +296,8 @@ export type Settings = {
   /** true when a Helius key is stored; when set and rpcUrl is empty the server reads from
    *  `https://mainnet.helius-rpc.com/?api-key=<key>` */
   hasHeliusKey: boolean;
+  /** launch bundles go through Astralane */
+  hasAstralaneKey: boolean;
   /** when true, trades/launches that carry a tip go through Jito bundles by default */
   jitoEnabled: boolean;
   /** default of the Launch Token modal "Auto-claim rewards → dev wallet" switch (true): every launch arms an
@@ -322,11 +324,13 @@ export type Settings = {
 /** POST /api/settings — partial; `pumpportalKey: ""` clears the key, omit to keep.
  *  `tradingPresets`: 3 entries, each a PARTIAL TradingPreset merged over the saved one (omit a field to keep it). */
 export type SettingsUpdateRequest = Partial<
-  Omit<Settings, "hasPumpportalKey" | "hasHeliusKey" | "theme" | "explorerSuffix" | "effectiveRpcUrl" | "effectiveSendRpcUrl" | "pump" | "tradingPresets">
+  Omit<Settings, "hasPumpportalKey" | "hasHeliusKey" | "hasAstralaneKey" | "theme" | "explorerSuffix" | "effectiveRpcUrl" | "effectiveSendRpcUrl" | "pump" | "tradingPresets">
 > & {
   pumpportalKey?: string;
   /** "" clears, omit keeps */
   heliusKey?: string;
+  /** "" clears, omit keeps */
+  astralaneKey?: string;
   tradingPresets?: [Partial<TradingPreset>, Partial<TradingPreset>, Partial<TradingPreset>];
 };
 

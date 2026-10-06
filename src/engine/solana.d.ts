@@ -31,6 +31,7 @@ declare module "@/engine/solana/config.js" {
   export function normalizeSolanaRpc(url: string): string;
   export const JITO_TIP_ACCOUNTS: string[];
   export const JITO_BUNDLE_TIP_ACCOUNTS: string[];
+  export const ASTRALANE_TIP_ACCOUNTS: string[];
   export const SENDER_TIP_LAMPORTS: bigint;
   export function isHeliusSender(url: string): boolean;
   export function withSwqosOnly(url: string): string;
@@ -166,8 +167,9 @@ declare module "@/engine/solana/send.js" {
   export function sendBundleAndConfirm(
     read: Connection,
     txs: VersionedTransaction[],
-    opts?: { timeoutMs?: number; blockEngineUrl?: string; verify?: () => Promise<boolean> },
+    opts?: { timeoutMs?: number; blockEngineUrl?: string; verify?: () => Promise<boolean>; astralane?: { key: string; url?: string } },
   ): Promise<BundleResult>;
+  export function submitAstralaneBundle(txs: VersionedTransaction[], astralane: { key: string; url?: string }): Promise<string>;
 }
 
 declare module "@/engine/solana/fund.js" {
@@ -295,7 +297,7 @@ declare module "@/engine/solana/pump/math.js" {
       ataExists?: boolean;
       tipLamports?: bigint;
       /** the tx belongs to a Jito bundle: tip a block-engine account (JITO_BUNDLE_TIP_ACCOUNTS) */
-      jitoTip?: boolean;
+      jitoTip?: boolean | "astralane";
       recentBlockhash: string;
     },
     plan: BuyPlan,
@@ -309,7 +311,7 @@ declare module "@/engine/solana/pump/math.js" {
       cuLimit?: number;
       tipLamports?: bigint;
       /** the tx belongs to a Jito bundle: tip a block-engine account (JITO_BUNDLE_TIP_ACCOUNTS) */
-      jitoTip?: boolean;
+      jitoTip?: boolean | "astralane";
       recentBlockhash: string;
       cashback?: boolean;
     },
@@ -468,7 +470,7 @@ declare module "@/engine/solana/pump/launch.js" {
       cashback?: boolean;
     },
     rows: BuyRow[],
-    opts?: { cuPrice: number; slippageBps?: number; tipLamports?: bigint; jitoTip?: boolean; lookupTable?: unknown; lookupTables?: unknown[]; /** max bundle rows bought inside the create (as many as fit in 1232 bytes) */ inlineMax?: number; /** sign with this blockhash instead of fetching one */ recentBlockhash?: { blockhash: string; lastValidBlockHeight: number } },
+    opts?: { cuPrice: number; slippageBps?: number; tipLamports?: bigint; jitoTip?: boolean | "astralane"; lookupTable?: unknown; lookupTables?: unknown[]; /** max bundle rows bought inside the create (as many as fit in 1232 bytes) */ inlineMax?: number; /** sign with this blockhash instead of fetching one */ recentBlockhash?: { blockhash: string; lastValidBlockHeight: number } },
   ): Promise<LaunchPrep>;
   export interface LaunchResult {
     mint: string;
@@ -508,7 +510,7 @@ declare module "@/engine/solana/pump/launch.js" {
   export function launchBundle(
     read: Connection,
     prep: LaunchPrep,
-    opts?: { onStep?: (s: BundleStep) => void; timeoutMs?: number; blockEngineUrl?: string },
+    opts?: { onStep?: (s: BundleStep) => void; timeoutMs?: number; blockEngineUrl?: string; /** send through Astralane instead of Jito */ astralane?: { key: string; url?: string }; /** txs per bundle: Jito 5, Astralane 4 */ maxPerBundle?: number },
   ): Promise<{
     mint: string;
     create: { confirmed: boolean; signature?: string; error?: string };

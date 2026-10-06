@@ -294,6 +294,30 @@ export async function submitJitoBundle(txs, opts = {}) {
 }
 export { JITO_BLOCK_ENGINES };
 
+/* Astralane sendBundle (docs "Submit Transactions"): ≤ 4 txs, every one tipping an Astralane tip wallet, base64.
+   The answer is the list of signatures (no bundle id). `astralane` = { key, url? } — url defaults to the Frankfurt
+   gateway (their recommendation for Europe). */
+var ASTRALANE_DEFAULT_URL = "https://fr.gateway.astralane.io/iris";
+export async function submitAstralaneBundle(txs, astralane) {
+  const url = `${astralane.url || ASTRALANE_DEFAULT_URL}?api-key=${encodeURIComponent(astralane.key)}`,
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", api_key: astralane.key },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "sendBundle", params: [txs.map(tx => Buffer.from(tx.serialize()).toString("base64")), { encoding: "base64", mevProtect: !0, revertProtection: !1 }] }),
+    }),
+    text = await res.text(),
+    data = (() => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    })();
+  if (data?.error) throw new Error(`Astralane refused the bundle: ${data.error.message || JSON.stringify(data.error)}`);
+  if (!res.ok) throw new Error(`Astralane HTTP ${res.status}: ${text.slice(0, 160)}`);
+  return Array.isArray(data?.result) ? data.result.join(",") : String(data?.result ?? "sent");
+}
+
 /* Before a bundle leaves: Jito drops a bundle silently (status "Invalid") when one transaction fails its simulation or
    carries a bad signature, so check both here. 1) every required signature verified locally (ed25519); 2) the whole
    bundle simulated in order with Jito's `simulateBundle` on the read RPC when it offers the method (Helius / Jito RPCs)
@@ -374,7 +398,9 @@ export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
   // Jito asks and send the same bundle again — a refusal at the door is not a lost auction (2026-10-06)
   for (let k = 0; ; k++) {
     try {
-      bundleId = await submitJitoBundle(txs, { ...opts, blockEngineUrl: opts.blockEngineUrl || JITO_DEFAULT_REGION, onAccepted: base => regions.push(base) });
+      bundleId = opts.astralane
+        ? await submitAstralaneBundle(txs, opts.astralane)
+        : await submitJitoBundle(txs, { ...opts, blockEngineUrl: opts.blockEngineUrl || JITO_DEFAULT_REGION, onAccepted: base => regions.push(base) });
       break;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e),
@@ -392,7 +418,7 @@ export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
     failedSeen = 0;
   for (; Date.now() - t0 < timeoutMs;) {
     // Jito's verdict every ~3 s: two "Failed" in a row = dropped (a tx fails simulation), stop waiting
-    if (Date.now() - jitoAt > 3000) {
+    if (!opts.astralane && Date.now() - jitoAt > 3000) {
       jitoAt = Date.now();
       jito = (await jitoBundleStatus(bundleId, { ...opts, regions })) ?? jito;
       failedSeen = jito === "Failed" ? failedSeen + 1 : 0;
@@ -418,6 +444,8 @@ export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
     error:
       jito === "Failed"
         ? `Jito dropped the bundle (status Failed, id ${bundleId}) — a transaction of the bundle fails simulation; nothing was spent (atomic).`
-        : `Bundle not landed within the window (Jito status ${jito ?? "unknown"}, id ${bundleId}) — nothing was spent (atomic).`,
+        : opts.astralane
+          ? `Bundle not landed within the window (Astralane) — nothing was spent (atomic).`
+          : `Bundle not landed within the window (Jito status ${jito ?? "unknown"}, id ${bundleId}) — nothing was spent (atomic).`,
   };
 }

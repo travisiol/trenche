@@ -27,6 +27,18 @@ export function normalizeSolanaRpc(t) {
 /* Tip accounts of the Jito block engine (POST mainnet.block-engine.jito.wtf/api/v1/getTipAccounts, read 2026-10-05).
    A Jito bundle must write-lock one of THESE — Helius Sender's accounts below are refused ("Bundles must write lock
    at least one tip account"). */
+/* Astralane tip wallets (docs "Endpoints and Configs", read 2026-10-06): every tx of an Astralane bundle tips one */
+export var ASTRALANE_TIP_ACCOUNTS = [
+  "astrazznxsGUhWShqgNtAdfrzP2G83DzcWVJDxwV9bF",
+  "astra4uejePWneqNaJKuFFA8oonqCE1sqF6b45kDMZm",
+  "astra9xWY93QyfG6yM8zwsKsRodscjQ2uU2HKNL5prk",
+  "astraRVUuTHjpwEVvNBeQEgwYx9w9CFyfxjYoobCZhL",
+  "astraEJ2fEj8Xmy6KLG7B3VfbKfsHXhHrNdCQx7iGJK",
+  "astraubkDw81n4LuutzSQ8uzHCv4BhPVhfvTcYv8SKC",
+  "astraZW5GLFefxNPAatceHhYjfA1ciq9gvfEg2S47xk",
+  "astrawVNP4xDBKT7rAdxrLYiTSTdqtUr63fSMduivXK",
+];
+
 export var JITO_BUNDLE_TIP_ACCOUNTS = [
     "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
     "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",

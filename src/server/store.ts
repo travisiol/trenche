@@ -33,6 +33,9 @@ export type StoredSettings = {
   sendRpcUrl: string;
   pumpportalKey: string;
   heliusKey: string;
+  /** Astralane API key (portal.astralane.io): when set, launch bundles go through Astralane instead of the public Jito
+   *  endpoint (which drops our pump.fun bundles — 6 real tests, 2026-10-06). Never sent to the browser. */
+  astralaneKey: string;
   jitoEnabled: boolean;
   /** Launch Token modal "Auto-claim rewards → dev wallet" default (true) */
   autoClaimRewards: boolean;
@@ -119,6 +122,7 @@ const DEFAULT_SETTINGS: StoredSettings = {
   sendRpcUrl: HELIUS_SENDER_URL,
   pumpportalKey: "",
   heliusKey: "",
+  astralaneKey: "",
   jitoEnabled: false,
   autoClaimRewards: true,
   slippageBps: 1000,
@@ -354,6 +358,7 @@ export function publicSettings(s: StoredSettings): Settings {
     sendRpcUrl: s.sendRpcUrl,
     hasPumpportalKey: !!s.pumpportalKey.trim(),
     hasHeliusKey: !!s.heliusKey.trim(),
+    hasAstralaneKey: !!(s.astralaneKey ?? "").trim(),
     jitoEnabled: s.jitoEnabled,
     autoClaimRewards: s.autoClaimRewards !== false,
     slippageBps: s.slippageBps,

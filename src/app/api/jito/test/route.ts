@@ -1,9 +1,9 @@
 import { ComputeBudgetProgram, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction, type TransactionInstruction } from "@solana/web3.js";
-import { JITO_BUNDLE_TIP_ACCOUNTS } from "@/engine/solana/config.js";
+import { ASTRALANE_TIP_ACCOUNTS, JITO_BUNDLE_TIP_ACCOUNTS } from "@/engine/solana/config.js";
 import { base58Encode } from "@/engine/solana/keys.js";
 import { buildBuyTx, planBuys, signWith } from "@/engine/solana/pump/math.js";
 import { bondingCurvePda, parseBondingCurve, tokenProgramFor } from "@/engine/solana/pump/pdas.js";
-import { JITO_BLOCK_ENGINES, jitoBundleStatus, latestBlockhash, submitJitoBundle } from "@/engine/solana/send.js";
+import { JITO_BLOCK_ENGINES, jitoBundleStatus, latestBlockhash, submitAstralaneBundle, submitJitoBundle } from "@/engine/solana/send.js";
 import { HttpError, json, readBody, route } from "@/server/api";
 import { readConn, requireUnlocked } from "@/server/engine";
 import { store } from "@/server/store";
@@ -17,7 +17,7 @@ export const maxDuration = 60;
  *  status, polled 30 s. Built to find why every launch bundle reported "Invalid" (2026-10-06). */
 export const POST = route(async (req: Request) => {
   requireUnlocked();
-  type Body = { wallet?: string; tipLamports?: number; /** one block engine only (e.g. https://ny.mainnet.block-engine.jito.wtf) */ region?: string; /** "two" (default): self-transfer then tip · "one": a single tx with both · "tx": the single tx via Jito's sendTransaction (control: not a bundle) */ mode?: "one" | "two" | "tx" | "pumpbuy"; /** pumpbuy: a live pump.fun coin and the SOL (lamports) to buy */ mint?: string; lamports?: number; /** pumpbuy variants */ tipInBuy?: boolean; cuPrice?: number; cuLimit?: number };
+  type Body = { wallet?: string; tipLamports?: number; /** one block engine only (e.g. https://ny.mainnet.block-engine.jito.wtf) */ region?: string; /** "two" (default): self-transfer then tip · "one": a single tx with both · "tx": the single tx via Jito's sendTransaction (control: not a bundle) */ mode?: "one" | "two" | "tx" | "pumpbuy"; /** pumpbuy: a live pump.fun coin and the SOL (lamports) to buy */ mint?: string; lamports?: number; /** pumpbuy variants */ tipInBuy?: boolean; cuPrice?: number; cuLimit?: number; /** send through Astralane (Settings key): every tx tips an Astralane wallet */ astralane?: boolean };
   const body = await readBody<Body>(req).catch(() => ({}) as Body);
   const st = store();
   const bal = st.balances?.map ?? {};
@@ -27,7 +27,10 @@ export const POST = route(async (req: Request) => {
   const tip = BigInt(Math.max(1000, Math.min(10_000_000, Math.floor(body.tipLamports ?? 100_000))));
   const conn = readConn();
   const { blockhash } = await latestBlockhash(conn);
-  const tipTo = new PublicKey(JITO_BUNDLE_TIP_ACCOUNTS[Math.floor(Math.random() * JITO_BUNDLE_TIP_ACCOUNTS.length)]);
+  const astra = body.astralane === true ? (st.settings.astralaneKey ?? "").trim() : "";
+  if (body.astralane === true && !astra) throw new HttpError(400, "No Astralane key in Settings.");
+  const tipList = astra ? ASTRALANE_TIP_ACCOUNTS : JITO_BUNDLE_TIP_ACCOUNTS;
+  const tipTo = new PublicKey(tipList[Math.floor(Math.random() * tipList.length)]);
   const mk = (ixs: TransactionInstruction[]) => {
     const tx = new VersionedTransaction(new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: ixs }).compileToV0Message());
     tx.sign([kp]);
@@ -48,9 +51,9 @@ export const POST = route(async (req: Request) => {
     const mintAcc = await conn.getAccountInfo(mint);
     const tokenProgram = tokenProgramFor(mintAcc?.owner.toBase58() ?? "");
     const plan = planBuys([{ label: "test", signer: kp, solIn: BigInt(Math.max(100_000, Math.min(5_000_000, Math.floor(body.lamports ?? 500_000)))) }], { virtualTokenReserves: curve.virtualTokenReserves, virtualSolReserves: curve.virtualSolReserves, realTokenReserves: curve.realTokenReserves }, 3000)[0];
-    const inBuy = body.tipInBuy === true;
-    const buy = signWith(buildBuyTx({ mint, creator: curve.creator, tokenProgram, cuPrice: Math.max(0, Math.floor(body.cuPrice ?? 100_000)), cuLimit: Math.max(90_000, Math.floor(body.cuLimit ?? 130_000)), ataExists: false, recentBlockhash: blockhash, tipLamports: inBuy ? tip : undefined, jitoTip: inBuy }, plan), kp);
-    pumpTxs = inBuy ? [buy] : [buy, mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), tipIx])];
+    const inBuy = body.tipInBuy === true || !!astra; // Astralane: every tx tips
+    const buy = signWith(buildBuyTx({ mint, creator: curve.creator, tokenProgram, cuPrice: Math.max(0, Math.floor(body.cuPrice ?? 100_000)), cuLimit: Math.max(90_000, Math.floor(body.cuLimit ?? 130_000)), ataExists: false, recentBlockhash: blockhash, tipLamports: inBuy ? tip : undefined, jitoTip: astra ? "astralane" : inBuy }, plan), kp);
+    pumpTxs = inBuy && !astra ? [buy] : [buy, mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), tipIx])];
   }
   const txs = pumpTxs ? pumpTxs : mode === "two" ? [mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), self]), mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), tipIx])] : [mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 2000 }), self, tipIx])];
   const signatures = txs.map((t) => base58Encode(t.signatures[0]));
@@ -77,7 +80,9 @@ export const POST = route(async (req: Request) => {
     );
   } else
     try {
-      bundleId = await submitJitoBundle(txs, { blockEngineUrl: regionList[0], onAccepted: (r, id) => (accepted[r] = id), onRefused: (r, e) => (refused[r] = e) });
+      bundleId = astra
+        ? await submitAstralaneBundle(txs, { key: astra }).then((id) => ((accepted["astralane"] = id), id), (e) => ((refused["astralane"] = e instanceof Error ? e.message : String(e)), Promise.reject(e)))
+        : await submitJitoBundle(txs, { blockEngineUrl: regionList[0], onAccepted: (r, id) => (accepted[r] = id), onRefused: (r, e) => (refused[r] = e) });
     } catch (e) {
       submitError = e instanceof Error ? e.message : String(e);
     }
@@ -87,7 +92,7 @@ export const POST = route(async (req: Request) => {
   if (bundleId || mode === "tx") {
     for (let i = 0; i < 30 && Date.now() - t0 < 32_000; i++) {
       let regions: Record<string, string | null> = {};
-      const best = bundleId ? await jitoBundleStatus(bundleId, { regions: regionList, perRegion: (r) => (regions = r) }) : null;
+      const best = bundleId && !astra ? await jitoBundleStatus(bundleId, { regions: regionList, perRegion: (r) => (regions = r) }) : null;
       const stx = (await conn.getSignatureStatuses(signatures).catch(() => null))?.value ?? [];
       const landed = signatures.map((_, k) => !!stx[k] && !stx[k]!.err);
       timeline.push({ ms: Date.now() - t0, best, regions, landed });
