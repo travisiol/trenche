@@ -50,7 +50,7 @@ export function buyInstruction(t, e, r, n = !0) {
       meta(creatorVaultPda(t.creator), !1, !0),
       meta(eventAuthorityPda(), !1, !1),
       meta(PUMP_PROGRAM_KEY, !1, !1),
-      meta(globalVolumePda(), !1, !1),
+      meta(globalVolumePda(), !1, !0), // writable, as pump.fun's own buys (Jito bundles with it read-only never landed, 2026-10-06)
       meta(userVolumePda(t.user), !1, !0),
       meta(feeConfigPda(), !1, !1),
       meta(PUMP_FEE_PROGRAM_KEY, !1, !1),
