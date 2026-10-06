@@ -5,6 +5,6 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
 export const POST = route(async (req: Request) => {
-  const b = await readBody<{ to?: string; amount?: string }>(req);
-  return json(await rhWithdraw(String(b.to ?? "").trim(), String(b.amount ?? "")));
+  const b = await readBody<{ to?: string; amount?: string; from?: string }>(req);
+  return json(await rhWithdraw(String(b.to ?? "").trim(), String(b.amount ?? ""), b.from || null));
 });

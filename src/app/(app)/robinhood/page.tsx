@@ -2,7 +2,7 @@
 /** Robinhood Chain: the dev wallet DONCHAIN made for it (own folder, encrypted with the vault passphrase), the
  *  Solana → Robinhood bridge (Relay: SOL from a vault wallet arrives as ETH), launches on Pons V2 and their trades. */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRightLeft, Check, Copy, ExternalLink, FolderOpen, Gift, ImagePlus, KeyRound, Rocket, Send, X } from "lucide-react";
+import { ArrowRightLeft, Check, Copy, ExternalLink, FolderOpen, Gift, ImagePlus, KeyRound, Plus, Rocket, Send, Star, Trash2, Upload, Wallet, X } from "lucide-react";
 import { failureMessage, post, useGet } from "@/lib/api";
 import { useBalances, useWallets } from "@/lib/store";
 import { age, short, sol, usd } from "@/lib/format";
@@ -32,6 +32,7 @@ type Position = {
   image: string | null;
   txHash: string;
   at: number;
+  dev: string;
   devBuyWei: string;
   spentWei: string;
   receivedWei: string;
@@ -43,10 +44,14 @@ type Position = {
   graduated: boolean | null;
   pnlEth: number | null;
 };
+type RhWallet = { address: string; label: string; createdAt: number; main: boolean; balanceWei: string | null; escrowWei: string | null; launches: number };
 type Status = {
   address: string;
   balanceWei: string;
   escrowWei: string | null;
+  totalWei: string;
+  totalEscrowWei: string;
+  wallets: RhWallet[];
   ethUsd: number | null;
   positions: Position[];
   chainId: number;
@@ -105,7 +110,7 @@ export default function RobinhoodPage() {
   const status = useGet<Status>("/api/robinhood", 6000);
   const s = status.data;
   const refresh = status.refresh;
-  const [modal, setModal] = useState<"export" | "withdraw" | null>(null);
+  const [tab, setTab] = useState<Tab>("wallets");
   const usdOf = (ethAmount: number | null) => (ethAmount !== null && s?.ethUsd ? usd(ethAmount * s.ethUsd, 2) : "—");
   const inFlight = (s?.bridges ?? []).some((b) => b.status === "sending" || b.status === "deposited" || b.status === "pending");
   // faster refresh while a bridge is filling
@@ -114,6 +119,7 @@ export default function RobinhoodPage() {
     const t = setInterval(() => refresh(), 2000);
     return () => clearInterval(t);
   }, [inFlight, refresh]);
+  const total = s ? Number(s.totalWei) / 1e18 : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
@@ -128,79 +134,221 @@ export default function RobinhoodPage() {
               <p className="text-xs text-text-300">Bridge SOL from your vault, launch on Pons V2 · chain id 4663 · gas in ETH</p>
             </div>
           </div>
+          <div className="flex items-baseline gap-2">
+            <span className="text-sm text-text-300">Total</span>
+            <span className="text-[22px] font-semibold text-text-100">{total === null ? "—" : ethNum(total, 6)}</span>
+            <span className="text-sm text-text-300">ETH</span>
+            <span className="text-sm font-medium text-text-100">{usdOf(total)}</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-6 border-b border-line-100">
+          {TABS.map((t) => (
+            <button key={t.id} type="button" onClick={() => setTab(t.id)} className={cx("-mb-px border-b-2 pb-2 text-[15px] font-medium transition-colors", tab === t.id ? "border-accent text-text-100" : "border-transparent text-text-300 hover:text-text-100")}>
+              {t.label}
+              {t.id === "wallets" && s ? <span className="ml-1.5 text-xs text-text-300">{s.wallets.length}</span> : null}
+            </button>
+          ))}
         </div>
 
         {status.error && !s ? <p className="rounded-md border border-decrease/30 bg-decrease/10 px-3 py-2 text-sm text-decrease">{failureMessage(status.error)}</p> : null}
+        {!s && !status.error ? <p className="py-4 text-sm text-text-300">Opening the Robinhood wallets…</p> : null}
 
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
-          <div className="flex min-w-0 flex-col gap-4">
-            <BxCard title="Robinhood wallet" icon={<KeyRound className="h-4 w-4 text-text-300" />} bodyClassName="px-5 pb-5">
-              {s ? (
-                <div className="flex flex-col gap-3">
-                  <div className="flex items-baseline gap-2">
-                    <EthMark className="h-5 w-5 self-center text-text-200" />
-                    <span className="text-[28px] font-semibold leading-9 text-text-100">{eth(s.balanceWei, 6)}</span>
-                    <span className="text-sm text-text-300">ETH</span>
-                    <span className="text-base font-medium text-text-100">{usdOf(Number(s.balanceWei) / 1e18)}</span>
-                  </div>
-                  <div className="flex flex-col gap-1.5 rounded-md border border-line-100 bg-bg-100 px-3 py-2.5 text-xs">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-text-300">Address</span>
-                      <span className="flex min-w-0 items-center gap-2">
-                        <Copyable text={s.address} label={short(s.address, 6, 6)} />
-                        <a href={`${s.explorer}/address/${s.address}`} target="_blank" rel="noreferrer" className="text-text-300 hover:text-text-100" title="Explorer">
-                          <ExternalLink className="h-3 w-3" />
-                        </a>
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="shrink-0 text-text-300">Folder</span>
-                      <span className="min-w-0 truncate font-mono text-[11px] text-text-200" title={s.folder}>
-                        {s.folder}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-text-300">Key file</span>
-                      <span className="font-mono text-[11px] text-text-200">eth-wallet.enc.json · encrypted with your vault passphrase</span>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    <BxButton
-                      onClick={async () => {
-                        try {
-                          await post("/api/robinhood/open-folder", {});
-                        } catch (e) {
-                          toast(failureMessage(e), "err");
-                        }
-                      }}
-                    >
-                      <FolderOpen className="h-4 w-4" /> Folder
-                    </BxButton>
-                    <BxButton onClick={() => setModal("export")}>
-                      <KeyRound className="h-4 w-4" /> Export key
-                    </BxButton>
-                    <BxButton onClick={() => setModal("withdraw")}>
-                      <Send className="h-4 w-4" /> Withdraw
-                    </BxButton>
-                  </div>
-                </div>
-              ) : (
-                <p className="py-4 text-sm text-text-300">{status.loading ? "Opening the Robinhood wallet…" : "—"}</p>
-              )}
-            </BxCard>
-
-            <BridgeCard status={s} onDone={() => status.refresh()} />
+        {s && tab === "wallets" ? <WalletsTab status={s} onDone={refresh} usdOf={usdOf} /> : null}
+        {s && tab === "bridge" ? (
+          <div className="w-full max-w-[760px]">
+            <BridgeCard status={s} onDone={refresh} />
           </div>
-
-          <div className="flex min-w-0 flex-col gap-4">
-            <LaunchCard status={s} onDone={() => status.refresh()} />
-            <LaunchesCard status={s} onDone={() => status.refresh()} usdOf={usdOf} />
+        ) : null}
+        {s && tab === "launch" ? (
+          <div className="grid grid-cols-1 gap-4 2xl:grid-cols-2">
+            <LaunchCard status={s} onDone={refresh} />
+            <LaunchesCard status={s} onDone={refresh} usdOf={usdOf} />
           </div>
-        </div>
+        ) : null}
       </div>
-      {modal === "export" && s ? <ExportModal onClose={() => setModal(null)} /> : null}
-      {modal === "withdraw" && s ? <WithdrawModal onClose={() => setModal(null)} balanceWei={s.balanceWei} onDone={() => status.refresh()} /> : null}
     </div>
+  );
+}
+
+type Tab = "wallets" | "bridge" | "launch";
+const TABS: { id: Tab; label: string }[] = [
+  { id: "wallets", label: "Wallets" },
+  { id: "bridge", label: "Bridge" },
+  { id: "launch", label: "Launch" },
+];
+
+/* ------------------------------------------------------------------ wallets */
+
+function walletLabel(w: RhWallet) {
+  return `${w.label || short(w.address)} — ${eth(w.balanceWei, 5)} ETH`;
+}
+
+function WalletsTab({ status, onDone, usdOf }: { status: Status; onDone: () => void; usdOf: (e: number | null) => string }) {
+  const [modal, setModal] = useState<{ kind: "create" | "import" } | { kind: "export" | "send"; address: string } | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [label, setLabel] = useState("");
+  const act = async (key: string, fn: () => Promise<string | void>) => {
+    setBusy(key);
+    try {
+      const m = await fn();
+      if (m) toast(m, "ok");
+      onDone();
+    } catch (e) {
+      toast(failureMessage(e), "err");
+    } finally {
+      setBusy(null);
+    }
+  };
+  const wallets = (body: Record<string, unknown>) => post("/api/robinhood/wallets", body);
+  const fees = Number(status.totalEscrowWei) / 1e18;
+  return (
+    <div className="flex flex-col gap-4">
+      <BxCard
+        title="Wallets"
+        icon={<Wallet className="h-4 w-4 text-text-300" />}
+        right={
+          <>
+            <BxButton size="sm" onClick={() => setModal({ kind: "create" })}>
+              <Plus className="h-3.5 w-3.5" /> Create
+            </BxButton>
+            <BxButton size="sm" onClick={() => setModal({ kind: "import" })}>
+              <Upload className="h-3.5 w-3.5" /> Import
+            </BxButton>
+            <BxButton size="sm" onClick={() => act("folder", async () => void (await post("/api/robinhood/open-folder", {})))}>
+              <FolderOpen className="h-3.5 w-3.5" /> Folder
+            </BxButton>
+          </>
+        }
+      >
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[820px] text-sm">
+            <thead>
+              <tr className="border-y border-line-100 text-xs text-text-300">
+                <th className="w-8 px-3 py-2" />
+                <th className="px-2 py-2 text-left font-normal">Wallet</th>
+                <th className="px-2 py-2 text-right font-normal">ETH</th>
+                <th className="px-2 py-2 text-right font-normal">Value</th>
+                <th className="px-2 py-2 text-right font-normal">Creator fees</th>
+                <th className="px-2 py-2 text-right font-normal">Launches</th>
+                <th className="px-3 py-2 text-right font-normal">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {status.wallets.map((w) => {
+                const bal = w.balanceWei === null ? null : Number(w.balanceWei) / 1e18;
+                const esc = w.escrowWei === null ? 0 : Number(w.escrowWei) / 1e18;
+                return (
+                  <tr key={w.address} className="border-b border-line-50 hover:bg-white/[0.02]">
+                    <td className="px-3 py-2.5">
+                      <button
+                        type="button"
+                        title={w.main ? "Main wallet: launches + bridge by default" : "Make it the main wallet"}
+                        disabled={w.main || !!busy}
+                        onClick={() => act(`main-${w.address}`, async () => void (await wallets({ action: "main", address: w.address })))}
+                        className={cx("flex h-6 w-6 items-center justify-center rounded", w.main ? "text-[#ccff00]" : "text-text-300 hover:text-text-100")}
+                      >
+                        <Star className={cx("h-3.5 w-3.5", w.main && "fill-current")} />
+                      </button>
+                    </td>
+                    <td className="px-2 py-2.5">
+                      <div className="flex min-w-0 flex-col">
+                        {editing === w.address ? (
+                          <BxInput
+                            autoFocus
+                            className="h-7 w-48 text-xs"
+                            value={label}
+                            onChange={(e) => setLabel(e.target.value)}
+                            onBlur={() => {
+                              setEditing(null);
+                              if (label.trim() && label.trim() !== w.label) void act(`rename-${w.address}`, async () => void (await wallets({ action: "rename", address: w.address, label })));
+                            }}
+                            onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            className="flex items-center gap-1.5 text-left text-text-100 hover:text-accent"
+                            onClick={() => {
+                              setEditing(w.address);
+                              setLabel(w.label);
+                            }}
+                            title="Rename"
+                          >
+                            {w.label}
+                            {w.main ? <span className="rounded bg-[#ccff00]/15 px-1 text-[10px] text-[#ccff00]">main</span> : null}
+                          </button>
+                        )}
+                        <span className="flex items-center gap-1.5">
+                          <Copyable text={w.address} label={short(w.address, 6, 6)} />
+                          <a href={`${status.explorer}/address/${w.address}`} target="_blank" rel="noreferrer" className="text-text-300 hover:text-text-100" title="Explorer">
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-2 py-2.5 text-right font-mono text-text-100">{bal === null ? "—" : ethNum(bal, 6)}</td>
+                    <td className="px-2 py-2.5 text-right text-text-200">{usdOf(bal)}</td>
+                    <td className="px-2 py-2.5 text-right">
+                      <span className="inline-flex items-center gap-2">
+                        <span className={cx("font-mono", esc > 0 ? "text-increase" : "text-text-300")}>{ethNum(esc, 6)}</span>
+                        {esc > 0 ? (
+                          <BxButton size="sm" disabled={!!busy} onClick={() => act(`claim-${w.address}`, async () => `Claimed ${eth((await post<{ amountWei: string }>("/api/robinhood/claim", { wallet: w.address })).amountWei, 6)} ETH`)}>
+                            <Gift className="h-3 w-3" /> Claim
+                          </BxButton>
+                        ) : null}
+                      </span>
+                    </td>
+                    <td className="px-2 py-2.5 text-right text-text-200">{w.launches}</td>
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center justify-end gap-1">
+                        <IconBtn title="Send ETH" onClick={() => setModal({ kind: "send", address: w.address })}>
+                          <Send className="h-3.5 w-3.5" />
+                        </IconBtn>
+                        <IconBtn title="Export key" onClick={() => setModal({ kind: "export", address: w.address })}>
+                          <KeyRound className="h-3.5 w-3.5" />
+                        </IconBtn>
+                        <IconBtn
+                          title="Remove (kept encrypted in the file)"
+                          disabled={status.wallets.length <= 1 || !!busy}
+                          onClick={() => {
+                            if (!window.confirm(`Remove ${w.label} from DONCHAIN? The key stays encrypted in eth-wallet.enc.json (re-import it to bring it back).`)) return;
+                            void act(`rm-${w.address}`, async () => {
+                              await wallets({ action: "remove", address: w.address });
+                              return `${w.label} removed`;
+                            });
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </IconBtn>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2 px-5 py-3 text-[11px] text-text-300">
+          <span className="min-w-0 truncate">
+            Keys: <span className="font-mono text-text-200">{status.keystore}</span> · encrypted with your vault passphrase
+          </span>
+          <span>Creator fees waiting: {ethNum(fees, 6)} ETH</span>
+        </div>
+      </BxCard>
+      {modal?.kind === "create" ? <CreateModal onClose={() => setModal(null)} onDone={onDone} /> : null}
+      {modal?.kind === "import" ? <ImportModal onClose={() => setModal(null)} onDone={onDone} /> : null}
+      {modal?.kind === "export" ? <ExportModal address={modal.address} onClose={() => setModal(null)} /> : null}
+      {modal?.kind === "send" ? <SendModal from={modal.address} wallets={status.wallets} onClose={() => setModal(null)} onDone={onDone} /> : null}
+    </div>
+  );
+}
+
+function IconBtn({ children, title, onClick, disabled }: { children: React.ReactNode; title: string; onClick: () => void; disabled?: boolean }) {
+  return (
+    <button type="button" title={title} aria-label={title} onClick={onClick} disabled={disabled} className="flex h-7 w-7 items-center justify-center rounded-md border border-line-100 bg-bg-50 text-text-300 transition-colors hover:border-accent/35 hover:text-text-100 disabled:cursor-not-allowed disabled:opacity-40">
+      {children}
+    </button>
   );
 }
 
@@ -214,6 +362,8 @@ function BridgeCard({ status, onDone }: { status: Status | null | undefined; onD
   const live = useMemo(() => (wallets.data?.wallets ?? []).filter((w) => !w.archived), [wallets.data]);
   const balOf = (a: string) => Number(balances.data?.[a] ?? live.find((w) => w.address === a)?.sol ?? 0);
   const [from, setFrom] = useState("");
+  const [toPick, setToPick] = useState("");
+  const dest = toPick || status?.wallets.find((w) => w.main)?.address || status?.address || "";
   const [amount, setAmount] = useState("");
   const [quote, setQuote] = useState<Quote | null>(null);
   const [qErr, setQErr] = useState<string | null>(null);
@@ -229,7 +379,7 @@ function BridgeCard({ status, onDone }: { status: Status | null | undefined; onD
     const t = setTimeout(async () => {
       setQuoting(true);
       try {
-        const q = await post<Quote>("/api/robinhood/bridge/quote", { from: source, sol: amount.replace(",", ".") });
+        const q = await post<Quote>("/api/robinhood/bridge/quote", { from: source, sol: amount.replace(",", "."), to: dest });
         if (my === seq.current) {
           setQuote(q);
           setQErr(null);
@@ -244,7 +394,7 @@ function BridgeCard({ status, onDone }: { status: Status | null | undefined; onD
       }
     }, 500);
     return () => clearTimeout(t);
-  }, [source, amount, amt]);
+  }, [source, amount, amt, dest]);
 
   const bal = source ? balOf(source) : 0;
   const tooMuch = amt > 0 && amt + BRIDGE_KEEP > bal + 1e-12;
@@ -254,7 +404,7 @@ function BridgeCard({ status, onDone }: { status: Status | null | undefined; onD
     if (!shownQuote) return;
     setBusy(true);
     try {
-      await post("/api/robinhood/bridge", { from: source, sol: amount.replace(",", "."), seenOutWei: shownQuote.outWei });
+      await post("/api/robinhood/bridge", { from: source, sol: amount.replace(",", "."), seenOutWei: shownQuote.outWei, to: dest });
       toast(`Deposit confirmed on Solana — ETH arriving on Robinhood (~${shownQuote.seconds}s).`, "ok");
       setAmount("");
       setQuote(null);
@@ -282,6 +432,17 @@ function BridgeCard({ status, onDone }: { status: Status | null | undefined; onD
           </BxSelect>
         </div>
         <div>
+          <BxLabel>To (Robinhood wallet)</BxLabel>
+          <BxSelect value={dest} onChange={(e) => setToPick(e.target.value)}>
+            {(status?.wallets ?? []).map((w) => (
+              <option key={w.address} value={w.address}>
+                {walletLabel(w)}
+                {w.main ? " · main" : ""}
+              </option>
+            ))}
+          </BxSelect>
+        </div>
+        <div>
           <div className="mb-1.5 flex items-center justify-between">
             <BxLabel className="mb-0">Amount (SOL)</BxLabel>
             <div className="flex items-center gap-1">
@@ -300,7 +461,6 @@ function BridgeCard({ status, onDone }: { status: Status | null | undefined; onD
           <BxInput inputMode="decimal" placeholder="0.1" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </div>
         <div className="flex flex-col gap-1.5 rounded-md border border-line-100 bg-bg-100 px-3 py-2.5 text-xs">
-          <Row k="To" v={status ? short(status.address, 6, 6) + " (Robinhood wallet)" : "—"} />
           <Row k="You receive" v={shownQuote ? `${eth(shownQuote.outWei, 6)} ETH${shownQuote.outUsd !== null ? ` · ${usd(shownQuote.outUsd, 2)}` : ""}` : quoting ? "quoting…" : "—"} strong />
           <Row k="Minimum" v={shownQuote ? `${eth(shownQuote.minOutWei, 6)} ETH` : "—"} />
           <Row k="Cost" v={shownQuote ? `${shownQuote.impactPct !== null ? `${Math.abs(shownQuote.impactPct).toFixed(2)} %` : "—"} · ~${shownQuote.seconds}s` : "—"} />
@@ -399,13 +559,15 @@ function LaunchCard({ status, onDone }: { status: Status | null | undefined; onD
     }
   };
   const dev = Number(form.devBuyEth.replace(",", ".")) || 0;
-  const bal = status ? Number(status.balanceWei) / 1e18 : 0;
+  const [walletPick, setWalletPick] = useState("");
+  const launcher = status?.wallets.find((w) => w.address === walletPick) ?? status?.wallets.find((w) => w.main);
+  const bal = launcher?.balanceWei ? Number(launcher.balanceWei) / 1e18 : 0;
   const need = 0.0005 + dev;
   const launch = async () => {
     setBusy(true);
     setErr(null);
     try {
-      const r = await post<{ token: string; symbol: string }>("/api/robinhood/launch", { ...form, imageDataUrl: image });
+      const r = await post<{ token: string; symbol: string }>("/api/robinhood/launch", { ...form, imageDataUrl: image, wallet: launcher?.address });
       toast(`$${r.symbol} launched on Robinhood: ${short(r.token, 6, 4)}`, "ok");
       setForm((f) => ({ ...f, name: "", symbol: "", description: "" }));
       setImage("");
@@ -473,6 +635,17 @@ function LaunchCard({ status, onDone }: { status: Status | null | undefined; onD
             <BxInput value={form.telegram} onChange={(e) => set("telegram", e.target.value)} placeholder="Telegram link" />
             <BxInput value={form.website} onChange={(e) => set("website", e.target.value)} placeholder="Website" />
           </div>
+          <div>
+            <BxLabel>Launch from (dev wallet, receives the creator fees)</BxLabel>
+            <BxSelect value={launcher?.address ?? ""} onChange={(e) => setWalletPick(e.target.value)}>
+              {(status?.wallets ?? []).map((w) => (
+                <option key={w.address} value={w.address}>
+                  {walletLabel(w)}
+                  {w.main ? " · main" : ""}
+                </option>
+              ))}
+            </BxSelect>
+          </div>
           <div className="grid grid-cols-2 gap-2">
             <div>
               <BxLabel>Dev buy (ETH)</BxLabel>
@@ -509,7 +682,8 @@ function LaunchCard({ status, onDone }: { status: Status | null | undefined; onD
 function LaunchesCard({ status, onDone, usdOf }: { status: Status | null | undefined; onDone: () => void; usdOf: (e: number | null) => string }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [buyAmt, setBuyAmt] = useState<Record<string, string>>({});
-  const escrow = status?.escrowWei ? Number(status.escrowWei) / 1e18 : 0;
+  const escrow = status ? Number(status.totalEscrowWei) / 1e18 : 0;
+  const labelOf = (a: string) => status?.wallets.find((w) => w.address.toLowerCase() === a.toLowerCase())?.label ?? short(a);
   const act = async (key: string, fn: () => Promise<string>) => {
     setBusy(key);
     try {
@@ -530,9 +704,7 @@ function LaunchesCard({ status, onDone, usdOf }: { status: Status | null | undef
         <span className="flex items-center gap-2 text-xs">
           <span className="text-text-300">Creator fees</span>
           <span className="font-mono text-text-100">{ethNum(escrow, 6)} ETH</span>
-          <BxButton size="sm" disabled={!(escrow > 0) || busy === "claim"} onClick={() => act("claim", async () => `Claimed ${eth((await post<{ amountWei: string }>("/api/robinhood/claim", {})).amountWei, 6)} ETH`)}>
-            <Gift className="h-3.5 w-3.5" /> Claim
-          </BxButton>
+          <span className="text-text-300">· claim in Wallets</span>
         </span>
       }
       bodyClassName="px-5 pb-5"
@@ -559,7 +731,7 @@ function LaunchesCard({ status, onDone, usdOf }: { status: Status | null | undef
                       </div>
                       <div className="flex items-center gap-2">
                         <Copyable text={p.token} label={short(p.token, 6, 4)} />
-                        <span className="text-[11px] text-text-300">{age(p.at)}</span>
+                        <span className="text-[11px] text-text-300">{labelOf(p.dev)} · {age(p.at)}</span>
                       </div>
                     </div>
                   </div>
@@ -618,35 +790,111 @@ function Stat({ k, v, sub, tone }: { k: string; v: string; sub?: string; tone?: 
 
 /* ------------------------------------------------------------------ modals */
 
-function ExportModal({ onClose }: { onClose: () => void }) {
+function useAction() {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await fn();
+    } catch (e) {
+      setErr(failureMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { busy, err, run };
+}
+
+function CreateModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [count, setCount] = useState("1");
+  const [label, setLabel] = useState("");
+  const { busy, err, run } = useAction();
+  const n = Math.round(Number(count));
+  return (
+    <BxModal open onClose={onClose} title="Create Robinhood wallets" width={440}>
+      <div className="flex flex-col gap-3 p-4">
+        <div className="grid grid-cols-[100px_minmax(0,1fr)] gap-2">
+          <div>
+            <BxLabel>How many</BxLabel>
+            <BxInput inputMode="numeric" value={count} onChange={(e) => setCount(e.target.value.replace(/[^0-9]/g, ""))} />
+          </div>
+          <div>
+            <BxLabel>Name (optional)</BxLabel>
+            <BxInput value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Robinhood" />
+          </div>
+        </div>
+        <p className="text-[11px] text-text-300">New keys go into eth-wallet.enc.json (encrypted with the vault passphrase); a dated backup is made first.</p>
+        {err ? <p className="text-xs text-decrease">{err}</p> : null}
+        <BxButton
+          variant="primary"
+          disabled={busy || !(n >= 1 && n <= 50)}
+          onClick={() =>
+            run(async () => {
+              await post("/api/robinhood/wallets", { action: "create", count: n, label });
+              toast(`${n} Robinhood wallet${n > 1 ? "s" : ""} created`, "ok");
+              onDone();
+              onClose();
+            })
+          }
+        >
+          {busy ? "Creating…" : `Create ${n >= 1 ? n : ""} wallet${n > 1 ? "s" : ""}`}
+        </BxButton>
+      </div>
+    </BxModal>
+  );
+}
+
+function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [keys, setKeys] = useState("");
+  const [skipped, setSkipped] = useState<string[]>([]);
+  const { busy, err, run } = useAction();
+  return (
+    <BxModal open onClose={onClose} title="Import Robinhood wallets" width={520}>
+      <div className="flex flex-col gap-3 p-4">
+        <BxLabel className="mb-0">Private keys — one per line, optional name before the key</BxLabel>
+        <BxTextarea rows={6} value={keys} onChange={(e) => setKeys(e.target.value)} placeholder={"main 0xabc…\n0xdef…"} className="font-mono text-xs" />
+        {skipped.length ? <p className="text-[11px] text-text-300">{skipped.join(" · ")}</p> : null}
+        {err ? <p className="text-xs text-decrease">{err}</p> : null}
+        <BxButton
+          variant="primary"
+          disabled={busy || !keys.trim()}
+          onClick={() =>
+            run(async () => {
+              const r = await post<{ imported: number; skipped: string[] }>("/api/robinhood/wallets", { action: "import", keys });
+              setSkipped(r.skipped);
+              if (r.imported) {
+                toast(`${r.imported} wallet${r.imported > 1 ? "s" : ""} imported`, "ok");
+                onDone();
+                if (!r.skipped.length) onClose();
+              }
+            })
+          }
+        >
+          {busy ? "Importing…" : "Import"}
+        </BxButton>
+      </div>
+    </BxModal>
+  );
+}
+
+function ExportModal({ address, onClose }: { address: string; onClose: () => void }) {
   const [pass, setPass] = useState("");
   const [key, setKey] = useState<{ address: string; privateKey: string; path: string } | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const { busy, err, run } = useAction();
+  const reveal = () => run(async () => setKey(await post("/api/robinhood/export", { passphrase: pass, address })));
   return (
     <BxModal open onClose={onClose} title="Export Robinhood key" width={480}>
       <div className="flex flex-col gap-3 p-4">
         {!key ? (
           <>
-            <p className="text-xs text-text-300">Your vault passphrase decrypts the key. Anyone with it controls the wallet.</p>
-            <BxInput type="password" autoFocus value={pass} onChange={(e) => setPass(e.target.value)} placeholder="Vault passphrase" onKeyDown={(e) => e.key === "Enter" && pass && document.getElementById("rh-export-go")?.click()} />
+            <p className="text-xs text-text-300">
+              {short(address, 6, 6)} — your vault passphrase decrypts the key. Anyone with it controls the wallet.
+            </p>
+            <BxInput type="password" autoFocus value={pass} onChange={(e) => setPass(e.target.value)} placeholder="Vault passphrase" onKeyDown={(e) => e.key === "Enter" && pass && void reveal()} />
             {err ? <p className="text-xs text-decrease">{err}</p> : null}
-            <BxButton
-              id="rh-export-go"
-              variant="primary"
-              disabled={!pass || busy}
-              onClick={async () => {
-                setBusy(true);
-                setErr(null);
-                try {
-                  setKey(await post("/api/robinhood/export", { passphrase: pass }));
-                } catch (e) {
-                  setErr(failureMessage(e));
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
+            <BxButton variant="primary" disabled={!pass || busy} onClick={() => void reveal()}>
               Reveal key
             </BxButton>
           </>
@@ -655,7 +903,7 @@ function ExportModal({ onClose }: { onClose: () => void }) {
             <BxLabel>Address</BxLabel>
             <Copyable text={key.address} />
             <BxLabel>Private key</BxLabel>
-            <div className="rounded-md border border-line-100 bg-bg-100 px-3 py-2 break-all">
+            <div className="break-all rounded-md border border-line-100 bg-bg-100 px-3 py-2">
               <Copyable text={key.privateKey} />
             </div>
             <p className="text-[11px] text-text-300">Imports into MetaMask / Rabby as a private key. Encrypted copy: {key.path}</p>
@@ -666,23 +914,46 @@ function ExportModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function WithdrawModal({ onClose, balanceWei, onDone }: { onClose: () => void; balanceWei: string; onDone: () => void }) {
-  const [to, setTo] = useState("");
+function SendModal({ from: initialFrom, wallets, onClose, onDone }: { from: string; wallets: RhWallet[]; onClose: () => void; onDone: () => void }) {
+  const [from, setFrom] = useState(initialFrom);
+  const [target, setTarget] = useState(wallets.find((w) => w.address !== initialFrom)?.address ?? "other");
+  const [custom, setCustom] = useState("");
   const [amount, setAmount] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const { busy, err, run } = useAction();
+  const src = wallets.find((w) => w.address === from);
+  const to = target === "other" ? custom.trim() : target;
   return (
-    <BxModal open onClose={onClose} title="Withdraw ETH (Robinhood Chain)" width={480}>
+    <BxModal open onClose={onClose} title="Send ETH (Robinhood Chain)" width={480}>
       <div className="flex flex-col gap-3 p-4">
         <div>
-          <BxLabel>To (0x address on Robinhood Chain)</BxLabel>
-          <BxInput value={to} onChange={(e) => setTo(e.target.value.trim())} placeholder="0x…" />
+          <BxLabel>From</BxLabel>
+          <BxSelect value={from} onChange={(e) => setFrom(e.target.value)}>
+            {wallets.map((w) => (
+              <option key={w.address} value={w.address}>
+                {walletLabel(w)}
+              </option>
+            ))}
+          </BxSelect>
+        </div>
+        <div>
+          <BxLabel>To</BxLabel>
+          <BxSelect value={target} onChange={(e) => setTarget(e.target.value)}>
+            {wallets
+              .filter((w) => w.address !== from)
+              .map((w) => (
+                <option key={w.address} value={w.address}>
+                  {walletLabel(w)}
+                </option>
+              ))}
+            <option value="other">Another address…</option>
+          </BxSelect>
+          {target === "other" ? <BxInput className="mt-2" value={custom} onChange={(e) => setCustom(e.target.value.trim())} placeholder="0x…" /> : null}
         </div>
         <div>
           <div className="mb-1.5 flex items-center justify-between">
             <BxLabel className="mb-0">Amount (ETH)</BxLabel>
             <button type="button" onClick={() => setAmount("max")} className="text-[11px] text-text-300 hover:text-text-100">
-              Max ({eth(balanceWei, 6)})
+              Max ({eth(src?.balanceWei ?? "0", 6)})
             </button>
           </div>
           <BxInput inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.01" />
@@ -690,21 +961,15 @@ function WithdrawModal({ onClose, balanceWei, onDone }: { onClose: () => void; b
         {err ? <p className="text-xs text-decrease">{err}</p> : null}
         <BxButton
           variant="primary"
-          disabled={!/^0x[0-9a-fA-F]{40}$/.test(to) || !amount || busy}
-          onClick={async () => {
-            setBusy(true);
-            setErr(null);
-            try {
-              const r = await post<{ valueWei: string }>("/api/robinhood/withdraw", { to, amount });
+          disabled={!/^0x[0-9a-fA-F]{40}$/.test(to) || to.toLowerCase() === from.toLowerCase() || !amount || busy}
+          onClick={() =>
+            run(async () => {
+              const r = await post<{ valueWei: string }>("/api/robinhood/withdraw", { from, to, amount: amount.replace(",", ".") });
               toast(`Sent ${eth(r.valueWei, 6)} ETH`, "ok");
               onDone();
               onClose();
-            } catch (e) {
-              setErr(failureMessage(e));
-            } finally {
-              setBusy(false);
-            }
-          }}
+            })
+          }
         >
           {busy ? "Sending…" : "Send"}
         </BxButton>

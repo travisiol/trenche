@@ -16,7 +16,7 @@ import { requireUnlocked } from "../engine";
 import { fetchUriJson } from "../metadata";
 import { logActivity, readJson, store, writeJson } from "../store";
 import { CURVE_ABI, ERC20_ABI, ESCROW_ABI, FACTORY_ABI, LAUNCH_AND_BUY_ABI, PONS, ZERO, ethUsd, rhPublic, rhWallet } from "./chain";
-import { evmAccount, rhDir } from "./wallet";
+import { evmAccount, evmWallets, rhDir, type EvmWallet } from "./wallet";
 
 export type RhLaunch = {
   token: string;
@@ -27,6 +27,8 @@ export type RhLaunch = {
   image: string | null;
   txHash: string;
   at: number;
+  /** the Robinhood wallet that launched it (creator fees go there); missing on records older than multi-wallet = main */
+  dev?: string;
   devBuyWei: string;
   /** ETH spent on buys (dev buy included) / received from sells by the dev wallet through DONCHAIN */
   spentWei: string;
@@ -100,6 +102,8 @@ export type RhLaunchRequest = {
   website?: string;
   devBuyEth?: string | number;
   creatorTaxBps?: number;
+  /** launching Robinhood wallet (main by default) */
+  wallet?: string;
 };
 
 export async function rhLaunch(req: RhLaunchRequest): Promise<RhLaunch> {
@@ -122,7 +126,7 @@ export async function rhLaunch(req: RhLaunchRequest): Promise<RhLaunch> {
   if (!Number.isFinite(taxBps) || taxBps < 0 || taxBps > 1000) throw new HttpError(400, "Creator tax: 0–10 %.");
   const url = (s?: string) => String(s ?? "").trim().slice(0, 200);
 
-  const acct = evmAccount();
+  const acct = evmAccount(req.wallet || null);
   const pub = rhPublic();
   const [fee, pin, allowed] = await Promise.all([
     pub.readContract({ address: PONS.factory, abi: FACTORY_ABI, functionName: "launchFee" }),
@@ -187,6 +191,7 @@ export async function rhLaunch(req: RhLaunchRequest): Promise<RhLaunch> {
     image,
     txHash: hash,
     at: Date.now(),
+    dev: acct.address,
     devBuyWei: devBuy.toString(),
     spentWei: devBuy.toString(),
     receivedWei: "0",
@@ -201,7 +206,7 @@ export async function rhLaunch(req: RhLaunchRequest): Promise<RhLaunch> {
 
 const SLIPPAGE_BPS = BigInt(2000);
 
-export async function rhBuy(token: string, ethAmount: string): Promise<{ hash: string; tokensOut: string }> {
+export async function rhBuy(token: string, ethAmount: string, wallet?: string | null): Promise<{ hash: string; tokensOut: string }> {
   requireUnlocked();
   const l = findLaunch(token);
   let quoteIn: bigint;
@@ -211,7 +216,7 @@ export async function rhBuy(token: string, ethAmount: string): Promise<{ hash: s
     throw new HttpError(400, "Amount: ETH (e.g. 0.01).");
   }
   if (quoteIn <= BigInt(0)) throw new HttpError(400, "Amount must be above 0.");
-  const acct = evmAccount();
+  const acct = evmAccount(wallet || l.dev || null);
   const pub = rhPublic();
   const curve = l.curve as `0x${string}`;
   const [[q, t], feeBps, graduated] = await Promise.all([
@@ -237,12 +242,12 @@ export async function rhBuy(token: string, ethAmount: string): Promise<{ hash: s
   return { hash, tokensOut: (ev?.args.tokensOut ?? sim.result).toString() };
 }
 
-export async function rhSell(token: string, percent: number): Promise<{ hash: string; ethOut: string }> {
+export async function rhSell(token: string, percent: number, fromWallet?: string | null): Promise<{ hash: string; ethOut: string }> {
   requireUnlocked();
   const l = findLaunch(token);
   const pct = Math.round(Number(percent));
   if (!(pct >= 1 && pct <= 100)) throw new HttpError(400, "Percent: 1–100.");
-  const acct = evmAccount();
+  const acct = evmAccount(fromWallet || l.dev || null);
   const pub = rhPublic();
   const tok = l.token as `0x${string}`;
   const curve = l.curve as `0x${string}`;
@@ -281,9 +286,9 @@ export async function rhSell(token: string, percent: number): Promise<{ hash: st
   return { hash, ethOut: out.toString() };
 }
 
-export async function rhClaim(): Promise<{ hash: string; amountWei: string }> {
+export async function rhClaim(wallet?: string | null): Promise<{ hash: string; amountWei: string }> {
   requireUnlocked();
-  const acct = evmAccount();
+  const acct = evmAccount(wallet || null);
   const pub = rhPublic();
   const pending = await pub.readContract({ address: PONS.feeEscrow, abi: ESCROW_ABI, functionName: "balanceOf", args: [acct.address] });
   if (pending <= BigInt(0)) throw new HttpError(400, "No creator fees in the Pons escrow yet (Pons sweeps them from the curves from time to time).");
@@ -297,10 +302,11 @@ export async function rhClaim(): Promise<{ hash: string; amountWei: string }> {
 }
 
 /** send ETH from the Robinhood wallet ("max" = everything minus the gas) */
-export async function rhWithdraw(to: string, amount: string): Promise<{ hash: string; valueWei: string }> {
+export async function rhWithdraw(to: string, amount: string, from?: string | null): Promise<{ hash: string; valueWei: string }> {
   requireUnlocked();
   if (!isAddress(to)) throw new HttpError(400, "Destination: an 0x address.");
-  const acct = evmAccount();
+  const acct = evmAccount(from || null);
+  if (acct.address.toLowerCase() === to.toLowerCase()) throw new HttpError(400, "Same wallet on both sides.");
   const pub = rhPublic();
   const bal = await pub.getBalance({ address: acct.address });
   const gas = BigInt(21_000);
@@ -319,13 +325,14 @@ export async function rhWithdraw(to: string, amount: string): Promise<{ hash: st
   if (bal < value + gas * maxFee) throw new HttpError(400, `The Robinhood wallet holds ${ethStr(bal)} ETH. Nothing was sent.`);
   const hash = await rhWallet(acct).sendTransaction({ account: acct, chain: rhWallet(acct).chain, to: getAddress(to), value, gas, maxFeePerGas: maxFee, maxPriorityFeePerGas: BigInt(0) });
   await receiptOf(hash);
-  logActivity(store(), { kind: "fund", ok: true, message: `Robinhood withdraw: ${ethStr(value)} ETH → ${to.slice(0, 8)}….`, data: { chain: "robinhood", tx: hash } });
+  logActivity(store(), { kind: "fund", ok: true, message: `Robinhood send: ${ethStr(value)} ETH ${acct.address.slice(0, 8)}… → ${to.slice(0, 8)}….`, data: { chain: "robinhood", tx: hash } });
   return { hash, valueWei: value.toString() };
 }
 
 /* ------------------------------------------------------------------ status */
 
 export type RhPosition = RhLaunch & {
+  dev: string;
   balance: string;
   priceEth: number | null;
   mcapEth: number | null;
@@ -335,12 +342,12 @@ export type RhPosition = RhLaunch & {
   pnlEth: number | null;
 };
 
-export async function rhPositions(address: `0x${string}`): Promise<RhPosition[]> {
+export async function rhPositions(mainAddr: `0x${string}`): Promise<RhPosition[]> {
   const list = launches();
   if (!list.length) return [];
   const pub = rhPublic();
   const calls = list.flatMap((l) => [
-    { address: l.token as `0x${string}`, abi: ERC20_ABI, functionName: "balanceOf", args: [address] },
+    { address: l.token as `0x${string}`, abi: ERC20_ABI, functionName: "balanceOf", args: [(l.dev ?? mainAddr) as `0x${string}`] },
     { address: l.curve as `0x${string}`, abi: CURVE_ABI, functionName: "getReserves" },
     { address: l.curve as `0x${string}`, abi: CURVE_ABI, functionName: "graduated" },
     { address: l.curve as `0x${string}`, abi: CURVE_ABI, functionName: "realQuoteReserve" },
@@ -357,6 +364,7 @@ export async function rhPositions(address: `0x${string}`): Promise<RhPosition[]>
     const thr = r[4] as bigint | null;
     return {
       ...l,
+      dev: l.dev ?? mainAddr,
       balance: bal.toString(),
       priceEth: price,
       mcapEth: price !== null ? price * 1e9 : null,
@@ -368,15 +376,39 @@ export async function rhPositions(address: `0x${string}`): Promise<RhPosition[]>
   });
 }
 
+const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
+const GET_ETH_BALANCE_ABI = [{ type: "function", name: "getEthBalance", stateMutability: "view", inputs: [{ name: "addr", type: "address" }], outputs: [{ type: "uint256" }] }] as const;
+
+export type RhWalletView = EvmWallet & { balanceWei: string | null; escrowWei: string | null; launches: number };
+
+/** every Robinhood wallet with its ETH and its creator fees waiting in the Pons escrow (one multicall) */
+export async function rhWallets(): Promise<RhWalletView[]> {
+  const list = evmWallets();
+  const calls = list.flatMap((w) => [
+    { address: MULTICALL3, abi: GET_ETH_BALANCE_ABI, functionName: "getEthBalance", args: [w.address] },
+    { address: PONS.feeEscrow, abi: ESCROW_ABI, functionName: "balanceOf", args: [w.address] },
+  ]);
+  const res = (await rhPublic()
+    .multicall({ contracts: calls as never, allowFailure: true })
+    .catch(() => [])) as { status: "success" | "failure"; result?: unknown }[];
+  const main = list.find((w) => w.main)?.address.toLowerCase();
+  return list.map((w, i) => {
+    const b = res[i * 2];
+    const e = res[i * 2 + 1];
+    return {
+      ...w,
+      balanceWei: b?.status === "success" ? String(b.result) : null,
+      escrowWei: e?.status === "success" ? String(e.result) : null,
+      launches: launches().filter((l) => (l.dev ?? main)?.toLowerCase() === w.address.toLowerCase()).length,
+    };
+  });
+}
+
 export async function rhStatus() {
   requireUnlocked();
   const acct = evmAccount();
-  const pub = rhPublic();
-  const [balance, escrow, usd, positions] = await Promise.all([
-    pub.getBalance({ address: acct.address }),
-    pub.readContract({ address: PONS.feeEscrow, abi: ESCROW_ABI, functionName: "balanceOf", args: [acct.address] }).catch(() => null),
-    ethUsd(),
-    rhPositions(acct.address).catch(() => [] as RhPosition[]),
-  ]);
-  return { address: acct.address, balanceWei: balance.toString(), escrowWei: escrow?.toString() ?? null, ethUsd: usd, positions };
+  const [wallets, usd, positions] = await Promise.all([rhWallets(), ethUsd(), rhPositions(acct.address).catch(() => [] as RhPosition[])]);
+  const main = wallets.find((w) => w.main);
+  const sum = (k: "balanceWei" | "escrowWei") => wallets.reduce((t, w) => t + BigInt(w[k] ?? "0"), BigInt(0)).toString();
+  return { address: acct.address, balanceWei: main?.balanceWei ?? "0", escrowWei: main?.escrowWei ?? null, totalWei: sum("balanceWei"), totalEscrowWei: sum("escrowWei"), ethUsd: usd, wallets, positions };
 }

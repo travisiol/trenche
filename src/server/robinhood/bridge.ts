@@ -9,7 +9,7 @@ import { sendAndConfirm } from "@/engine/solana/send.js";
 import { HttpError, solString } from "../api";
 import { readConn, requireUnlocked, sendConn } from "../engine";
 import { logActivity, readJson, store, writeJson } from "../store";
-import { evmAccount, rhDir } from "./wallet";
+import { evmAccount, evmIsOwn, rhDir } from "./wallet";
 
 const RELAY = "https://api.relay.link";
 const SOLANA_ID = 792703809;
@@ -128,17 +128,23 @@ async function checkSource(from: string, lamports: bigint): Promise<void> {
     throw new HttpError(400, `${from.slice(0, 6)}… holds ${solString(bal)} SOL: bridging ${solString(lamports)} needs ${solString(lamports + BRIDGE_KEEP_LAMPORTS)} (0.001 SOL stays for rent + fee). Nothing was sent.`);
 }
 
-export async function bridgeQuote(from: string, lamports: bigint): Promise<BridgeQuote> {
+/** destination: one of the Robinhood wallets (the main one by default) */
+function destination(to?: string | null): string {
+  if (to && !evmIsOwn(to)) throw new HttpError(400, "Destination: one of your Robinhood wallets.");
+  return evmAccount(to).address;
+}
+
+export async function bridgeQuote(from: string, lamports: bigint, toWallet?: string | null): Promise<BridgeQuote> {
   requireUnlocked();
-  const to = evmAccount().address;
+  const to = destination(toWallet);
   return (await relayQuote(from, to, lamports)).quote;
 }
 
 /** sign + send Relay's deposit from the vault wallet, then follow the fill in the background */
-export async function bridgeExecute(from: string, lamports: bigint, seenOutWei: bigint | null): Promise<BridgeRecord> {
+export async function bridgeExecute(from: string, lamports: bigint, seenOutWei: bigint | null, toWallet?: string | null): Promise<BridgeRecord> {
   requireUnlocked();
   const st = store();
-  const to = evmAccount().address;
+  const to = destination(toWallet);
   await checkSource(from, lamports);
   const { quote, steps } = await relayQuote(from, to, lamports);
   // the quote moved by more than 3 % since the one on screen: show the new one instead of sending
