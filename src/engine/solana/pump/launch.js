@@ -59,7 +59,9 @@ export async function prepareLaunch(
     o = new PublicKey(TOKEN_2022_PROGRAM),
     { blockhash: i, lastValidBlockHeight: s } = await latestBlockhash(t),
     c = n.slippageBps ?? 1e3,
-    l = r.reduce((P, D) => Math.max(P, D.cuPrice ?? n.cuPrice), n.cuPrice) * CREATE_CU_PRICE_MULT,
+    // the create must outrank its own buys (a buy scheduled before it fails): ×3 the base price, and ≥ 1.5× the
+    // highest buy price (bundle buys at 10 M → create at 15 M, not 30 M)
+    l = Math.max(n.cuPrice * CREATE_CU_PRICE_MULT, Math.ceil(r.reduce((P, D) => Math.max(P, D.cuPrice ?? n.cuPrice), 0) * 1.5)),
     u = {
       label: "dev",
       signer: e.dev,
@@ -90,7 +92,8 @@ export async function prepareLaunch(
     U = (q, F, j) => {
       const signers = r.slice(0, j).map(x => x.signer),
         M = [
-          ComputeBudgetProgram.setComputeUnitLimit({ units: (hasDevBuy ? 5e5 : 3e5) + j * 13e4 }),
+          // priority is paid on the LIMIT: measured create + dev buy 187-193 k CU, + ~86 k per inline buyer (devnet, 2026-10-06)
+          ComputeBudgetProgram.setComputeUnitLimit({ units: (hasDevBuy ? 26e4 : 15e4) + j * 12e4 }),
           ComputeBudgetProgram.setComputeUnitPrice({ microLamports: l }),
           createV2Instruction({ mint: a.publicKey, user: e.dev.publicKey, creator: e.dev.publicKey, name: e.name, symbol: e.symbol, uri: q, cashback: e.cashback }),
           ...(F ? [tipInstruction(e.dev.publicKey, n.tipLamports, void 0, !!n.jitoTip)] : []),

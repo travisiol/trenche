@@ -38,6 +38,8 @@ export type StoredSettings = {
   autoClaimRewards: boolean;
   slippageBps: number;
   cuPrice: number;
+  /** launch buys racing the snipers (bundle wallets in their own tx, sniper tasks), µL/CU — the create goes ×1.5 above */
+  launchCuPrice: number;
   tipSol: string;
   presets: [string, string, string];
   /** Block X Trading Presets P1..P3 */
@@ -118,6 +120,9 @@ const DEFAULT_SETTINGS: StoredSettings = {
   autoClaimRewards: true,
   slippageBps: 1000,
   cuPrice: 2_000_000,
+  // 2026-10-06, his 16 launches: external buys landing in the create's block paid 3.3 M µL/CU median (max 55 M);
+  // ours paid 2 M and mostly landed one block late. 10 M ≈ 0.0013 SOL per buy (130 k CU limit)
+  launchCuPrice: 10_000_000,
   tipSol: DEFAULT_TIP_SOL,
   presets: ["0.1", "0.2", "0.5"],
   tradingPresets: TRADING_PRESET_DEFAULTS,
@@ -349,6 +354,7 @@ export function publicSettings(s: StoredSettings): Settings {
     autoClaimRewards: s.autoClaimRewards !== false,
     slippageBps: s.slippageBps,
     cuPrice: s.cuPrice,
+    launchCuPrice: s.launchCuPrice ?? 10_000_000,
     tipSol: s.tipSol,
     presets: s.presets,
     // a Store singleton built by an older version of this module (HMR) has no tradingPresets yet

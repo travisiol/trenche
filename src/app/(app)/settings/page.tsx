@@ -182,7 +182,7 @@ function Workspace() {
 }
 
 function WorkspaceForm({ initial }: { initial: Settings }) {
-  const [f, setF] = useState<SettingsUpdateRequest>({ cluster: initial.cluster, rpcUrl: initial.rpcUrl, sendRpcUrl: initial.sendRpcUrl, jitoEnabled: initial.jitoEnabled, autoClaimRewards: initial.autoClaimRewards !== false, slippageBps: initial.slippageBps, cuPrice: initial.cuPrice, tipSol: initial.tipSol });
+  const [f, setF] = useState<SettingsUpdateRequest>({ cluster: initial.cluster, rpcUrl: initial.rpcUrl, sendRpcUrl: initial.sendRpcUrl, jitoEnabled: initial.jitoEnabled, autoClaimRewards: initial.autoClaimRewards !== false, slippageBps: initial.slippageBps, cuPrice: initial.cuPrice, launchCuPrice: initial.launchCuPrice, tipSol: initial.tipSol });
   const [pumpKey, setPumpKey] = useState("");
   const [heliusKey, setHeliusKey] = useState("");
   const [clearPump, setClearPump] = useState(false);
@@ -263,6 +263,9 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
         </Row>
         <Row title="Priority fee (µL per CU)" desc="Micro-lamports per compute unit.">
           <BxInput type="number" min={0} value={f.cuPrice ?? 0} onChange={(e) => set("cuPrice", Number(e.target.value))} className={num} />
+        </Row>
+        <Row title="Launch priority (µL per CU)" desc="Bundle wallets and snipers racing other bots into the create's block (10 M ≈ 0.0013 SOL per buy). The create pays 1.5× to stay first.">
+          <BxInput type="number" min={0} value={f.launchCuPrice ?? 0} onChange={(e) => set("launchCuPrice", Number(e.target.value))} className={num} />
         </Row>
         <Row title="Jito tip (SOL)" desc="Paid once per bundle.">
           <BxInput type="number" step="0.0001" min={0} value={f.tipSol ?? ""} onChange={(e) => set("tipSol", e.target.value)} className={num} />

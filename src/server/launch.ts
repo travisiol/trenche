@@ -584,7 +584,7 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   saveLaunches(st);
   track(st, mint);
   job.extra = { mint, mode, phase: "preparing" };
-  jobRun(job, async () => runLaunch(run, { pendingKeypair: pending.keypair, uri: pending.uri, devBuyLamports, slippageBps, cuPrice, bundleTip, jito, cashback: false, autoClaim, req })); // pump.fun rejects cashback coins since 2026-10 (create_v2 error 6082 CashbackDeprecated): the flag is never sent
+  jobRun(job, async () => runLaunch(run, { pendingKeypair: pending.keypair, uri: pending.uri, devBuyLamports, slippageBps, cuPrice, launchCuPrice: intIn(req.launchCuPrice, 0, 200_000_000, st.settings.launchCuPrice ?? 10_000_000), bundleTip, jito, cashback: false, autoClaim, req })); // pump.fun rejects cashback coins since 2026-10 (create_v2 error 6082 CashbackDeprecated): the flag is never sent
   return { jobId: job.id, id: mint, mint, mode, tasks: tasks.map((t) => ({ id: t.id, type: t.type })) };
 }
 
@@ -598,14 +598,14 @@ const TRACE_LIMIT = /MaxInstructionTraceLength|TooManyInstructionTrace|Instructi
 const sweeper = globalThis as unknown as { __trenchAltSweep?: ReturnType<typeof setInterval> };
 if (!sweeper.__trenchAltSweep) sweeper.__trenchAltSweep = setInterval(() => void sweepLaunchTables(readConn()).catch(() => null), 5 * 60_000);
 
-type RunOpts = { pendingKeypair: import("@solana/web3.js").Keypair; uri: string; devBuyLamports: bigint; slippageBps: number; cuPrice: number; bundleTip: bigint; /** atomic Jito bundle (Settings → Jito on) */ jito: boolean; cashback: boolean; autoClaim: { minSol: string; intervalSec: number } | null; req: LaunchExecuteRequest };
+type RunOpts = { pendingKeypair: import("@solana/web3.js").Keypair; uri: string; devBuyLamports: bigint; slippageBps: number; cuPrice: number; /** bundle buys in their own tx + snipers (Settings → Launch priority) */ launchCuPrice: number; bundleTip: bigint; /** atomic Jito bundle (Settings → Jito on) */ jito: boolean; cashback: boolean; autoClaim: { minSol: string; intervalSec: number } | null; req: LaunchExecuteRequest };
 
 async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   const st = store();
   const { mint, dev } = run.state;
   const conn = readConn();
   const bundleTasks = run.tasks.filter((t): t is Extract<NormTask, { type: "bundle" }> => t.type === "bundle");
-  const bundleRows: BuyRow[] = bundleTasks.flatMap((t) => t.wallets.map((w) => ({ label: w.slice(0, 6), signer: st.sol.keypair(w), solIn: t.amounts.get(w)!, cuPrice: o.cuPrice })));
+  const bundleRows: BuyRow[] = bundleTasks.flatMap((t) => t.wallets.map((w) => ({ label: w.slice(0, 6), signer: st.sol.keypair(w), solIn: t.amounts.get(w)!, cuPrice: o.launchCuPrice })));
   const rowAddr = bundleTasks.flatMap((t) => t.wallets);
   const retries = bundleTasks.length ? Math.max(...bundleTasks.map((t) => t.autoRetryCount)) : 0;
   const devnet = isDevnet(st.settings);
@@ -821,7 +821,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
 
   // snipers: buys right after the create, min/max delay between wallets, retries on the failed ones, stop on activity
   const snipers = run.tasks.filter((t): t is Extract<NormTask, { type: "sniper" }> => t.type === "sniper" && t.autoStart);
-  await Promise.all(snipers.map((t) => runSniper(run, t, o.cuPrice)));
+  await Promise.all(snipers.map((t) => runSniper(run, t, o.launchCuPrice)));
   saveLaunches(st);
 
   // buy / volume loops (+ stop on activity)

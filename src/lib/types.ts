@@ -303,6 +303,8 @@ export type Settings = {
   slippageBps: number;
   /** priority fee, micro-lamports per CU */
   cuPrice: number;
+  /** launch priority (bundle wallets not inside the create, sniper tasks), µL/CU — default 10 M; the create pays 1.5× */
+  launchCuPrice: number;
   /** default Jito tip in SOL (decimal string) — DEFAULT_TIP_SOL (0.0002) */
   tipSol: string;
   /** legacy quick-buy amounts P1..P3 in SOL (decimal strings) = tradingPresets[n].buyAmounts[0]; kept for the old UI */
@@ -929,6 +931,8 @@ export type LaunchExecuteRequest = {
   autoClaim?: AutoClaimRequestConfig;
   slippageBps?: number;
   cuPrice?: number;
+  /** bundle buys in their own tx + snipers, µL/CU (default Settings.launchCuPrice) */
+  launchCuPrice?: number;
   cashback?: boolean;
   /** the draft this launch came from: marked launched (row moves to the Launched tab) once the create confirms */
   draftId?: string;

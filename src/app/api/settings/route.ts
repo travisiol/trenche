@@ -71,6 +71,7 @@ export const POST = route(async (req: Request) => {
   if (body.autoClaimRewards !== undefined) s.autoClaimRewards = !!body.autoClaimRewards;
   if (body.slippageBps !== undefined) s.slippageBps = intIn(body.slippageBps, 0, 9000, 1000, "slippageBps");
   if (body.cuPrice !== undefined) s.cuPrice = intIn(body.cuPrice, 0, 50_000_000, 2_000_000, "cuPrice");
+  if (body.launchCuPrice !== undefined) s.launchCuPrice = intIn(body.launchCuPrice, 0, 200_000_000, 10_000_000, "launchCuPrice");
   if (body.tipSol !== undefined) s.tipSol = solString(lamportsOf(body.tipSol, "tipSol", true));
   if (body.presets !== undefined) {
     if (!Array.isArray(body.presets) || body.presets.length !== 3) throw new HttpError(400, "presets: exactly 3 SOL amounts.");
