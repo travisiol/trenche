@@ -1,6 +1,8 @@
 import { ComputeBudgetProgram, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction, type TransactionInstruction } from "@solana/web3.js";
 import { JITO_BUNDLE_TIP_ACCOUNTS } from "@/engine/solana/config.js";
 import { base58Encode } from "@/engine/solana/keys.js";
+import { buildBuyTx, planBuys, signWith } from "@/engine/solana/pump/math.js";
+import { bondingCurvePda, parseBondingCurve, tokenProgramFor } from "@/engine/solana/pump/pdas.js";
 import { JITO_BLOCK_ENGINES, jitoBundleStatus, latestBlockhash, submitJitoBundle } from "@/engine/solana/send.js";
 import { HttpError, json, readBody, route } from "@/server/api";
 import { readConn, requireUnlocked } from "@/server/engine";
@@ -15,7 +17,7 @@ export const maxDuration = 60;
  *  status, polled 30 s. Built to find why every launch bundle reported "Invalid" (2026-10-06). */
 export const POST = route(async (req: Request) => {
   requireUnlocked();
-  type Body = { wallet?: string; tipLamports?: number; /** one block engine only (e.g. https://ny.mainnet.block-engine.jito.wtf) */ region?: string; /** "two" (default): self-transfer then tip · "one": a single tx with both · "tx": the single tx via Jito's sendTransaction (control: not a bundle) */ mode?: "one" | "two" | "tx" };
+  type Body = { wallet?: string; tipLamports?: number; /** one block engine only (e.g. https://ny.mainnet.block-engine.jito.wtf) */ region?: string; /** "two" (default): self-transfer then tip · "one": a single tx with both · "tx": the single tx via Jito's sendTransaction (control: not a bundle) */ mode?: "one" | "two" | "tx" | "pumpbuy"; /** pumpbuy: a live pump.fun coin and the SOL (lamports) to buy */ mint?: string; lamports?: number };
   const body = await readBody<Body>(req).catch(() => ({}) as Body);
   const st = store();
   const bal = st.balances?.map ?? {};
@@ -34,14 +36,30 @@ export const POST = route(async (req: Request) => {
   const self = SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: kp.publicKey, lamports: 0 });
   const tipIx = SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: tipTo, lamports: tip });
   const mode = body.mode ?? "two";
-  const txs = mode === "two" ? [mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), self]), mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), tipIx])] : [mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 2000 }), self, tipIx])];
+  // pumpbuy: OUR pump.fun buy transaction (engine buildBuyTx, as a launch bundle builds it) then a tip-only tx — tells
+  // whether Jito drops our pump transactions or only our create
+  let pumpTxs: VersionedTransaction[] | null = null;
+  if (mode === "pumpbuy") {
+    if (!body.mint) throw new HttpError(400, "pumpbuy: mint required.");
+    const mint = new PublicKey(body.mint);
+    const acc = await conn.getAccountInfo(bondingCurvePda(mint));
+    if (!acc) throw new HttpError(400, "No bonding curve for this mint.");
+    const curve = parseBondingCurve(acc.data);
+    const mintAcc = await conn.getAccountInfo(mint);
+    const tokenProgram = tokenProgramFor(mintAcc?.owner.toBase58() ?? "");
+    const plan = planBuys([{ label: "test", signer: kp, solIn: BigInt(Math.max(100_000, Math.min(5_000_000, Math.floor(body.lamports ?? 500_000)))) }], { virtualTokenReserves: curve.virtualTokenReserves, virtualSolReserves: curve.virtualSolReserves, realTokenReserves: curve.realTokenReserves }, 3000)[0];
+    const buy = signWith(buildBuyTx({ mint, creator: curve.creator, tokenProgram, cuPrice: 100_000, cuLimit: 130_000, ataExists: false, recentBlockhash: blockhash }, plan), kp);
+    pumpTxs = [buy, mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), tipIx])];
+  }
+  const txs = pumpTxs ? pumpTxs : mode === "two" ? [mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), self]), mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), tipIx])] : [mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 2000 }), self, tipIx])];
   const signatures = txs.map((t) => base58Encode(t.signatures[0]));
   const accepted: Record<string, string> = {};
   const refused: Record<string, string> = {};
   const t0 = Date.now();
   let bundleId: string | null = null;
   let submitError: string | null = null;
-  const regionList = body.region ? [body.region] : JITO_BLOCK_ENGINES;
+  // one region by default (Jito: 1 sendBundle/s per IP)
+  const regionList = [body.region ?? JITO_BLOCK_ENGINES.find((u) => u.includes("frankfurt")) ?? JITO_BLOCK_ENGINES[0]];
   if (mode === "tx") {
     // control: Jito's plain transaction endpoint (no bundle, no auction state) — lands like any send if Jito takes it
     await Promise.all(
@@ -58,7 +76,7 @@ export const POST = route(async (req: Request) => {
     );
   } else
     try {
-      bundleId = await submitJitoBundle(txs, { blockEngineUrl: body.region, onAccepted: (r, id) => (accepted[r] = id), onRefused: (r, e) => (refused[r] = e) });
+      bundleId = await submitJitoBundle(txs, { blockEngineUrl: regionList[0], onAccepted: (r, id) => (accepted[r] = id), onRefused: (r, e) => (refused[r] = e) });
     } catch (e) {
       submitError = e instanceof Error ? e.message : String(e);
     }
