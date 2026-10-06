@@ -58,7 +58,8 @@ export async function prepareLaunch(
 ) {
   let a = e.mint ?? generateMint(e.vanitySuffix),
     o = new PublicKey(TOKEN_2022_PROGRAM),
-    { blockhash: i, lastValidBlockHeight: s } = await latestBlockhash(t),
+    // a warm blockhash (server hot cache) saves one RPC round trip on the click path
+    { blockhash: i, lastValidBlockHeight: s } = n.recentBlockhash ?? (await latestBlockhash(t)),
     c = n.slippageBps ?? 1e3,
     // the create must outrank its own buys (a buy scheduled before it fails): ×3 the base price, and ≥ 1.5× the
     // highest buy price (bundle buys at 10 M → create at 15 M, not 30 M)
@@ -257,27 +258,52 @@ export async function executeLaunch(t, e, r, n = {}) {
   /* Buys in their own transactions go out the moment the create is SEEN (processed), not with it: sent together,
      one landed before the create and failed, then its retry came 10 slots late behind a sniper (Cghynn…pump,
      2026-10-06). A buy held back past 20 s is reported expired: the retry below re-sends it once the create landed. */
+  /* Confirmation by push (n.watch = WebSocket signatureSubscribe, processed + confirmed) with a flat 400 ms poll as the
+     safety net: the old poll grew ×1.35 up to 2.5 s and saw BkzF3c…'s create ~4 s after it landed. */
   const createSig = base58Encode(r.createTx.signatures[0]),
+    watch = typeof n.watch == "function" ? n.watch : null,
+    createWatch = watch ? watch(createSig) : null,
+    never = new Promise(() => {}),
     createSeen = async () => {
-      const t0 = Date.now();
-      for (; Date.now() - t0 < 20000;) {
-        const st = (await t.getSignatureStatuses([createSig]).catch(() => null))?.value?.[0];
-        if (st) return !st.err;
-        if (await curveExists().catch(() => !1)) return !0;
-        await sleepMs(150);
-      }
-      return !1;
+      let stop = !1;
+      const viaPush = createWatch ? createWatch.processed.then(v => (v ? !v.err : never)) : never,
+        viaPoll = (async () => {
+          const t0 = Date.now();
+          for (let i = 0; !stop && Date.now() - t0 < 20000; i++) {
+            const st = (await t.getSignatureStatuses([createSig]).catch(() => null))?.value?.[0];
+            if (st) return !st.err;
+            if (i % 5 === 4 && (await curveExists().catch(() => !1))) return !0;
+            await sleepMs(200);
+          }
+          return !1;
+        })(),
+        seen = await Promise.race([viaPush, viaPoll]);
+      stop = !0;
+      return seen;
     },
     s = o !== e && r.buyTxs.length > 0 ? o : e,
-    c = sendAndConfirm(t, o, r.createTx, { ...a, verify: curveExists, rebuild: n.rebuildCreate }),
+    t0 = Date.now(),
+    c = sendAndConfirm(t, o, r.createTx, {
+      ...a,
+      verify: curveExists,
+      rebuild: n.rebuildCreate,
+      onSent: n.onSent,
+      subscribe: watch ? sig => (sig === createSig ? createWatch.confirmed : watch(sig).confirmed) : void 0,
+      pollMs: watch ? 1000 : 400,
+      pollFallbackMs: 400,
+      pollGrowth: 1,
+      rebroadcastEveryMs: 1000,
+    }),
+    seenP = createSeen(),
     d = r.buyTxs.length
-      ? createSeen().then(ok =>
+      ? seenP.then(ok =>
           ok
             ? sendMany(t, s, r.buyTxs, { ...a, staggerMs: n.spreadMs })
             : r.buyTxs.map(() => ({ signature: "", broadcasts: 0, confirmed: !1, ms: 0, expired: !0, error: "held back: the create was not seen yet" })),
         )
-      : Promise.resolve([]),
-    [l, u] = await Promise.all([c, d]);
+      : Promise.resolve([]);
+  if (typeof n.onSeen == "function") seenP.then(ok => ok && n.onSeen(Date.now() - t0)).catch(() => {});
+  const [l, u] = await Promise.all([c, d]);
   if (l.recovered) note(l.recovered === "history" ? "Create found in the transaction history after the confirmation window (RPC was rate-limited)." : "Create proven by the bonding curve on chain after the confirmation window.");
   if (l.rebuilds) note(`Create re-signed with a fresh blockhash (${l.rebuilds}×).`);
   // buys not confirmed for a non-final reason (expired / unreadable / wrong program id before the curve existed):

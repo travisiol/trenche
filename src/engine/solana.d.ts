@@ -463,7 +463,7 @@ declare module "@/engine/solana/pump/launch.js" {
       cashback?: boolean;
     },
     rows: BuyRow[],
-    opts?: { cuPrice: number; slippageBps?: number; tipLamports?: bigint; jitoTip?: boolean; lookupTable?: unknown; lookupTables?: unknown[]; /** max bundle rows bought inside the create (as many as fit in 1232 bytes) */ inlineMax?: number },
+    opts?: { cuPrice: number; slippageBps?: number; tipLamports?: bigint; jitoTip?: boolean; lookupTable?: unknown; lookupTables?: unknown[]; /** max bundle rows bought inside the create (as many as fit in 1232 bytes) */ inlineMax?: number; /** sign with this blockhash instead of fetching one */ recentBlockhash?: { blockhash: string; lastValidBlockHeight: number } },
   ): Promise<LaunchPrep>;
   export interface LaunchResult {
     mint: string;
@@ -483,6 +483,12 @@ declare module "@/engine/solana/pump/launch.js" {
       rebuildCreate?: () => Promise<import("@/engine/solana/send.js").Rebuilt>;
       /** step log: expired buys re-sent with a fresh blockhash, buys proven by balance */
       onNote?: (note: string) => void;
+      /** push confirmation of a signature (sigsub.ts watchSignature): processed + confirmed, null = socket unavailable */
+      watch?: (signature: string) => { processed: Promise<{ err: unknown } | null>; confirmed: Promise<{ err: unknown } | null> };
+      /** the create was broadcast (first send) */
+      onSent?: (signature: string) => void;
+      /** the create was seen executed (processed), ms after the send */
+      onSeen?: (ms: number) => void;
     },
   ): Promise<LaunchResult>;
   export interface BundleStep {
