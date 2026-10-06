@@ -4,7 +4,8 @@
  *  funding; Consolidate / Distribute / Transfer turn the summary into the drag-and-drop transfer view.
  *  Omitted: Marketplace, Mixer, Unwrap, Convert, Swap Stocks (no provider on this server). */
 import { useMemo, useState } from "react";
-import { Archive, EyeOff, ListOrdered, ArrowDownToLine, ArrowLeftRight, ArrowUpDown, ArrowUpFromLine, Calendar, Check, Copy, Droplet, FolderKanban, FolderPlus, KeyRound, Pencil, Plus, Search, Share2, Shuffle, Trash2, Undo2, Upload, Wallet, X } from "lucide-react";
+import Link from "next/link";
+import { Archive, EyeOff, ListOrdered, ArrowDownToLine, ArrowLeftRight, ArrowUpDown, ArrowUpFromLine, Calendar, Check, Copy, Droplet, FolderKanban, FolderPlus, KeyRound, Pencil, Plus, Rocket, Search, Share2, Shuffle, Trash2, Undo2, Upload, Wallet, X } from "lucide-react";
 import type { ActivityResponse, DashboardResponse, JobsListResponse, LaunchesResponse, PositionsResponse, WalletGroup, WalletInfo } from "@/lib/types";
 import { del, failureMessage, post, useGet } from "@/lib/api";
 import { useBalances, useSettings, useSolPrice, useVault, useWallets, walletsRes } from "@/lib/store";
@@ -511,6 +512,19 @@ export default function PortfolioPage() {
                       </div>
                     </div>
                     <p className="mt-2 text-[11px] leading-snug text-text-300">Random amounts, random delays, random order, one fresh relay wallet per payment. Relays break the direct link only — they stay visible on-chain.</p>
+                  </div>
+                  <div className="mt-3.5 border-t border-line-50 pt-3.5">
+                    <p className="mb-2 text-[13px] font-medium text-text-100">Robinhood Chain</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Link href="/robinhood" className="inline-flex h-9 w-full items-center justify-center gap-2 rounded border border-line-100 bg-bg-50 px-2.5 text-[13px] font-medium text-text-200 transition-colors hover:border-accent/35 hover:bg-white/[0.04] hover:text-text-100">
+                        <ArrowLeftRight className="h-4 w-4 shrink-0" />
+                        <span className="truncate">Bridge SOL → ETH</span>
+                      </Link>
+                      <Link href="/robinhood" className="inline-flex h-9 w-full items-center justify-center gap-2 rounded border border-line-100 bg-bg-50 px-2.5 text-[13px] font-medium text-text-200 transition-colors hover:border-accent/35 hover:bg-white/[0.04] hover:text-text-100">
+                        <Rocket className="h-4 w-4 shrink-0" />
+                        <span className="truncate">Launch on Robinhood</span>
+                      </Link>
+                    </div>
                   </div>
                   {calendar ? (
                     <div className="mt-3.5 flex h-[420px] flex-col border-t border-line-50 pt-2">

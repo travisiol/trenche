@@ -86,6 +86,7 @@ export function vaultLock(): VaultStatus {
   st.passphrase = null;
   st.vault = [];
   st.sol.lock();
+  delete st.runtime.rhWallet; // the decrypted Robinhood Chain key (robinhood/wallet.ts)
   return vaultStatus();
 }
 
