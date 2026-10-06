@@ -7,10 +7,15 @@ import { failureMessage, post, useGet } from "@/lib/api";
 import { useBalances, useWallets } from "@/lib/store";
 import { age, short, sol, usd } from "@/lib/format";
 import { toast } from "@/components/ui";
-import { BxButton, BxCard, BxInput, BxLabel, BxModal, BxSelect, BxTextarea, cx } from "@/components/bx/ui";
+import { BxButton, BxCard, BxInput, BxLabel, BxModal, BxSeg, BxSelect, BxTextarea, cx } from "@/components/bx/ui";
 import { TxLink } from "@/components/bx/Job";
 
 type Bridge = {
+  /** "rh2sol" = Robinhood → Solana (inWei / outLamports / evmTx), missing = Solana → Robinhood */
+  dir?: "rh2sol";
+  inWei?: string;
+  outLamports?: string;
+  evmTx?: string | null;
   id: string;
   at: number;
   from: string;
@@ -111,6 +116,7 @@ export default function RobinhoodPage() {
   const s = status.data;
   const refresh = status.refresh;
   const [tab, setTab] = useState<Tab>("wallets");
+  const [bridgeDir, setBridgeDir] = useState<"sol2rh" | "rh2sol">("sol2rh");
   const usdOf = (ethAmount: number | null) => (ethAmount !== null && s?.ethUsd ? usd(ethAmount * s.ethUsd, 2) : "—");
   const inFlight = (s?.bridges ?? []).some((b) => b.status === "sending" || b.status === "deposited" || b.status === "pending");
   // faster refresh while a bridge is filling
@@ -155,8 +161,17 @@ export default function RobinhoodPage() {
 
         {s && tab === "wallets" ? <WalletsTab status={s} onDone={refresh} usdOf={usdOf} /> : null}
         {s && tab === "bridge" ? (
-          <div className="w-full max-w-[760px]">
-            <BridgeCard status={s} onDone={refresh} />
+          <div className="flex w-full max-w-[760px] flex-col gap-4">
+            <BxSeg
+              value={bridgeDir}
+              onChange={setBridgeDir}
+              options={[
+                { value: "sol2rh", label: "Solana → Robinhood" },
+                { value: "rh2sol", label: "Robinhood → Solana" },
+              ]}
+            />
+            {bridgeDir === "sol2rh" ? <BridgeCard status={s} onDone={refresh} /> : <BridgeBackCard status={s} onDone={refresh} />}
+            <BridgeHistory status={s} />
           </div>
         ) : null}
         {s && tab === "launch" ? (
@@ -472,27 +487,179 @@ function BridgeCard({ status, onDone }: { status: Status | null | undefined; onD
         </BxButton>
         <p className="text-[11px] leading-snug text-text-300">One way, direct: the vault wallet deposits to Relay, Relay pays the ETH to your Robinhood wallet. A failed fill is refunded in SOL by Relay.</p>
 
-        {status?.bridges.length ? (
-          <div className="mt-1 flex flex-col gap-1.5 border-t border-line-50 pt-3">
-            <p className="text-[13px] font-medium text-text-100">History</p>
-            {status.bridges.slice(0, 8).map((b) => (
-              <div key={b.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-line-100 bg-bg-100 px-3 py-2 text-xs">
-                <span className="flex items-center gap-2">
-                  <StatusPill s={b.status} />
-                  <span className="font-mono text-text-100">{sol(Number(b.inLamports) / 1e9)} SOL</span>
-                  <span className="text-text-300">→</span>
-                  <span className="font-mono text-text-100">{eth(b.outWei, 5)} ETH</span>
-                </span>
-                <span className="flex items-center gap-2">
-                  {b.solSignature ? <TxLink sig={b.solSignature} /> : null}
-                  {b.destTxs[0] && status ? <EvmTx hash={b.destTxs[0]} explorer={status.explorer} /> : null}
-                  <span className="text-text-300">{age(b.at)}</span>
-                </span>
-                {b.error ? <span className="w-full text-[11px] text-decrease">{b.error}</span> : null}
-              </div>
+      </div>
+    </BxCard>
+  );
+}
+
+function BridgeHistory({ status }: { status: Status }) {
+  if (!status.bridges.length) return null;
+  return (
+    <BxCard title="History" bodyClassName="px-5 pb-5">
+      <div className="flex flex-col gap-1.5">
+        {status.bridges.slice(0, 15).map((b) => {
+          const back = b.dir === "rh2sol";
+          return (
+            <div key={b.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-line-100 bg-bg-100 px-3 py-2 text-xs">
+              <span className="flex items-center gap-2">
+                <StatusPill s={b.status} />
+                {back ? (
+                  <>
+                    <span className="font-mono text-text-100">{eth(b.inWei ?? "0", 6)} ETH</span>
+                    <span className="text-text-300">→</span>
+                    <span className="font-mono text-text-100">{sol(Number(b.outLamports ?? "0") / 1e9)} SOL</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="font-mono text-text-100">{sol(Number(b.inLamports) / 1e9)} SOL</span>
+                    <span className="text-text-300">→</span>
+                    <span className="font-mono text-text-100">{eth(b.outWei, 5)} ETH</span>
+                  </>
+                )}
+                <span className="text-text-300">to {short(b.to, 4, 4)}</span>
+              </span>
+              <span className="flex items-center gap-2">
+                {back ? (
+                  <>
+                    {b.evmTx ? <EvmTx hash={b.evmTx} explorer={status.explorer} /> : null}
+                    {b.destTxs[0] ? <TxLink sig={b.destTxs[0]} /> : null}
+                  </>
+                ) : (
+                  <>
+                    {b.solSignature ? <TxLink sig={b.solSignature} /> : null}
+                    {b.destTxs[0] ? <EvmTx hash={b.destTxs[0]} explorer={status.explorer} /> : null}
+                  </>
+                )}
+                <span className="text-text-300">{age(b.at)}</span>
+              </span>
+              {b.error ? <span className="w-full text-[11px] text-decrease">{b.error}</span> : null}
+            </div>
+          );
+        })}
+      </div>
+    </BxCard>
+  );
+}
+
+type BackQuote = { inWei: string; outLamports: string; minOutLamports: string; outUsd: number | null; impactPct: number | null; seconds: number };
+
+/** Robinhood → Solana: ETH from a Robinhood wallet arrives as SOL on a vault wallet */
+function BridgeBackCard({ status, onDone }: { status: Status; onDone: () => void }) {
+  const wallets = useWallets();
+  const balances = useBalances();
+  const live = useMemo(() => (wallets.data?.wallets ?? []).filter((w) => !w.archived), [wallets.data]);
+  const [fromPick, setFromPick] = useState("");
+  const [toPick, setToPick] = useState("");
+  const [amount, setAmount] = useState("");
+  const [quote, setQuote] = useState<BackQuote | null>(null);
+  const [qErr, setQErr] = useState<string | null>(null);
+  const [quoting, setQuoting] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const richest = [...status.wallets].sort((a, b) => Number(b.balanceWei ?? 0) - Number(a.balanceWei ?? 0))[0];
+  const from = fromPick || richest?.address || "";
+  const src = status.wallets.find((w) => w.address === from);
+  const to = toPick || wallets.data?.active || live[0]?.address || "";
+  const amt = Number(amount.replace(",", "."));
+  const bal = src?.balanceWei ? Number(src.balanceWei) / 1e18 : 0;
+  // gas reserve for the deposit tx (~35 k gas at ~0.03 gwei is far below this; the server checks the exact amount)
+  const GAS_KEEP = 0.00002;
+  const tooMuch = amt > 0 && amt + GAS_KEEP > bal + 1e-15;
+  const seq = useRef(0);
+
+  useEffect(() => {
+    if (!from || !to || !(amt > 0)) return;
+    const my = ++seq.current;
+    const t = setTimeout(async () => {
+      setQuoting(true);
+      try {
+        const q = await post<BackQuote>("/api/robinhood/bridge-back/quote", { from, to, eth: amount.replace(",", ".") });
+        if (my === seq.current) {
+          setQuote(q);
+          setQErr(null);
+        }
+      } catch (e) {
+        if (my === seq.current) {
+          setQuote(null);
+          setQErr(failureMessage(e));
+        }
+      } finally {
+        if (my === seq.current) setQuoting(false);
+      }
+    }, 500);
+    return () => clearTimeout(t);
+  }, [from, to, amount, amt]);
+
+  const shown = amt > 0 ? quote : null;
+  const run = async () => {
+    if (!shown) return;
+    setBusy(true);
+    try {
+      await post("/api/robinhood/bridge-back", { from, to, eth: amount.replace(",", "."), seenOutLamports: shown.outLamports });
+      toast(`Deposit confirmed on Robinhood — SOL arriving on ${short(to)} (~${shown.seconds}s).`, "ok");
+      setAmount("");
+      setQuote(null);
+      onDone();
+      balances.refresh();
+    } catch (e) {
+      toast(failureMessage(e), "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <BxCard title="Bridge to Solana" icon={<ArrowRightLeft className="h-4 w-4 text-text-300" />} right={<span className="text-[11px] text-text-300">via Relay</span>} bodyClassName="px-5 pb-5">
+      <div className="flex flex-col gap-3">
+        <div>
+          <BxLabel>From (Robinhood wallet)</BxLabel>
+          <BxSelect value={from} onChange={(e) => setFromPick(e.target.value)}>
+            {status.wallets.map((w) => (
+              <option key={w.address} value={w.address}>
+                {walletLabel(w)}
+                {w.main ? " · main" : ""}
+              </option>
             ))}
+          </BxSelect>
+        </div>
+        <div>
+          <BxLabel>To (Solana vault wallet)</BxLabel>
+          <BxSelect value={to} onChange={(e) => setToPick(e.target.value)}>
+            {!live.length ? <option value="">No wallet in the vault</option> : null}
+            {live.map((w) => (
+              <option key={w.address} value={w.address}>
+                {w.label || short(w.address)} — {sol(balances.data?.[w.address] ?? w.sol)} SOL
+              </option>
+            ))}
+          </BxSelect>
+        </div>
+        <div>
+          <div className="mb-1.5 flex items-center justify-between">
+            <BxLabel className="mb-0">Amount (ETH)</BxLabel>
+            <div className="flex items-center gap-1">
+              {[0.25, 0.5, 1].map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setAmount(Math.max(0, Math.floor((p === 1 ? bal - GAS_KEEP : bal * p) * 1e8) / 1e8).toString())}
+                  className="rounded px-1.5 py-0.5 text-[11px] text-text-300 hover:bg-white/[0.04] hover:text-text-100"
+                >
+                  {p === 1 ? "Max" : `${p * 100}%`}
+                </button>
+              ))}
+            </div>
           </div>
-        ) : null}
+          <BxInput inputMode="decimal" placeholder="0.001" value={amount} onChange={(e) => setAmount(e.target.value)} />
+        </div>
+        <div className="flex flex-col gap-1.5 rounded-md border border-line-100 bg-bg-100 px-3 py-2.5 text-xs">
+          <Row k="You receive" v={shown ? `${sol(Number(shown.outLamports) / 1e9)} SOL${shown.outUsd !== null ? ` · ${usd(shown.outUsd, 2)}` : ""}` : quoting ? "quoting…" : "—"} strong />
+          <Row k="Minimum" v={shown ? `${sol(Number(shown.minOutLamports) / 1e9)} SOL` : "—"} />
+          <Row k="Cost" v={shown ? `${shown.impactPct !== null ? `${Math.abs(shown.impactPct).toFixed(2)} %` : "—"} · ~${shown.seconds}s` : "—"} />
+        </div>
+        {tooMuch ? <p className="text-xs text-decrease">The wallet holds {ethNum(bal, 6)} ETH; a little stays for the gas.</p> : null}
+        {qErr && amt > 0 ? <p className="text-xs text-decrease">{qErr}</p> : null}
+        <BxButton variant="primary" disabled={!shown || busy || tooMuch || !from || !to} onClick={run}>
+          {busy ? "Depositing on Robinhood…" : `Bridge ${amt > 0 ? amt : ""} ETH → SOL`}
+        </BxButton>
+        <p className="text-[11px] leading-snug text-text-300">One way, direct: the Robinhood wallet deposits to Relay, Relay pays the SOL to the chosen vault wallet. A failed fill is refunded in ETH by Relay.</p>
       </div>
     </BxCard>
   );

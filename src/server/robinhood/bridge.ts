@@ -1,4 +1,4 @@
-/* Solana → Robinhood Chain bridge through Relay (api.relay.link): SOL from one vault wallet arrives as ETH on the
+/* Solana ⇄ Robinhood Chain bridge through Relay (api.relay.link): SOL from one vault wallet arrives as ETH on the
  * Robinhood dev wallet. One way, direct: the vault wallet signs Relay's deposit instruction, Relay's solver pays the
  * ETH on chain 4663 (~1–10 s), the status is read from Relay's intents API. Checked 2026-10-06: 0.1 SOL → 0.00440 ETH,
  * 0.81 % total cost, quote time estimate 1 s. */
@@ -9,6 +9,7 @@ import { sendAndConfirm } from "@/engine/solana/send.js";
 import { HttpError, solString } from "../api";
 import { readConn, requireUnlocked, sendConn } from "../engine";
 import { logActivity, readJson, store, writeJson } from "../store";
+import { rhPublic, rhWallet } from "./chain";
 import { evmAccount, evmIsOwn, rhDir } from "./wallet";
 
 const RELAY = "https://api.relay.link";
@@ -35,6 +36,13 @@ export type BridgeQuote = {
 
 export type BridgeStatus = "sending" | "deposited" | "pending" | "success" | "failure" | "refunded";
 export type BridgeRecord = BridgeQuote & {
+  /** missing = Solana → Robinhood; "rh2sol" = ETH on Robinhood → SOL on a vault wallet (amounts in inWei / outLamports) */
+  dir?: "rh2sol";
+  inWei?: string;
+  outLamports?: string;
+  minOutLamports?: string;
+  /** the Robinhood deposit tx (rh2sol) */
+  evmTx?: string | null;
   id: string;
   at: number;
   status: BridgeStatus;
@@ -217,12 +225,19 @@ async function follow(rec: BridgeRecord): Promise<void> {
         rec.status = "success";
         rec.doneAt = Date.now();
         save();
-        logActivity(store(), { kind: "fund", ok: true, message: `Bridge to Robinhood filled: ETH arrived on ${rec.to.slice(0, 8)}… (${Math.round((rec.doneAt - rec.at) / 1000)} s).` });
+        logActivity(store(), {
+          kind: "fund",
+          ok: true,
+          message:
+            rec.dir === "rh2sol"
+              ? `Bridge to Solana filled: SOL arrived on ${rec.to.slice(0, 6)}… (${Math.round((rec.doneAt - rec.at) / 1000)} s).`
+              : `Bridge to Robinhood filled: ETH arrived on ${rec.to.slice(0, 8)}… (${Math.round((rec.doneAt - rec.at) / 1000)} s).`,
+        });
         return;
       }
       if (s === "refund" || s === "refunded" || s === "failure") {
         rec.status = s === "failure" ? "failure" : "refunded";
-        rec.error = j.details ?? (s === "failure" ? "Relay could not fill the bridge." : "Relay refunded the SOL to the source wallet.");
+        rec.error = j.details ?? (s === "failure" ? "Relay could not fill the bridge." : `Relay refunded the ${rec.dir === "rh2sol" ? "ETH" : "SOL"} to the source wallet.`);
         rec.doneAt = Date.now();
         save();
         logActivity(store(), { kind: "fund", ok: false, message: `Bridge to Robinhood ${rec.status}: ${rec.error}` });
@@ -248,4 +263,129 @@ export function resumeBridges(): void {
   if (rt.rhBridgesResumed) return;
   rt.rhBridgesResumed = true;
   for (const r of records()) if ((r.status === "deposited" || r.status === "pending") && Date.now() - r.at < 60 * 60_000) void follow(r);
+}
+
+/* ------------------------------------------------------------------ Robinhood → Solana */
+
+/* ETH from a Robinhood wallet arrives as SOL on one of the vault's Solana wallets. One way, direct, one destination:
+ * the Robinhood wallet sends Relay's deposit tx on chain 4663 (native ETH, no approve), Relay's solver pays the SOL.
+ * Checked 2026-10-06: 0.0003 ETH → 0.00655 SOL, one deposit step, gas ~35 k. */
+
+type EvmStepData = { to?: string; data?: string; value?: string; chainId?: number; gas?: string };
+type EvmStep = { kind: string; items: { status: string; data: EvmStepData }[] };
+
+export type BridgeBackQuote = { from: string; to: string; inWei: string; outLamports: string; minOutLamports: string; outUsd: number | null; inUsd: number | null; impactPct: number | null; seconds: number; requestId: string };
+
+function solDestination(to: string): string {
+  if (!store().sol.wallets.some((w) => w.address === to)) throw new HttpError(400, "Destination: one of your Solana vault wallets.");
+  return to;
+}
+
+async function relayBackQuote(from: string, to: string, wei: bigint): Promise<{ quote: BridgeBackQuote; steps: EvmStep[] }> {
+  let res: Response;
+  try {
+    res = await fetch(`${RELAY}/quote`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ user: from, recipient: to, originChainId: 4663, destinationChainId: SOLANA_ID, originCurrency: ETH_NATIVE, destinationCurrency: SOL_NATIVE, amount: wei.toString(), tradeType: "EXACT_INPUT" }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (e) {
+    throw new HttpError(502, `Relay not reachable: ${e instanceof Error ? e.message : e}`);
+  }
+  const j = (await res.json().catch(() => ({}))) as Omit<RelayQuoteRes, "steps"> & { steps?: EvmStep[] };
+  if (!res.ok || !j.steps?.length || !j.details?.currencyOut?.amount) throw new HttpError(res.status >= 500 ? 502 : 400, `Relay refused the quote: ${j.message ?? res.status}`);
+  const num = (v?: string) => (v !== undefined && Number.isFinite(Number(v)) ? Number(v) : null);
+  return {
+    steps: j.steps,
+    quote: {
+      from,
+      to,
+      inWei: wei.toString(),
+      outLamports: j.details.currencyOut.amount,
+      minOutLamports: j.details.currencyOut.minimumAmount ?? j.details.currencyOut.amount,
+      outUsd: num(j.details.currencyOut.amountUsd),
+      inUsd: num(j.details.currencyIn?.amountUsd),
+      impactPct: num(j.details.totalImpact?.percent),
+      seconds: j.details.timeEstimate ?? 10,
+      requestId: j.requestId ?? "",
+    },
+  };
+}
+
+export async function bridgeBackQuote(fromEvm: string | null, wei: bigint, toSol: string): Promise<BridgeBackQuote> {
+  requireUnlocked();
+  return (await relayBackQuote(evmAccount(fromEvm).address, solDestination(toSol), wei)).quote;
+}
+
+export async function bridgeBackExecute(fromEvm: string | null, wei: bigint, toSol: string, seenOutLamports: bigint | null): Promise<BridgeRecord> {
+  requireUnlocked();
+  const st = store();
+  const acct = evmAccount(fromEvm);
+  const to = solDestination(toSol);
+  const { quote, steps } = await relayBackQuote(acct.address, to, wei);
+  if (seenOutLamports !== null && BigInt(quote.outLamports) * BigInt(100) < seenOutLamports * BigInt(97))
+    throw new HttpError(409, `The rate moved: ${solString(BigInt(quote.outLamports))} SOL now vs ${solString(seenOutLamports)} quoted. Re-check the quote.`);
+  const items = steps.flatMap((s) => {
+    if (s.kind !== "transaction") throw new HttpError(502, `Relay asked for a '${s.kind}' step, only transactions are supported. Nothing was sent.`);
+    return s.items.filter((i) => i.status !== "complete");
+  });
+  if (!items.length || items.some((i) => !i.data.to || i.data.chainId !== 4663)) throw new HttpError(502, "Relay returned no Robinhood Chain transaction. Nothing was sent.");
+  const pub = rhPublic();
+  const fees = await pub.estimateFeesPerGas();
+  const maxFee = (fees.maxFeePerGas ?? BigInt(0)) * BigInt(2);
+  const gasOf = (i: { data: EvmStepData }) => (BigInt(i.data.gas ?? "100000") * BigInt(13)) / BigInt(10);
+  const total = items.reduce((t, i) => t + BigInt(i.data.value ?? "0") + gasOf(i) * maxFee, BigInt(0));
+  const bal = await pub.getBalance({ address: acct.address });
+  if (bal < total) throw new HttpError(400, `${acct.address.slice(0, 8)}… holds ${(Number(bal) / 1e18).toFixed(6)} ETH: this bridge needs ${(Number(total) / 1e18).toFixed(6)} ETH with gas. Nothing was sent.`);
+
+  const rec: BridgeRecord = {
+    dir: "rh2sol",
+    from: acct.address,
+    to,
+    inWei: quote.inWei,
+    outLamports: quote.outLamports,
+    minOutLamports: quote.minOutLamports,
+    // Solana → Robinhood field names, kept filled for older readers of bridges.json
+    inLamports: "0",
+    outWei: "0",
+    minOutWei: "0",
+    outUsd: quote.outUsd,
+    inUsd: quote.inUsd,
+    feeLamports: "0",
+    impactPct: quote.impactPct,
+    seconds: quote.seconds,
+    requestId: quote.requestId,
+    evmTx: null,
+    id: "br_" + Date.now().toString(36),
+    at: Date.now(),
+    status: "sending",
+    solSignature: null,
+    destTxs: [],
+    error: null,
+    doneAt: null,
+  };
+  records().unshift(rec);
+  save();
+  const wallet = rhWallet(acct);
+  try {
+    for (const i of items) {
+      const hash = await wallet.sendTransaction({ account: acct, chain: wallet.chain, to: i.data.to as `0x${string}`, data: (i.data.data ?? "0x") as `0x${string}`, value: BigInt(i.data.value ?? "0"), gas: gasOf(i), maxFeePerGas: maxFee, maxPriorityFeePerGas: BigInt(0) });
+      rec.evmTx = hash;
+      const r = await pub.waitForTransactionReceipt({ hash, timeout: 120_000, pollingInterval: 500 });
+      if (r.status !== "success") throw new Error(`deposit reverted (${hash})`);
+    }
+  } catch (e) {
+    rec.status = "failure";
+    rec.error = `Robinhood deposit failed: ${e instanceof Error ? e.message.split("\n")[0] : e}`.slice(0, 300);
+    rec.doneAt = Date.now();
+    save();
+    logActivity(st, { kind: "fund", ok: false, message: `Bridge to Solana failed (${(Number(wei) / 1e18).toFixed(6)} ETH from ${acct.address.slice(0, 8)}…): ${rec.error}` });
+    throw new HttpError(502, rec.error);
+  }
+  rec.status = "deposited";
+  save();
+  logActivity(st, { kind: "fund", ok: true, message: `Bridge to Solana: ${(Number(wei) / 1e18).toFixed(6)} ETH from ${acct.address.slice(0, 8)}… deposited to Relay → ~${solString(BigInt(quote.outLamports))} SOL to ${to.slice(0, 6)}…`, wallets: [to], data: { chain: "robinhood", tx: rec.evmTx } });
+  void follow(rec);
+  return rec;
 }
