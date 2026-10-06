@@ -888,8 +888,9 @@ export const TASK_DEFAULTS = {
 
 export const TASK_LIMITS = {
   maxWalletsPerTask: 50,
-  /** Jito bundle = create tx + 4 buy txs = 5 txs max */
-  maxWalletsPerBundleTask: 4,
+  /** bundle wallets: the first 2 buy INSIDE the create (atomic, any sender), the rest in their own transactions —
+   *  Jito on: grouped by 5 per bundle (the first bundle = create + 4 buys) */
+  maxWalletsPerBundleTask: 20,
   maxSlippagePercent: 100,
   maxIntervalSec: 86400,
   /** sniper "Delay between wallet buys" input: 0..1 s */

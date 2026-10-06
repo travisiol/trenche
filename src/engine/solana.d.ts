@@ -206,6 +206,11 @@ declare module "@/engine/solana/fund.js" {
   }): Promise<FundResult>;
 }
 
+declare module "@/engine/solana/alt.js" {
+  import type { AddressLookupTableAccount, Connection, Keypair } from "@solana/web3.js";
+  /** the static pump.fun lookup table: `address` reused when it still holds every static account, else a new one (payer = authority) */
+  export function ensureAlt(conn: Connection, payer: Keypair, address?: string | null): Promise<{ table: AddressLookupTableAccount; address: string } | null>;
+}
 declare module "@/engine/solana/pump/pdas.js" {
   import type { PublicKey } from "@solana/web3.js";
   export const PUMP_PROGRAM: string;
@@ -226,6 +231,8 @@ declare module "@/engine/solana/pump/pdas.js" {
   export function mintAuthorityPda(): PublicKey;
   export function bondingCurvePda(mint: PublicKey): PublicKey;
   export function creatorVaultPda(creator: PublicKey): PublicKey;
+  export function bondingCurveV2Pda(mint: PublicKey): PublicKey;
+  export function userVolumePda(user: PublicKey): PublicKey;
   export function associatedTokenAddress(owner: PublicKey, mint: PublicKey, tokenProgram: PublicKey): PublicKey;
   export function tokenProgramFor(ownerProgram: string): PublicKey;
   export interface BondingCurve {
@@ -430,7 +437,10 @@ declare module "@/engine/solana/pump/launch.js" {
   export interface LaunchPrep {
     mint: Keypair;
     createTx: VersionedTransaction;
+    /** the dev buy is inside the create */
     atomic: boolean;
+    /** bundle rows bought INSIDE the create, right behind the dev (the first `inline` rows; buyTxs / buyRows hold the rest) */
+    inline: number;
     createHasTip: boolean;
     buyTxs: VersionedTransaction[];
     buys: BuyPlan[];
@@ -453,7 +463,7 @@ declare module "@/engine/solana/pump/launch.js" {
       cashback?: boolean;
     },
     rows: BuyRow[],
-    opts?: { cuPrice: number; slippageBps?: number; tipLamports?: bigint; jitoTip?: boolean; lookupTable?: unknown },
+    opts?: { cuPrice: number; slippageBps?: number; tipLamports?: bigint; jitoTip?: boolean; lookupTable?: unknown; lookupTables?: unknown[]; /** max bundle rows bought inside the create (as many as fit in 1232 bytes) */ inlineMax?: number },
   ): Promise<LaunchPrep>;
   export interface LaunchResult {
     mint: string;

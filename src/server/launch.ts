@@ -42,6 +42,7 @@ import { isDevnet, logActivity, saveLaunches, store, track, type Job, type Pendi
 import { loops, TradeLoop, type SavedLoop } from "./tradeloop";
 import { resolveWashPairs, washPairs } from "./wash";
 import { markDraftLaunched } from "./drafts";
+import { deactivateLaunchTable, launchLookupTable, launchTableAddresses, staticLookupTable, sweepLaunchTables } from "./alt";
 import { grindVanity, takeReserved, unuseReserved } from "./vanity";
 
 /* ------------------------------------------------------------------ prepare */
@@ -367,7 +368,7 @@ export function normalizeTasks(req: Pick<LaunchExecuteRequest, "tasks" | "cuPric
       const t = raw as BundleTask;
       const d = TASK_DEFAULTS.bundle;
       bundleWallets += wallets.length;
-      if (bundleWallets > TASK_LIMITS.maxWalletsPerBundleTask) throw new HttpError(400, `Bundle task: at most ${TASK_LIMITS.maxWalletsPerBundleTask} wallets — each buys in its own transaction inside the Jito bundle (create + 4 buys).`);
+      if (bundleWallets > TASK_LIMITS.maxWalletsPerBundleTask) throw new HttpError(400, `Bundle task: at most ${TASK_LIMITS.maxWalletsPerBundleTask} wallets.`);
       if (dev && wallets.includes(dev)) throw new HttpError(400, "The dev wallet buys inside the create transaction: do not list it in the bundle task.");
       const amounts = new Map<string, bigint>();
       for (const w of wallets) {
@@ -517,8 +518,9 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   const CREATE_COST = BigInt(30_000_000); // mint rent + ATA + fees ≈ 0.02–0.03 SOL
   const devBal = await getSolBalance(conn, dev).catch(() => null);
   if (devBal === null) refuse(503, "RPC unreachable: the dev balance could not be read. Nothing was sent.");
-  const devNeed = devBuyLamports + CREATE_COST + (mode === "bundle" ? bundleTip : BigInt(0));
-  if (devBal! < devNeed) refuse(402, `Dev wallet holds ${solString(devBal!)} SOL but needs at least ${solString(devNeed)} SOL (dev buy + creation + fees${mode === "bundle" ? " + tip" : ""}). Nothing was sent.`);
+  // bundle: + the launch lookup table rent (≈0.004, back to the dev once closed) and, the first time, the static one (≈0.008)
+  const devNeed = devBuyLamports + CREATE_COST + (mode === "bundle" ? bundleTip + BigInt(12_000_000) : BigInt(0));
+  if (devBal! < devNeed) refuse(402, `Dev wallet holds ${solString(devBal!)} SOL but needs at least ${solString(devNeed)} SOL (dev buy + creation + fees${mode === "bundle" ? " + tip + lookup tables" : ""}). Nothing was sent.`);
   for (const t of bundleTasks) {
     const infos = await conn.getMultipleAccountsInfo(t.wallets.map((w) => new PublicKey(w)), "confirmed").catch(() => null);
     t.wallets.forEach((w, i) => {
@@ -586,6 +588,16 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   return { jobId: job.id, id: mint, mint, mode, tasks: tasks.map((t) => ({ id: t.id, type: t.type })) };
 }
 
+/** bundle wallets bought inside the create at most. Size allows 3 with both lookup tables, but a pump.fun buy runs
+ *  ~10 inner instructions and a transaction may hold 64: dev + 3 fails (MaxInstructionTraceLengthExceeded), dev + 2
+ *  landed on devnet with and without the Sender tip (scripts/prove-inline-devnet.mjs, 2026-10-06) */
+const INLINE_MAX = 2;
+const TRACE_LIMIT = /MaxInstructionTraceLength|TooManyInstructionTrace|InstructionTrace/i;
+
+// launch lookup tables: closed (rent back to the dev) once their cool-down is over — every 5 min, one sweeper per process
+const sweeper = globalThis as unknown as { __trenchAltSweep?: ReturnType<typeof setInterval> };
+if (!sweeper.__trenchAltSweep) sweeper.__trenchAltSweep = setInterval(() => void sweepLaunchTables(readConn()).catch(() => null), 5 * 60_000);
+
 type RunOpts = { pendingKeypair: import("@solana/web3.js").Keypair; uri: string; devBuyLamports: bigint; slippageBps: number; cuPrice: number; bundleTip: bigint; /** atomic Jito bundle (Settings → Jito on) */ jito: boolean; cashback: boolean; autoClaim: { minSol: string; intervalSec: number } | null; req: LaunchExecuteRequest };
 
 async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
@@ -603,6 +615,30 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   run.state.status = "sending";
   emit(run, { type: "state", data: launchStateOf(run) });
 
+  // the first bundle wallets buy INSIDE the create, right behind the dev: nobody can get between them. It needs lookup
+  // tables to fit (static pump.fun table + one per launch); without them prepareLaunch keeps whatever fits
+  const inlineMax = run.state.mode === "bundle" ? Math.min(INLINE_MAX, bundleRows.length) : 0;
+  const devKp = st.sol.keypair(dev);
+  let tables: import("@solana/web3.js").AddressLookupTableAccount[] = [];
+  let launchTable: import("@solana/web3.js").AddressLookupTableAccount | null = null;
+  if (inlineMax > 0) {
+    const [stat, perLaunch] = await Promise.all([
+      staticLookupTable(conn, devKp),
+      launchLookupTable(conn, devKp, launchTableAddresses(new PublicKey(mint), devKp.publicKey, bundleRows.slice(0, inlineMax).map((x) => x.signer.publicKey)), (n) => step(run, "prepare", true, n)),
+    ]);
+    launchTable = perLaunch;
+    tables = [stat, perLaunch].filter((x): x is import("@solana/web3.js").AddressLookupTableAccount => !!x);
+    if (tables.length < 2) step(run, "prepare", true, `Lookup table${stat ? " for this launch" : perLaunch ? " (pump.fun static)" : "s"} not available — fewer bundle wallets fit inside the create.`);
+  }
+  const prepOpts = { lookupTables: tables, inlineMax };
+  // the chain refused the create for its instruction trace: one inline wallet fewer, same attempt (never more than INLINE_MAX times)
+  const shrinkInline = (error: string | undefined): boolean => {
+    if (prepOpts.inlineMax <= 0 || !TRACE_LIMIT.test(error ?? "")) return false;
+    prepOpts.inlineMax--;
+    step(run, "prepare", true, `The create was too heavy for Solana's instruction limit — retrying with ${prepOpts.inlineMax} bundle wallet(s) inside it.`);
+    return true;
+  };
+  let inlined = 0;
   let created: { confirmed: boolean; signature?: string; error?: string } = { confirmed: false, error: "not sent" };
   let buyOutcomes: { confirmed: boolean; error?: string }[] = [];
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -612,13 +648,15 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
         conn,
         { dev: st.sol.keypair(dev), name: run.state.name, symbol: run.state.symbol, uri: o.uri, devBuyLamports: o.devBuyLamports, mint: o.pendingKeypair, cashback: o.cashback },
         bundleRows,
-        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? o.bundleTip : tipLamportsFor(undefined), jitoTip: o.jito },
+        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? o.bundleTip : tipLamportsFor(undefined), jitoTip: o.jito, ...prepOpts },
       );
     } catch (e) {
       created = { confirmed: false, error: e instanceof Error ? e.message : String(e) };
       break;
     }
+    inlined = prep.inline;
     if (attempt === 0) step(run, "prepare", true, prep.atomic ? "Dev buy is atomic with the creation (guaranteed first buyer)." : o.devBuyLamports > BigInt(0) ? "Name/URI too long for an atomic dev buy: the dev buy goes in a separate transaction." : "No dev buy.");
+    if (attempt === 0 && inlineMax > 0) step(run, "prepare", true, prep.inline > 0 ? `${prep.inline} bundle wallet(s) buy inside the create, right behind the dev — no sniper can get between them${bundleRows.length > prep.inline ? `; ${bundleRows.length - prep.inline} more in their own transactions` : ""}.` : "No bundle wallet fits inside the create: they buy in their own transactions.");
     if (o.jito) {
       const r = await launchBundle(conn, prep, {
         timeoutMs: 45_000,
@@ -627,8 +665,12 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
           if (s.phase === "bundle") step(run, "bundle", true, `Sending Jito bundle ${s.index + 1}/${s.total ?? 1}…`);
         },
       });
+      if (!r.create.confirmed && shrinkInline(r.create.error)) {
+        attempt--;
+        continue;
+      }
       created = r.create;
-      buyOutcomes = r.buys;
+      buyOutcomes = [...Array.from({ length: inlined }, () => ({ confirmed: r.create.confirmed, error: r.create.confirmed ? undefined : (r.create.error ?? "create not landed") })), ...r.buys];
       if (!created.confirmed && attempt < retries) {
         step(run, "bundle", false, `Bundle not landed (${created.error ?? "?"}) — retry ${attempt + 1}/${retries}`);
         continue;
@@ -638,7 +680,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
       const prepArgs = [
         { dev: st.sol.keypair(dev), name: run.state.name, symbol: run.state.symbol, uri: o.uri, devBuyLamports: o.devBuyLamports, mint: o.pendingKeypair, cashback: o.cashback },
         bundleRows,
-        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : tipLamportsFor(undefined) },
+        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : tipLamportsFor(undefined), ...prepOpts },
       ] as const;
       const r = await engineExecuteLaunch(conn, sendConn(), prep, {
         // the create really never landed (not in the history, no curve): re-sign it with a fresh blockhash (2× max)
@@ -649,8 +691,12 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
         },
         onNote: (note) => step(run, "info", true, note),
       });
+      if (!r.create.confirmed && !r.create.signature && shrinkInline(r.create.error)) {
+        attempt--;
+        continue;
+      }
       created = r.create;
-      buyOutcomes = r.buys;
+      buyOutcomes = [...Array.from({ length: inlined }, () => ({ confirmed: r.create.confirmed, error: r.create.confirmed ? undefined : (r.create.error ?? "create not landed") })), ...r.buys];
       break;
     }
   }
@@ -666,6 +712,9 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
     else if (check?.unreadable) created = { ...created, error: `${created.error ?? "not confirmed"} — the RPC could not read the chain; the launch list re-checks it every 30 s` };
   }
 
+  // inline buys share the create's fate (re-checked above when the confirmation was inconclusive)
+  for (let i = 0; i < inlined && i < buyOutcomes.length; i++) buyOutcomes[i] = { confirmed: created.confirmed, error: created.confirmed ? undefined : (created.error ?? "create not landed") };
+  if (launchTable) void deactivateLaunchTable(conn, devKp, launchTable).catch(() => null);
   run.state.createSignature = created.signature ?? null;
   run.state.createConfirmed = created.confirmed;
   run.record.createSignature = created.signature ?? null;

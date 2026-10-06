@@ -195,7 +195,7 @@ export function validateTask(t: FormTask): string[] {
   const wallets = t.walletIds.length + (t.walletGroupIds.length ? 1 : 0);
   if (t.type !== "wash" && !wallets) out.push("Pick at least one wallet or group.");
   if (t.walletIds.length > TASK_LIMITS.maxWalletsPerTask) out.push(`Max ${TASK_LIMITS.maxWalletsPerTask} wallets per task.`);
-  if (t.type === "bundle" && t.walletIds.length > TASK_LIMITS.maxWalletsPerBundleTask) out.push(`A Jito bundle holds the create plus ${TASK_LIMITS.maxWalletsPerBundleTask} buys.`);
+  if (t.type === "bundle" && t.walletIds.length > TASK_LIMITS.maxWalletsPerBundleTask) out.push(`A bundle task holds ${TASK_LIMITS.maxWalletsPerBundleTask} wallets at most.`);
   if (t.slippagePercent < 0 || t.slippagePercent > TASK_LIMITS.maxSlippagePercent) out.push(`Slippage must be 0–${TASK_LIMITS.maxSlippagePercent} %.`);
   if (t.type === "bundle" || t.type === "sniper") {
     if (!(Number(t.buyAmount) > 0) && !Object.values(t.walletBuyAmounts).some((v) => Number(v) > 0)) out.push("Buy amount must be above 0.");

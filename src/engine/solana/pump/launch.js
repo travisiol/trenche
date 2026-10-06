@@ -69,58 +69,62 @@ export async function prepareLaunch(
     f = !1,
     h = !1,
     g = 0n;
-  if (e.devBuyLamports > 0n) {
-    const P = planBuys([u], FRESH_CURVE, c)[0],
-      D = !!(n.tipLamports && n.tipLamports > 0n),
-      U = (q, F) => {
-        const M = [
-            ComputeBudgetProgram.setComputeUnitLimit({
-              units: 5e5,
-            }),
-            ComputeBudgetProgram.setComputeUnitPrice({
-              microLamports: l,
-            }),
-            createV2Instruction({
-              mint: a.publicKey,
-              user: e.dev.publicKey,
-              creator: e.dev.publicKey,
-              name: e.name,
-              symbol: e.symbol,
-              uri: q,
-              cashback: e.cashback,
-            }),
-            createAtaInstruction(e.dev.publicKey, e.dev.publicKey, a.publicKey, o),
-            ...(F ? [tipInstruction(e.dev.publicKey, n.tipLamports, void 0, !!n.jitoTip)] : []),
-            buyInstruction(
-              {
-                mint: a.publicKey,
-                user: e.dev.publicKey,
-                creator: e.dev.publicKey,
-                tokenProgram: o,
-                feeRecipient: randomBuybackFeeRecipient(),
-                buybackFeeRecipient: randomFeeRecipient(),
-              },
-              P.tokensWanted,
-              P.maxSolCost,
-            ),
-          ],
-          H = new TransactionMessage({
-            payerKey: e.dev.publicKey,
-            recentBlockhash: i,
-            instructions: M,
-          }).compileToV0Message(n.lookupTable ? [n.lookupTable] : []),
-          R = new VersionedTransaction(H);
-        return (R.sign([e.dev, a]), R);
-      };
-    if (n.lookupTable) {
-      const q = U(e.uri, D);
-      q.serialize().length <= 1232 && ((p = q), (f = !0), (h = D), (g = P.tokensWanted));
+  /* INLINE BUYERS (2026-10-05) : jusqu'à `inlineMax` wallets du bundle achètent DANS la transaction de création,
+     juste derrière la dev — même atomicité que le dev buy, aucun sniper ne peut s'intercaler. Le nombre réel est
+     le plus grand qui tient dans 1232 octets (les lookup tables `lookupTables` le font passer de 0 à 3). Les
+     acheteurs signent la création ; la dev paie les frais de la transaction, chaque acheteur son ATA et son achat. */
+  const tables = Array.isArray(n.lookupTables) ? n.lookupTables.filter(Boolean) : n.lookupTable ? [n.lookupTable] : [],
+    hasDevBuy = e.devBuyLamports > 0n,
+    inlineMax = Math.max(0, Math.min(r.length, Math.floor(n.inlineMax ?? 0))),
+    _ = hasDevBuy ? [u, ...r] : r,
+    S = planBuys(_, FRESH_CURVE, c),
+    devPlan = hasDevBuy ? S[0] : null,
+    rowPlans = hasDevBuy ? S.slice(1) : S,
+    D = !!(n.tipLamports && n.tipLamports > 0n),
+    feeRecipient = randomBuybackFeeRecipient(),
+    buybackFeeRecipient = randomFeeRecipient(),
+    buyIxs = (signer, plan) => [
+      createAtaInstruction(signer.publicKey, signer.publicKey, a.publicKey, o),
+      buyInstruction({ mint: a.publicKey, user: signer.publicKey, creator: e.dev.publicKey, tokenProgram: o, feeRecipient, buybackFeeRecipient }, plan.tokensWanted, plan.maxSolCost),
+    ],
+    U = (q, F, j) => {
+      const signers = r.slice(0, j).map(x => x.signer),
+        M = [
+          ComputeBudgetProgram.setComputeUnitLimit({ units: (hasDevBuy ? 5e5 : 3e5) + j * 13e4 }),
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: l }),
+          createV2Instruction({ mint: a.publicKey, user: e.dev.publicKey, creator: e.dev.publicKey, name: e.name, symbol: e.symbol, uri: q, cashback: e.cashback }),
+          ...(F ? [tipInstruction(e.dev.publicKey, n.tipLamports, void 0, !!n.jitoTip)] : []),
+          ...(hasDevBuy ? buyIxs(e.dev, devPlan) : []),
+          ...signers.flatMap((x, k) => buyIxs(x, rowPlans[k])),
+        ],
+        R = new VersionedTransaction(new TransactionMessage({ payerKey: e.dev.publicKey, recentBlockhash: i, instructions: M }).compileToV0Message(tables));
+      return (R.sign([e.dev, a, ...signers]), R);
+    },
+    fits = tx => {
+      try {
+        return tx.serialize().length <= 1232;
+      } catch {
+        return !1;
+      }
+    },
+    variants = tables.length ? [[e.uri, D], [shortenIpfsUri(e.uri), D], [shortenIpfsUri(e.uri), !1]] : [[shortenIpfsUri(e.uri), !1]];
+  let inline = 0;
+  if (hasDevBuy || inlineMax > 0)
+    for (let j = inlineMax; j >= 0 && !p; j--) {
+      if (!hasDevBuy && j === 0) break;
+      for (const [q, F] of variants) {
+        let tx = null;
+        try {
+          tx = U(q, F, j);
+        } catch {
+          tx = null;
+        }
+        if (tx && fits(tx)) {
+          ((p = tx), (f = hasDevBuy || j > 0), (h = F), (inline = j), (g = devPlan ? devPlan.tokensWanted : 0n));
+          break;
+        }
+      }
     }
-    if (!p) {
-      const q = U(shortenIpfsUri(e.uri), !1);
-      q.serialize().length <= 1232 && ((p = q), (f = !0), (h = !1), (g = P.tokensWanted));
-    }
-  }
   if (!p) {
     const P = [
       ComputeBudgetProgram.setComputeUnitLimit({
@@ -138,7 +142,7 @@ export async function prepareLaunch(
         uri: e.uri,
         cashback: e.cashback,
       }),
-      ...(n.tipLamports && n.tipLamports > 0n ? [tipInstruction(e.dev.publicKey, n.tipLamports, void 0, !!n.jitoTip)] : []),
+      ...(D ? [tipInstruction(e.dev.publicKey, n.tipLamports, void 0, !!n.jitoTip)] : []),
     ];
     ((p = new VersionedTransaction(
       new TransactionMessage({
@@ -148,21 +152,21 @@ export async function prepareLaunch(
       }).compileToV0Message(),
     )),
       p.sign([e.dev, a]),
-      (h = !!(n.tipLamports && n.tipLamports > 0n)));
+      (h = D));
   }
-  const _ = e.devBuyLamports > 0n ? [u, ...r] : r,
-    S = planBuys(_, FRESH_CURVE, c),
-    A = f && e.devBuyLamports > 0n,
-    k = A ? S.slice(1) : S,
-    v = A ? _.slice(1) : _,
-    I = k.map((P, D) =>
+  // atomic: the dev buy (when any) and the first `inline` rows are inside the create; the rest buys in its own txs.
+  // not atomic (nothing fit): the dev buy too goes as a separate transaction, first of the list
+  const devInside = f && hasDevBuy,
+    k = f ? rowPlans.slice(inline) : S,
+    v = f ? r.slice(inline) : _,
+    I = k.map((P, x) =>
       signWith(
         buildBuyTx(
           {
             mint: a.publicKey,
             creator: e.dev.publicKey,
             tokenProgram: o,
-            cuPrice: v[D].cuPrice ?? n.cuPrice,
+            cuPrice: v[x].cuPrice ?? n.cuPrice,
             cuLimit: 13e4,
             ataExists: !1,
             tipLamports: n.tipLamports,
@@ -171,15 +175,16 @@ export async function prepareLaunch(
           },
           P,
         ),
-        v[D].signer,
+        v[x].signer,
       ),
     );
   return (
-    !f && e.devBuyLamports > 0n && (g = S[0].tokensWanted),
+    !devInside && hasDevBuy && (g = S[0].tokensWanted),
     {
       mint: a,
       createTx: p,
-      atomic: f,
+      atomic: devInside,
+      inline,
       createHasTip: h,
       buyTxs: I,
       buys: k,
