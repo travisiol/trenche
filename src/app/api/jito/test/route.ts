@@ -17,7 +17,7 @@ export const maxDuration = 60;
  *  status, polled 30 s. Built to find why every launch bundle reported "Invalid" (2026-10-06). */
 export const POST = route(async (req: Request) => {
   requireUnlocked();
-  type Body = { wallet?: string; tipLamports?: number; /** one block engine only (e.g. https://ny.mainnet.block-engine.jito.wtf) */ region?: string; /** "two" (default): self-transfer then tip · "one": a single tx with both · "tx": the single tx via Jito's sendTransaction (control: not a bundle) */ mode?: "one" | "two" | "tx" | "pumpbuy"; /** pumpbuy: a live pump.fun coin and the SOL (lamports) to buy */ mint?: string; lamports?: number };
+  type Body = { wallet?: string; tipLamports?: number; /** one block engine only (e.g. https://ny.mainnet.block-engine.jito.wtf) */ region?: string; /** "two" (default): self-transfer then tip · "one": a single tx with both · "tx": the single tx via Jito's sendTransaction (control: not a bundle) */ mode?: "one" | "two" | "tx" | "pumpbuy"; /** pumpbuy: a live pump.fun coin and the SOL (lamports) to buy */ mint?: string; lamports?: number; /** pumpbuy variants */ tipInBuy?: boolean; cuPrice?: number; cuLimit?: number };
   const body = await readBody<Body>(req).catch(() => ({}) as Body);
   const st = store();
   const bal = st.balances?.map ?? {};
@@ -48,8 +48,9 @@ export const POST = route(async (req: Request) => {
     const mintAcc = await conn.getAccountInfo(mint);
     const tokenProgram = tokenProgramFor(mintAcc?.owner.toBase58() ?? "");
     const plan = planBuys([{ label: "test", signer: kp, solIn: BigInt(Math.max(100_000, Math.min(5_000_000, Math.floor(body.lamports ?? 500_000)))) }], { virtualTokenReserves: curve.virtualTokenReserves, virtualSolReserves: curve.virtualSolReserves, realTokenReserves: curve.realTokenReserves }, 3000)[0];
-    const buy = signWith(buildBuyTx({ mint, creator: curve.creator, tokenProgram, cuPrice: 100_000, cuLimit: 130_000, ataExists: false, recentBlockhash: blockhash }, plan), kp);
-    pumpTxs = [buy, mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), tipIx])];
+    const inBuy = body.tipInBuy === true;
+    const buy = signWith(buildBuyTx({ mint, creator: curve.creator, tokenProgram, cuPrice: Math.max(0, Math.floor(body.cuPrice ?? 100_000)), cuLimit: Math.max(90_000, Math.floor(body.cuLimit ?? 130_000)), ataExists: false, recentBlockhash: blockhash, tipLamports: inBuy ? tip : undefined, jitoTip: inBuy }, plan), kp);
+    pumpTxs = inBuy ? [buy] : [buy, mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), tipIx])];
   }
   const txs = pumpTxs ? pumpTxs : mode === "two" ? [mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), self]), mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), tipIx])] : [mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 2000 }), self, tipIx])];
   const signatures = txs.map((t) => base58Encode(t.signatures[0]));
