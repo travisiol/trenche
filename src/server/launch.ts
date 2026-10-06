@@ -724,6 +724,9 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
 }
 
 const MIN_JITO_BUNDLE_TIP = BigInt(1_000_000);
+/** tip multipliers of the successive Jito attempts of one launch (0.001 → 0.003 → 0.01 SOL), never above the cap */
+const JITO_TIP_LADDER = [1, 3, 10];
+const JITO_TIP_CAP = BigInt(20_000_000);
 
 /** bundle wallets bought inside the create at most. Size allows 3 with both lookup tables, but a pump.fun buy runs
  *  ~10 inner instructions and a transaction may hold 64: dev + 3 fails (MaxInstructionTraceLengthExceeded), dev + 2
@@ -822,7 +825,15 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   let inlined = 0;
   let created: { confirmed: boolean; signature?: string; error?: string } = { confirmed: false, error: "not sent" };
   let buyOutcomes: { confirmed: boolean; error?: string }[] = [];
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  // Jito: a bundle that has not landed after ~9 s goes again with a higher tip (a mint can only be created once, so an
+  // earlier attempt landing late makes the next one fail atomically: nothing is ever paid twice). 2026-10-06: the first
+  // real launch bundle at 0.001 SOL never landed, although a plain 2-transfer bundle at 0.001 did.
+  const maxAttempts = o.jito ? Math.max(retries, JITO_TIP_LADDER.length - 1) : retries;
+  const tipFor = (attempt: number) => {
+    const t = o.bundleTip * BigInt(JITO_TIP_LADDER[Math.min(attempt, JITO_TIP_LADDER.length - 1)]);
+    return t > JITO_TIP_CAP ? JITO_TIP_CAP : t;
+  };
+  for (let attempt = 0; attempt <= maxAttempts; attempt++) {
     let prep: LaunchPrep;
     try {
       // the warm blockhash (≤ 20 s old, refreshed every 2 s while the launch page is open) on the first attempt; a
@@ -832,7 +843,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
         conn,
         { dev: st.sol.keypair(dev), name: run.state.name, symbol: run.state.symbol, uri: o.uri, devBuyLamports: o.devBuyLamports, mint: o.pendingKeypair, cashback: o.cashback },
         bundleRows,
-        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? o.bundleTip : tipLamportsFor(undefined), jitoTip: o.jito, ...prepOpts, recentBlockhash: bh ? { blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight } : undefined },
+        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? (o.jito ? tipFor(attempt) : o.bundleTip) : tipLamportsFor(undefined), jitoTip: o.jito, ...prepOpts, recentBlockhash: bh ? { blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight } : undefined },
       );
     } catch (e) {
       created = { confirmed: false, error: e instanceof Error ? e.message : String(e) };
@@ -842,8 +853,11 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
     if (attempt === 0) step(run, "prepare", true, prep.atomic ? "Dev buy is atomic with the creation (guaranteed first buyer)." : o.devBuyLamports > BigInt(0) ? "Name/URI too long for an atomic dev buy: the dev buy goes in a separate transaction." : "No dev buy.");
     if (attempt === 0 && inlineMax > 0) step(run, "prepare", true, prep.inline > 0 ? `${prep.inline} bundle wallet(s) buy inside the create, right behind the dev — no sniper can get between them${bundleRows.length > prep.inline ? `; ${bundleRows.length - prep.inline} more in their own transactions` : ""}.` : "No bundle wallet fits inside the create: they buy in their own transactions.");
     if (o.jito) {
+      if (attempt > 0) step(run, "bundle", true, `Jito bundle again with a ${solString(tipFor(attempt))} SOL tip (attempt ${attempt + 1}/${maxAttempts + 1}).`);
       const r = await launchBundle(conn, prep, {
-        timeoutMs: 45_000,
+        // a landing bundle lands in 1–2 s (real tests): 9 s then a higher tip — the curve check after the window still
+        // catches a late landing
+        timeoutMs: attempt < maxAttempts ? 9_000 : 30_000,
         onStep: (s) => {
           if (s.phase === "preflight") step(run, "bundle", true, s.simulated ? "Bundle checked: signatures valid, whole bundle simulated OK (simulateBundle)." : "Signatures valid · this RPC has no simulateBundle: only the create is simulated before sending.");
           if (s.phase === "bundle") step(run, "bundle", true, `Sending Jito bundle ${s.index + 1}/${s.total ?? 1}…`);
@@ -856,10 +870,11 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
       }
       created = r.create;
       buyOutcomes = [...Array.from({ length: inlined }, () => ({ confirmed: r.create.confirmed, error: r.create.confirmed ? undefined : (r.create.error ?? "create not landed") })), ...r.buys];
-      if (!created.confirmed && attempt < retries) {
-        step(run, "bundle", false, `Bundle not landed (${created.error ?? "?"}) — retry ${attempt + 1}/${retries}`);
+      if (!created.confirmed && attempt < maxAttempts) {
+        step(run, "bundle", false, `Bundle not landed with a ${solString(tipFor(attempt))} SOL tip — raising it.`);
         continue;
       }
+      if (created.confirmed) step(run, "bundle", true, `Jito bundle landed with a ${solString(tipFor(attempt))} SOL tip.`);
       break;
     } else {
       const prepArgs = [
