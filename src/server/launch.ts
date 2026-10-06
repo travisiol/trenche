@@ -175,7 +175,7 @@ function uploadOnce(meta: UploadMeta): Promise<Upload> {
 /** the bundle wallets that will buy inside the create (first INLINE_MAX of the bundle tasks, same order as runLaunch) */
 function inlineBuyers(req: Pick<LaunchExecuteRequest, "tasks">, dev: string): string[] {
   const tasks = normalizeTasks({ tasks: req.tasks ?? [] }, dev);
-  return tasks.flatMap((t) => (t.type === "bundle" ? t.wallets : [])).slice(0, INLINE_MAX);
+  return tasks.flatMap((t) => (t.type === "bundle" ? t.wallets.filter((w) => w !== dev) : [])).slice(0, INLINE_MAX);
 }
 
 /** start the lookup table of a coming launch (no bundle wallet → no table needed). Never throws: a draft that is not
@@ -481,7 +481,8 @@ export function normalizeTasks(req: Pick<LaunchExecuteRequest, "tasks" | "cuPric
       const d = TASK_DEFAULTS.bundle;
       bundleWallets += wallets.length;
       if (bundleWallets > TASK_LIMITS.maxWalletsPerBundleTask) throw new HttpError(400, `Bundle task: at most ${TASK_LIMITS.maxWalletsPerBundleTask} wallets.`);
-      if (dev && wallets.includes(dev)) throw new HttpError(400, "The dev wallet buys inside the create transaction: do not list it in the bundle task.");
+      // the dev may also be a bundle wallet (owner, 2026-10-06: "it should not block a launch"): it then buys twice —
+      // its dev buy inside the create, its bundle buy in its own transaction (never inline: see runLaunch)
       const amounts = new Map<string, bigint>();
       for (const w of wallets) {
         const v = t.walletBuyAmounts?.[w] ?? t.buyAmount;
@@ -645,12 +646,15 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   const devBal = infos ? BigInt(infos[0]?.lamports ?? 0) : null;
   if (devBal === null) refuse(503, "RPC unreachable: the dev balance could not be read. Nothing was sent.");
   // bundle: + the static lookup table rent the first time (≈0.008); the launch table was paid when it was prepared
-  const devNeed = devBuyLamports + CREATE_COST + (mode === "bundle" ? bundleTip + BigInt(12_000_000) : BigInt(0));
+  // the dev listed in a bundle task pays that buy too, from the same balance
+  const devAsBundle = bundleTasks.reduce((s, t) => s + (t.wallets.includes(dev) ? t.amounts.get(dev)! + BigInt(3_000_000) : BigInt(0)), BigInt(0));
+  const devNeed = devBuyLamports + CREATE_COST + devAsBundle + (mode === "bundle" ? bundleTip + BigInt(12_000_000) : BigInt(0));
   if (devBal! < devNeed) refuse(402, `Dev wallet holds ${solString(devBal!)} SOL but needs at least ${solString(devNeed)} SOL (dev buy + creation + fees${mode === "bundle" ? " + tip + lookup tables" : ""}). Nothing was sent.`);
   let k = 1;
   for (const t of bundleTasks) {
     for (const w of t.wallets) {
       const bal = BigInt(infos?.[k++]?.lamports ?? 0);
+      if (w === dev) continue; // counted in devNeed above
       const need = t.amounts.get(w)! + BigInt(3_000_000) + bundleTip;
       if (bal < need) refuse(402, `Bundle wallet ${w.slice(0, 6)}… holds ${solString(bal)} SOL but needs ${solString(need)} SOL (buy + fees + tip). Nothing was sent.`);
     }
@@ -760,8 +764,11 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   const { mint, dev } = run.state;
   const conn = readConn();
   const bundleTasks = run.tasks.filter((t): t is Extract<NormTask, { type: "bundle" }> => t.type === "bundle");
-  const bundleRows: BuyRow[] = bundleTasks.flatMap((t) => t.wallets.map((w) => ({ label: w.slice(0, 6), signer: st.sol.keypair(w), solIn: t.amounts.get(w)!, cuPrice: o.launchCuPrice })));
-  const rowAddr = bundleTasks.flatMap((t) => t.wallets);
+  // the dev as a bundle wallet goes last: never inside its own create (it already buys there), in its own tx
+  const bundleRows: BuyRow[] = bundleTasks
+    .flatMap((t) => t.wallets.map((w) => ({ label: w.slice(0, 6), signer: st.sol.keypair(w), solIn: t.amounts.get(w)!, cuPrice: o.launchCuPrice })))
+    .sort((a, b) => Number(a.signer.publicKey.toBase58() === dev) - Number(b.signer.publicKey.toBase58() === dev));
+  const rowAddr = bundleRows.map((r) => r.signer.publicKey.toBase58()); // same order as bundleRows (dev last)
   const retries = bundleTasks.length ? Math.max(...bundleTasks.map((t) => t.autoRetryCount)) : 0;
   const devnet = isDevnet(st.settings);
   step(run, "prepare", true, `Preparing ${run.state.mode} launch · dev buy ${solString(o.devBuyLamports)} SOL · ${bundleRows.length} bundle wallet(s)${devnet ? " · devnet" : ""} · +${Date.now() - o.t0} ms after the click`);

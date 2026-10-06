@@ -229,8 +229,6 @@ export function validateForm(f: LaunchForm): string[] {
   if (!f.devWallet) out.push("Select a developer wallet first.");
   if (!(Number(f.devBuySol) >= 0)) out.push("Buy amount must be a number.");
   for (const t of f.tasks) for (const m of validateTask(t)) out.push(`${TASK_META[t.type].label}: ${m}`);
-  // the server refuses it (the dev buys inside the create): say so before the click
-  if (f.devWallet && f.tasks.some((t) => t.type === "bundle" && t.walletIds.includes(f.devWallet))) out.push("Bundle: the dev wallet buys with the create — take it out of the bundle wallets.");
   if (f.sellOnExternalEnabled && !(Number(f.sellOnExternalThreshold) > 0)) out.push("Auto Dump: set the external volume threshold.");
   if (f.autoDevSellEnabled && !(Number(f.autoDevSellValue) > 0)) out.push(f.autoDevSellMode === "ms" ? "Auto Dev Sell: set the delay in ms." : "Auto Dev Sell: set the market cap.");
   if (f.autoClaimEnabled) {
@@ -392,6 +390,9 @@ export function fromPresetSnapshot(data: Record<string, unknown>, current: Launc
 
 /* ------------------------------------------------------------- readability helpers */
 
+/** the server tips a Jito bundle at least this much (0.0001–0.0002 never landed in real tests, 2026-10-06) */
+const MIN_JITO_TIP_SOL = 0.001;
+
 /** Wallet addresses a task touches (explicit + expanded groups), de-duplicated. */
 export function taskWallets(t: FormTask, wallets: { address: string; group: string | null; archived: boolean }[]): string[] {
   if (t.type === "wash") return Object.keys(t.washPairs);
@@ -413,7 +414,7 @@ export function taskSentence(t: FormTask, wallets: { address: string; group: str
   if (t.type === "bundle") {
     const total = addrs.reduce((s, a) => s + taskBuyFor(t, a), 0);
     const same = addrs.every((a) => taskBuyFor(t, a) === taskBuyFor(t, addrs[0]));
-    return `${w} buy ${same ? `${t.buyAmount} SOL each` : `${total} SOL in total`} inside the create bundle, tip ${t.tip} SOL, slippage ${t.slippagePercent} %.`;
+    return `${w} buy ${same ? `${t.buyAmount} SOL each` : `${total} SOL in total`} inside the create bundle, tip ${Math.max(Number(t.tip) || 0, MIN_JITO_TIP_SOL)} SOL (Jito; less never lands), slippage ${t.slippagePercent} %.`;
   }
   if (t.type === "sniper") {
     const same = addrs.every((a) => taskBuyFor(t, a) === taskBuyFor(t, addrs[0]));
