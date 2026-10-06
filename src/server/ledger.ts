@@ -307,6 +307,38 @@ export function refreshLedger(opts: { force?: boolean; minIntervalMs?: number; b
   return S.running;
 }
 
+/** the signatures of `sigs` the ledger has not read yet */
+export function ledgerMissing(sigs: string[]): string[] {
+  const f = file();
+  return [...new Set(sigs)].filter((s) => !f.txs[s]);
+}
+
+const readingNow = new Set<string>();
+/** read these transactions NOW, ahead of the scan queue (≤ 10 per call): the open launch's create and our trades
+ *  that the live PnL knows of — the ledger's figure replaces the live estimate only once it holds every one of them */
+export async function ledgerReadNow(sigs: string[]): Promise<void> {
+  const todo = ledgerMissing(sigs).filter((s) => !readingNow.has(s)).slice(0, 10);
+  if (!todo.length) return;
+  todo.forEach((s) => readingNow.add(s));
+  try {
+    const conn = readConn();
+    const got = await mapLimit(todo, 4, (sig) => conn.getParsedTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => null));
+    const f = file();
+    let changed = false;
+    todo.forEach((sig, i) => {
+      const tx = got[i];
+      if (!tx || f.txs[sig]) return; // not visible yet at `confirmed`: the next call retries
+      f.txs[sig] = compact(sig, tx);
+      f.pending = f.pending.filter((s) => s !== sig);
+      delete f.attempts[sig];
+      changed = true;
+    });
+    if (changed) save();
+  } finally {
+    todo.forEach((s) => readingNow.delete(s));
+  }
+}
+
 export function ledgerStatus(): LedgerStatus {
   const f = file();
   const wallets = ledgerWallets();

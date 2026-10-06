@@ -5,6 +5,7 @@
  * A push feed (SSE / WebSocket) plugs in with setTradeSource(): emit each new trade once, `snapshot: false`. */
 import { useEffect, useRef } from "react";
 import { sharedResource } from "./api";
+import { onLiveTrades } from "./livefeed";
 import type { TokenTrade, TokenTradesResponse } from "./types";
 
 export type TradeBatch = {
@@ -33,7 +34,18 @@ export const pollTradeSource: TradeSource = (mint, onBatch) => {
   return off;
 };
 
-let source: TradeSource = pollTradeSource;
+/** the poll (snapshots: fallback + hole detection) AND the live feed's push (src/lib/livefeed.ts: one SSE per mint,
+ *  shared with Activity / Tasks / Token info — each trade ~0.3 s after it is confirmed, the poll's 2–5 s otherwise) */
+export const liveTradeSource: TradeSource = (mint, onBatch) => {
+  const offPoll = pollTradeSource(mint, onBatch);
+  const offLive = onLiveTrades(mint, (rows) => onBatch({ trades: rows.map(({ side, wallet, solAmount, priceSol, blockTime, slot, signature }) => ({ side, wallet, solAmount, priceSol, blockTime, slot, signature })), snapshot: false }));
+  return () => {
+    offPoll();
+    offLive();
+  };
+};
+
+let source: TradeSource = liveTradeSource;
 const swapListeners = new Set<() => void>();
 /** replace the feed (e.g. the live SSE one); subscribers re-subscribe to the new source */
 export function setTradeSource(next: TradeSource) {

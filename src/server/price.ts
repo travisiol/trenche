@@ -3,7 +3,7 @@ import type { SolPriceResponse } from "@/lib/types";
 import { store } from "./store";
 
 const WSOL = "So11111111111111111111111111111111111111112";
-const TTL = 30_000;
+const TTL = 10_000; // the live PnL badge shows USD (was 30 s); coalesced for every caller
 
 type Cache = { value: SolPriceResponse | null; at: number; inflight: Promise<SolPriceResponse | null> | null };
 

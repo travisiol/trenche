@@ -1397,6 +1397,8 @@ export type PositionRow = {
   onCurve: boolean;
   progress: number | null;
   marketCapSol: number | null;
+  /** signatures of the trades counted in cost / realised: a live trade (src/lib/livefeed.ts) not in it is a delta still to add */
+  tradeSigs?: string[];
 };
 /** GET /api/positions?wallets=a,b&mints=m1,m2 → PositionRow[] (defaults: every vault wallet × launched+tracked mints) */
 export type PositionsResponse = PositionRow[];

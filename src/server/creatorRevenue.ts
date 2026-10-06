@@ -194,6 +194,16 @@ export function creatorRevenueByMint(): { byMint: Map<string, bigint>; complete:
   return { byMint, complete };
 }
 
+/** block time (epoch ms) of the newest creator fee counted for `mint` (null: none yet) — the live PnL adds the creator
+ *  fees of the trades it sees AFTER this, so a fee is never counted twice nor missed while the scan catches up */
+export function creatorFeesThrough(mint: string): number | null {
+  const f = file();
+  let at: number | null = null;
+  for (const creator of creatorMints().keys())
+    for (const fee of f.creators[creator]?.fees ?? []) if (fee.mint === mint && (at === null || fee.at > at)) at = fee.at;
+  return at;
+}
+
 /** creator fees earned per UTC day and mint (lamports), from the dated fee list */
 export function creatorFeesByDay(): Map<string, Map<string, bigint>> {
   const f = file();

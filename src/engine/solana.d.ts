@@ -349,7 +349,11 @@ declare module "@/engine/solana/pump/positions.js" {
     value: bigint;
     pnl: bigint;
     pnlPct: number | null;
+    /** signatures of the trades counted in spent / realised */
+    tradeSigs: string[];
   }
+  /** signatures of the trades of `owners` the wallet history of `mint` has counted */
+  export function knownTradeSigs(mint: string, owners: Set<string>): string[];
   export interface PositionsReport {
     mint: string;
     onCurve: boolean;
@@ -369,7 +373,7 @@ declare module "@/engine/solana/pump/positions.js" {
     conn: Connection,
     mint: PublicKey,
     wallets: { label: string; owner: PublicKey }[],
-    opts?: { maxSignatures?: number },
+    opts?: { maxSignatures?: number; force?: boolean },
   ): Promise<PositionsReport>;
 }
 
@@ -539,4 +543,6 @@ declare module "@/engine/solana/pump/events.js" {
   export function parseEventLogs(logs: string[]): PumpEvent[];
   /** events of a getTransaction result: emit_cpi inner instructions (never truncated), the logs as a fallback */
   export function parseTxEvents(tx: { meta?: { innerInstructions?: { instructions: { data?: unknown }[] }[] | null; logMessages?: string[] | null } | null } | null): PumpEvent[];
+  /** raw getTransaction (json encoding) for any transaction version — web3.js refuses version 1; null = not found */
+  export function getTransactionAnyVersion(conn: import("@solana/web3.js").Connection, sig: string): Promise<{ slot: number; blockTime: number | null; meta: { err: unknown; innerInstructions?: { instructions: { data?: unknown }[] }[] | null; logMessages?: string[] | null } | null } | null>;
 }

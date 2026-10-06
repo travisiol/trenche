@@ -20,6 +20,9 @@ import { GlobalPresetsDialog } from "./GlobalPresetsDialog";
 import { TradingPresetsDialog } from "./TradingPresetsDialog";
 import { TASK_META, taskWallets, type FormTask, type LaunchForm } from "./model";
 import { DevTable, TaskSection, sectionDanger, type TradeCtx } from "./WalletRows";
+import { useLivePnl } from "./livePnl";
+import { mergeLive, useLiveFeed } from "@/lib/livefeed";
+import { applyLive, spotOf } from "@/lib/livePositions";
 
 /** maximize / restore + "Reset layout" of one workspace panel (see layout.ts); absent on panels outside the workspace */
 export type PanelFrame = { maximized: boolean; onMaximize: () => void; onResetLayout: () => void };
@@ -215,12 +218,15 @@ export function ChartPanel({ mint, frame, className }: { mint: string | null; fr
 
 /* --------------------------------------------------------------- live PnL */
 type PositionPnl = { cost: number; realised: number; value: number; trading: number; costs: number; creatorFees: number; net: number; pct: number | null; holding: boolean; feesKnown: boolean };
-type MintPnlResponse = { mint: string; row: MintPnl | null };
+type MintPnlResponse = { mint: string; row: MintPnl | null; covered?: boolean; feesThrough?: number | null };
+/** what the live feed adds to the ledger: creator fees of the trades after its last counted fee, and whether the ledger
+ *  holds every transaction of this mint we know of (create + our trades, live ones included) */
+export type LiveLedger = { covered: boolean; liveFees: number };
 
 /** What this launch made, every launch wallet on the token, the same breakdown as the dashboard row:
  *  trading = sold + tokens still held (curve quote, moved with the last trade price) − spent (pump.fun fees inside);
  *  costs = creation rent + priority fees + tips + token accounts (on-chain ledger); + creator fees the token produced. */
-export function positionPnl(rows: { costSol: string; realisedSol: string; valueSol: string; amount: string; marketCapSol: number | null; onCurve?: boolean }[], lastPriceSol: number, ledger: MintPnl | null): PositionPnl | null {
+export function positionPnl(rows: { costSol: string; realisedSol: string; valueSol: string; amount: string; marketCapSol: number | null; onCurve?: boolean }[], lastPriceSol: number, ledger: MintPnl | null, live: LiveLedger = { covered: true, liveFees: 0 }): PositionPnl | null {
   if (!rows.length && !ledger) return null;
   let cost = 0, realised = 0, value = 0, holding = false;
   for (const r of rows) {
@@ -233,16 +239,18 @@ export function positionPnl(rows: { costSol: string; realisedSol: string; valueS
     if (Number(r.amount) > 0) holding = true;
   }
   const costs = Number(ledger?.costsSol ?? 0) || 0;
-  const creatorFees = Number(ledger?.creatorFeesSol ?? 0) || 0;
+  const creatorFees = (Number(ledger?.creatorFeesSol ?? 0) || 0) + live.liveFees;
   let trading = realised + value - cost;
   let net = trading - costs + creatorFees;
   // position closed: the ledger's on-chain net (rent refunds included) is the Dashboard row's figure — show exactly that,
-  // trades being what it leaves once costs and creator fees are put back
-  if (!holding && ledger) {
-    net = Number(ledger.netSol) || 0;
+  // trades being what it leaves once costs and creator fees are put back. Only once the ledger holds every transaction
+  // we know of: until then its row is short (a create or a sell not read yet) and the live estimate above stays
+  if (!holding && ledger && live.covered) {
+    net = (Number(ledger.netSol) || 0) + live.liveFees;
     trading = net + costs - creatorFees;
   }
-  const basis = cost + costs;
+  // what was put in: the positions' spent, or the ledger's buys when no position row is read (wallets not loaded)
+  const basis = Math.max(cost, Number(ledger?.buysSol ?? 0) || 0) + costs;
   return { cost, realised, value, trading, costs, creatorFees, net, pct: basis > 0 ? (net / basis) * 100 : null, holding, feesKnown: !!ledger };
 }
 
@@ -325,13 +333,13 @@ export function TasksPanel({
   // one positions read for the dev + every task wallet (walks wallet trade history on the RPC: 15 s is plenty)
   const rowWallets = Array.from(new Set([devAddr, ...(live ? live.tasks.flatMap((t) => t.wallets) : form.tasks.flatMap((t) => taskWallets(t, wallets)))].filter(Boolean))).sort();
   const positions = useGet<PositionsResponse>(mint && rowWallets.length ? `/api/positions?mints=${mint}&wallets=${rowWallets.join(",")}` : null, 8000);
-  const posMap = new Map((positions.data ?? []).filter((r) => r.mint === mint).map((r) => [r.wallet, r] as const));
-  // same key + interval as the Activity panel: one shared poll, the last trade price moves the PnL between position reads
-  const trades = useGet<TokenTradesResponse>(mint ? `/api/token/${mint}/trades?limit=100` : null, 2000);
   const price = useSolPrice();
   const mintPnl = useGet<MintPnlResponse>(mint ? `/api/pnl/mint?mint=${mint}` : null, 10000);
-  const pnl = positionPnl([...posMap.values()], Number(trades.data?.trades?.[0]?.priceSol ?? 0), mintPnl.data?.row ?? null);
-  const ctx: TradeCtx = { mint, wallets, balances, positions: posMap, tp, presetIndex, unit, sortBy, onTraded: positions.refresh };
+  // live: every trade on the curve moves the price, ours move balances / cost / realised at once (useLivePnl)
+  const lp = useLivePnl(mint, rowWallets, positions, mintPnl);
+  const posMap = lp.posMap;
+  const pnl = positionPnl([...posMap.values()], lp.spot, mintPnl.data?.row ?? null, lp.ledger);
+  const ctx: TradeCtx = { mint, wallets, balances: lp.balances(balances), positions: posMap, tp, presetIndex, unit, sortBy, onTraded: positions.refresh };
   const dumpAll = () => {
     if (!live || !onDump) return toast("Dump All failed — No launch wallets to sell.", "err");
     onDump();
@@ -348,7 +356,7 @@ export function TasksPanel({
   return (
     <Panel
       title="Tasks"
-      titleExtra={mint ? <PnlBadge pnl={pnl} solUsd={price.data?.usd ?? null} loading={positions.loading && !positions.data} /> : null}
+      titleExtra={mint ? <PnlBadge pnl={pnl} solUsd={lp.solUsd ?? price.data?.usd ?? null} loading={positions.loading && !positions.data} /> : null}
       frame={frame}
       className={className}
       right={
@@ -473,12 +481,19 @@ export function TasksPanel({
 export function TokenInfoPanel({ form, token, mint, onEdit, frame, className }: { form: LaunchForm; token: TokenInfo | null; mint: string | null; onEdit?: () => void; frame?: PanelFrame; className?: string }) {
   const positions = useGet<PositionsResponse>(mint ? `/api/positions?mints=${mint}` : null, 15000);
   const price = useSolPrice();
-  const rows = (positions.data ?? []).filter((r) => r.mint === mint);
+  // Bought / Sold / Holdings move with each live trade of ours (and the holdings' quote with everyone's)
+  const feed = useLiveFeed(mint);
+  const vault = useWallets();
+  const polled = (positions.data ?? []).filter((r) => r.mint === mint);
+  const own = new Set([...polled.map((r) => r.wallet), ...(vault.data?.wallets ?? []).map((w) => w.address), ...(vault.data?.history ?? [])]);
+  const rows = mint ? applyLive(mint, polled, feed.trades, feed.last, own, positions.startedAt ?? positions.at) : polled;
   const bought = rows.reduce((n, r) => n + Number(r.costSol), 0);
   const sold = rows.reduce((n, r) => n + Number(r.realisedSol), 0);
   const holding = rows.reduce((n, r) => n + Number(r.valueSol), 0);
   const supplyPct = rows.reduce((n, r) => n + (r.supplyPct ?? 0), 0);
-  const c = token?.curve ?? null;
+  // the curve after the newest live trade (polled token info otherwise): market cap + progress move with each trade
+  const lt = feed.status === "live" && feed.last && token?.curve && !token.complete ? feed.last : null;
+  const c = token?.curve && lt ? { ...token.curve, marketCapSol: spotOf(lt) * 1e9, marketCapUsd: feed.solUsd ? spotOf(lt) * 1e9 * feed.solUsd : null, progress: Math.max(0, Math.min(100, ((793_100_000e6 - Number(lt.realTok)) / 793_100_000e6) * 100)) } : (token?.curve ?? null);
   const progress = token?.complete ? 100 : (c?.progress ?? 0);
   const image = mint ? token?.image : form.imageDataUrl || null;
   const name = mint ? (token?.name ?? short(mint)) : form.name.trim() || "Untitled token";
@@ -591,7 +606,9 @@ export function ActivityPanel({ mint, live, frame, className }: { mint: string |
   const price = useSolPrice();
   // our own sent transactions are listed at once (pending → landed → confirmed) until the API returns them
   const pending = usePendingTrades(mint);
-  const apiRows = trades.data?.trades ?? [];
+  // + the live feed's trades (pushed ~1 s after they land), until the poll lists them
+  const feed = useLiveFeed(mint);
+  const apiRows = mergeLive(trades.data?.trades ?? [], feed.trades, ({ side, wallet, solAmount, priceSol, blockTime, slot, signature }) => ({ side, wallet, solAmount, priceSol, blockTime, slot, signature }));
   const rows: ListedTrade[] = mergePending(apiRows, pending, apiRows[0] ? Number(apiRows[0].priceSol) : null);
   const vaultWallets = useWallets();
   // ours = the vault + the trash + every launch wallet (a dev deleted after its launch is still "you")

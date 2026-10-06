@@ -4,6 +4,7 @@ import { readPositions } from "@/engine/solana/pump/positions.js";
 import type { PositionRow } from "@/lib/types";
 import { solString } from "./api";
 import { isPublicRpc, labelOf, readConn } from "./engine";
+import { liveTrades } from "./livefeed";
 import { metaCached, resolveMeta } from "./metadata";
 import { ownedAddresses, trashedLabel } from "./wallets";
 
@@ -37,9 +38,14 @@ export async function positions(wallets: string[], mints: string[]): Promise<Pos
   const per = isPublicRpc() ? 5 : 50;
   const rows = await mapLimit(mints.slice(0, 40), 2, async (mint): Promise<PositionRow[]> => {
     let r: Awaited<ReturnType<typeof readPositions>>;
+    // one of these wallets traded in the last 30 s (live feed): rescan the history even if the balances did not move
+    // (a buy then a full sell between two reads) — 30 s, not "since the last read": the RPC's signature index of the
+    // token account can lag the trade, the rescan right after it may not list it yet
+    const mine = new Set(ws.map((w) => w.owner.toBase58()));
+    const force = liveTrades(mint).some((t) => Date.now() - t.seenAt < 30_000 && mine.has(t.wallet));
     try {
       const parts: Awaited<ReturnType<typeof readPositions>>[] = [];
-      for (let i = 0; i < ws.length; i += per) parts.push(await readPositions(conn, new PublicKey(mint), ws.slice(i, i + per), { maxSignatures: 300 }));
+      for (let i = 0; i < ws.length; i += per) parts.push(await readPositions(conn, new PublicKey(mint), ws.slice(i, i + per), { maxSignatures: 300, force }));
       r = parts[0];
       for (const x of parts.slice(1)) r.positions.push(...x.positions);
     } catch {
@@ -67,6 +73,7 @@ export async function positions(wallets: string[], mints: string[]): Promise<Pos
         onCurve: r.onCurve,
         progress: r.reserves ? r.graduationPct : null,
         marketCapSol: r.reserves && vTok > 0 ? (vSol / vTok) * 1e9 : null,
+        tradeSigs: p.tradeSigs,
       }));
   });
   return rows.flat();

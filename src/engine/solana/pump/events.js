@@ -168,3 +168,14 @@ export function parseEventLogs(t) {
   }
   return e;
 }
+
+/* getTransaction for ANY transaction version, raw JSON (through the Connection's queued fetch). web3.js 1.x refuses
+   version 1 (StructError "At path: version") and maxSupportedTransactionVersion 0 makes the node refuse it — on
+   2026-10-06 a mainnet holder's 30 last buys were ALL v1: its cost read as 0 (+1474 % PnL) and those trades were
+   missing from the curve history. parseTxEvents only needs meta.innerInstructions / meta.logMessages; slot and
+   blockTime are top-level as usual. null = not found (yet). */
+export async function getTransactionAnyVersion(conn, sig) {
+  const res = await conn._rpcRequest("getTransaction", [sig, { encoding: "json", commitment: "confirmed", maxSupportedTransactionVersion: 1 }]);
+  if (res?.error) throw new Error(res.error.message ?? "getTransaction failed");
+  return res?.result ?? null;
+}

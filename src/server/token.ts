@@ -9,6 +9,7 @@ import type { Candle, CandleTf, ChartMark, CurveState, StatsWindow, TokenCandles
 import { HttpError } from "./api";
 import { PUMP_SUPPLY_TOKENS, fetchCurve, readConn, toCurveState, tokenProgramOf } from "./engine";
 import { feedCard, feedSolUsd } from "./feed";
+import { liveTrades } from "./livefeed";
 import { imageUrl, rememberMeta, resolveMeta } from "./metadata";
 import { solPrice } from "./price";
 import { store } from "./store";
@@ -162,6 +163,11 @@ async function tradesOf(mint: string, limit: number, opts: { pumpWaitMs?: number
   for (const t of chain) {
     const row: TokenTrade = { side: t.side, wallet: t.wallet, solAmount: t.quoteEth, priceSol: t.priceEth, blockTime: t.blockTime, slot: t.block, signature: t.hash };
     out.set(key(row), row);
+  }
+  // the live feed's rows (livefeed.ts: confirmed trades pushed by the RPC's WebSocket) — in the list before the polls see them
+  for (const { side, wallet, solAmount, priceSol, blockTime, slot, signature } of liveTrades(mint)) {
+    const t: TokenTrade = { side, wallet, solAmount, priceSol, blockTime, slot, signature };
+    if (!out.has(key(t))) out.set(key(t), t);
   }
   for (const { priceUsd: _u, tokens: _t, ...t } of pump ?? []) out.set(key(t), t); // pump.fun's row wins (same trade)
   const trades = [...out.values()].sort((a, b) => b.slot - a.slot || b.blockTime - a.blockTime).slice(0, limit);

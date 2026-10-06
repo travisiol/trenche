@@ -124,6 +124,8 @@ export type ResourceState<T> = {
   error: unknown;
   loading: boolean;
   at: number;
+  /** when the request that produced `data` was sent (live deltas newer than this are not in it yet) */
+  startedAt?: number;
 };
 
 type Listener = () => void;
@@ -173,8 +175,9 @@ export function createResource<T>(path: string, intervalMs = 0) {
   const refresh = () => {
     if (inflight) return inflight;
     hookVisibility();
+    const startedAt = Date.now();
     inflight = api<T>(currentPath)
-      .then((data) => set({ data, error: null, loading: false, at: Date.now() }))
+      .then((data) => set({ data, error: null, loading: false, at: Date.now(), startedAt }))
       .catch((error) => set({ error, loading: false, at: Date.now() }))
       .finally(() => {
         inflight = null;
