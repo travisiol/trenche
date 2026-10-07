@@ -38,3 +38,11 @@ Endpoints :
 ## Vérification
 
 `node --test tests/husher.test.cjs` : conservation des montants, décodage du devis réel, création répétée, validation des wallets/mainnet, expiration/consentement, création indéterminée, et rejet d'instructions de dépôt incohérentes.
+
+## Route Block X (2026-10-07)
+
+- Le Mixer est le tiroir de droite de Block X (`design/blockx/portfolio-mixer.html`) : Service Husher | SplitNOW (SplitNOW non branché), Total to mix + Split equal, une ligne par wallet, Deposit total.
+- **Fetch Quote** interroge `GET /api/v1/multi-exchange/providers` (cache 10 min) puis `POST /rate` une fois par fournisseur (binance, kucoin, bybit, bitget, htx, mexc, gate, whitebit ; `husher` est écarté car la doc dit « binance and husher are equivalent »). Affiche **Quote total** et **Providers N available**.
+- **Provider & delay per wallet** : pour chaque wallet, le meilleur fournisseur est présélectionné, menu trié par sortie estimée, délai en minutes (0 = instantané, max 10 080) et **Delay all**. Le serveur refuse un fournisseur qui n'a pas coté ce wallet ou un délai non entier. Envoyés à Husher comme `provider` et `timeDelay` de chaque destinataire.
+- Après création : **Deposit address** (QR ou **Address only**), « Send X SOL to start the mixer », **Pay from wallet**, bloc Status / Service / Order / Destinations, **Done**.
+- **Pay from wallet** (`POST /api/husher/orders/{id}/pay`) : revérifie l'ordre chez Husher, puis envoie exactement le montant vérifié à l'adresse vérifiée depuis un wallet du coffre (job « withdraw » normal, contrôle de solde). Jamais depuis un wallet destinataire, un seul paiement par ordre sauf si le job précédent a échoué, confirmation en deux clics.

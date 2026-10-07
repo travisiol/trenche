@@ -1,27 +1,95 @@
 "use client";
-/** Mixer · Developer Wallets — Block X right-side drawer (design/blockx/portfolio-mixer.html): Service (Husher |
- *  SplitNOW), Total to mix + Split equal, Destinations with one allocation per wallet, Deposit total, Fetch Quote.
- *  Only Husher is wired; DONCHAIN creates the order and shows deposit instructions, it never sends the funds. */
-import { useState } from "react";
+/** Mixer · Developer Wallets — Block X's Mixer route as a right-side drawer (design/blockx/portfolio-mixer.html):
+ *  1. Service (Husher | SplitNOW), Total to mix + Split equal, Destinations with one allocation each, Fetch Quote.
+ *  2. Quote total · Providers N available · Provider & delay per wallet (best provider preselected, Delay all).
+ *  3. Deposit address (QR / Address only) · "Send X SOL to start the mixer" · Pay from wallet · Status · Done.
+ *  Only Husher is wired. Funds move only when the user deposits by hand or confirms Pay from wallet. */
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Copy, RefreshCw } from "lucide-react";
+import QRCode from "qrcode";
+import { Check, ChevronDown, Copy, RefreshCw } from "lucide-react";
 import { Drawer } from "@/components/portfolio/Drawers";
+import { BxJob } from "@/components/bx/Job";
 import { cx } from "@/components/bx/ui";
 import { failureMessage, post, useGet } from "@/lib/api";
-import { useSettings, useVault } from "@/lib/store";
+import { refreshVaultDependents, useSettings, useVault } from "@/lib/store";
 import { short, sol } from "@/lib/format";
 import { toast } from "@/components/ui";
 import type { WalletInfo } from "@/lib/types";
-import { formatHusherSol, husherAllocation, parseHusherSol, splitHusherSol, type HusherOrder, type HusherPlan, type HusherQuote, type HusherState } from "@/lib/husher";
+import { HUSHER_MAX_DELAY_MIN, HUSHER_PROVIDERS, formatHusherSol, husherAllocation, parseHusherSol, providerLabel, splitHusherSol, type HusherOrder, type HusherPlan, type HusherQuote, type HusherState } from "@/lib/husher";
 
 const fieldBase = "border border-line-100 bg-bg-50 px-3 py-2 text-sm text-text-100 outline-none placeholder:text-text-300 focus:border-accent disabled:opacity-50";
 const field = `w-full ${fieldBase}`;
 const smallBtn = "shrink-0 rounded border border-line-100 bg-bg-50 px-3 text-xs font-medium text-text-100 hover:border-accent/35 hover:text-accent disabled:opacity-45";
 const primary = "h-9 w-full rounded border border-accent/40 bg-accent/15 text-sm font-medium text-accent hover:bg-accent/25 disabled:opacity-50";
+const solid = "h-10 w-full rounded bg-accent text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-50";
+const card = "rounded-[10px] border border-line-100";
 const external = "inline underline text-accent";
+/** SOL kept for the deposit transaction fee when listing wallets that can pay. */
+const PAY_FEE_LAM = BigInt(10_000);
+const FINAL = ["Complete", "Failed", "Refunded"];
 
-function lamOf(v: string): bigint {
-  try { return parseHusherSol(v); } catch { return BigInt(0); }
+function lamOf(v: string | null | undefined): bigint {
+  try { return parseHusherSol(String(v ?? "")); } catch { return BigInt(0); }
+}
+
+function ProviderMark({ provider }: { provider: string }) {
+  const p = HUSHER_PROVIDERS[provider];
+  return <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-[10px] font-bold text-black" style={{ background: p?.color ?? "#888" }}>{(p?.label ?? provider).slice(0, 1)}</span>;
+}
+
+function useQr(text: string | null) {
+  const [qr, setQr] = useState<{ text: string; url: string } | null>(null);
+  useEffect(() => {
+    if (!text) return;
+    let alive = true;
+    QRCode.toDataURL(text, { margin: 1, width: 164, color: { dark: "#000000", light: "#ffffff" } }).then((url) => alive && setQr({ text, url }));
+    return () => { alive = false; };
+  }, [text]);
+  return qr && qr.text === text ? qr.url : null;
+}
+
+function QrImage({ src }: { src: string }) {
+  // eslint-disable-next-line @next/next/no-img-element -- data URL generated client-side
+  return <img src={src} alt="Deposit address QR code" width={164} height={164} className="rounded-lg bg-white p-1.5" />;
+}
+
+/** Block X's provider dropdown: logo · name · ~receive, list sorted best first. */
+function ProviderSelect({ value, options, onChange, disabled }: { value: string; options: { provider: string; receiveSol: string }[]; onChange: (p: string) => void; disabled?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const cur = options.find((o) => o.provider === value) ?? options[0];
+  return (
+    <div className="relative min-w-0 flex-1">
+      <button type="button" disabled={disabled} onClick={() => setOpen(!open)} className={cx(fieldBase, "flex h-9 w-full items-center gap-2 text-left")}>
+        <ProviderMark provider={cur.provider} />
+        <span className="min-w-0 flex-1 truncate">{providerLabel(cur.provider)} · ~{cur.receiveSol} SOL</span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-text-300" />
+      </button>
+      {open ? (
+        <>
+          <div className="fixed inset-0 z-[1]" onMouseDown={() => setOpen(false)} />
+          <div className="absolute left-0 right-0 top-full z-[2] mt-1 overflow-hidden rounded border border-line-100 bg-bg-100 shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+            {options.map((o) => (
+              <button key={o.provider} type="button" onClick={() => { onChange(o.provider); setOpen(false); }} className={cx("flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm hover:bg-white/[0.04]", o.provider === cur.provider ? "bg-accent/10 text-accent" : "text-text-100")}>
+                <ProviderMark provider={o.provider} />
+                <span className="flex-1">{providerLabel(o.provider)}</span>
+                <span className="text-xs text-text-300">~{o.receiveSol} SOL</span>
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function MinutesInput({ value, onChange, disabled, className }: { value: string; onChange: (v: string) => void; disabled?: boolean; className?: string }) {
+  return (
+    <div className={cx("relative shrink-0", className)}>
+      <input inputMode="numeric" placeholder="0" value={value} disabled={disabled} onChange={(e) => onChange(e.target.value.replace(/[^\d]/g, ""))} className={cx(fieldBase, "h-9 w-full pr-10 text-right font-mono")} />
+      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-text-300">min</span>
+    </div>
+  );
 }
 
 export function HusherMixer({ wallets, balances = null, selected = [], onClose }: { wallets: WalletInfo[]; balances?: Record<string, string | null> | null; selected?: string[]; onClose: () => void }) {
@@ -31,24 +99,33 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
   const [total, setTotal] = useState("");
   const [allocations, setAllocations] = useState<Record<string, string>>({});
   const [quote, setQuote] = useState<HusherQuote | null>(null);
+  const [providers, setProviders] = useState<Record<string, string>>({});
+  const [delays, setDelays] = useState<Record<string, string>>({});
+  const [delayAll, setDelayAll] = useState("");
   const [order, setOrder] = useState<HusherOrder | null>(null);
   const [history, setHistory] = useState(false);
-  const [busy, setBusy] = useState<"quote" | "create" | "key" | null>(null);
+  const [busy, setBusy] = useState<"quote" | "create" | "key" | "pay" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [consent, setConsent] = useState(false);
+  const [addressOnly, setAddressOnly] = useState(false);
+  const [confirmPay, setConfirmPay] = useState<string | null>(null);
   const settings = useSettings(); const vault = useVault();
   const state = useGet<HusherState>("/api/husher", 15000);
   const limits = useGet<{ minimumSol: number | null }>(state.data?.configured ? "/api/husher/quote" : null, 60000);
-  const finished = order && ["Complete", "Failed", "Refunded"].includes(order.status);
+  const finished = !!order && FINAL.includes(order.status);
   const tracked = useGet<HusherOrder>(order?.remoteId ? `/api/husher/orders/${encodeURIComponent(order.id)}` : null, finished ? 0 : 8000);
   const current = tracked.data?.id === order?.id ? tracked.data : order;
+  const qr = useQr(current?.depositAddress ?? null);
   const mainnet = settings.data?.cluster === "mainnet";
+  const unlocked = !!vault.data?.unlocked;
   const plan: HusherPlan = { totalSol: total, recipients: chosen.map((address) => ({ address, label: live.find((w) => w.address === address)?.label || short(address), sol: allocations[address] || "" })) };
-  const depositLam = chosen.reduce((a, addr) => a + lamOf(allocations[addr] || ""), BigInt(0));
+  const depositLam = chosen.reduce((a, addr) => a + lamOf(allocations[addr]), BigInt(0));
   let problem: string | null = null;
   if (total.trim()) { try { husherAllocation(plan); } catch (e) { problem = failureMessage(e); } }
   const change = () => { setQuote(null); setConsent(false); setError(null); };
+  const nameOf = (addr: string) => live.find((w) => w.address === addr)?.label || short(addr);
+  const balOf = (w: WalletInfo) => balances?.[w.address] ?? w.sol;
   function split(addresses = chosen) {
     if (!addresses.length) return;
     try {
@@ -58,14 +135,31 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
   }
   async function fetchQuote() {
     setBusy("quote"); setError(null); setQuote(null); setConsent(false);
-    try { setQuote(await post<HusherQuote>("/api/husher/quote", plan)); }
+    try {
+      const q = await post<HusherQuote>("/api/husher/quote", plan);
+      setQuote(q);
+      setProviders(Object.fromEntries(q.rates.map((r) => [r.address, r.options[0].provider])));
+      setDelays(Object.fromEntries(q.rates.map((r) => [r.address, delayAll])));
+    }
     catch (e) { setError(failureMessage(e)); }
     finally { setBusy(null); }
   }
+  const delayOf = (addr: string) => Number(delays[addr] || "0");
+  const badDelay = !!quote && quote.rates.some((r) => !(delayOf(r.address) <= HUSHER_MAX_DELAY_MIN));
   async function create() {
     if (!quote) return;
     setBusy("create"); setError(null);
-    try { setOrder(await post<HusherOrder>("/api/husher", { quoteId: quote.id, consent })); state.refresh(); }
+    try {
+      const picks = quote.rates.map((r) => ({ address: r.address, provider: providers[r.address] ?? r.options[0].provider, delayMin: delayOf(r.address) }));
+      setOrder(await post<HusherOrder>("/api/husher", { quoteId: quote.id, consent, picks })); state.refresh();
+    }
+    catch (e) { setError(failureMessage(e)); }
+    finally { setBusy(null); }
+  }
+  async function pay(from: string) {
+    if (!current) return;
+    setBusy("pay"); setError(null);
+    try { setOrder(await post<HusherOrder>(`/api/husher/orders/${encodeURIComponent(current.id)}/pay`, { from })); setConfirmPay(null); tracked.refresh(); refreshVaultDependents(); toast("Deposit sent", "ok"); }
     catch (e) { setError(failureMessage(e)); }
     finally { setBusy(null); }
   }
@@ -81,32 +175,86 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
   }
   const close = () => { if (!busy) onClose(); };
   const min = limits.data?.minimumSol;
+  const awaiting = !!current && !!current.depositAddress && !!current.depositSol && !current.error && !tracked.error && current.status === "Awaiting Deposit" && !current.hashIn;
+  const destinations = new Set(current?.plan.recipients.map((r) => r.address) ?? []);
+  const needLam = lamOf(current?.depositSol) + PAY_FEE_LAM;
+  const payers = live.filter((w) => !destinations.has(w.address) && lamOf(balOf(w)) >= needLam);
+  const pickOf = (addr: string) => current?.picks?.find((p) => p.address === addr);
   return (
-    <Drawer title="Mixer · Developer Wallets" onClose={close} right={<button type="button" disabled={!!busy} className="text-xs text-accent hover:underline disabled:opacity-50" onClick={() => { setHistory(!history); setOrder(null); }}>{history || current ? "New order" : "History"}</button>}>
+    <Drawer title="Mixer · Developer Wallets" onClose={close} right={<button type="button" disabled={!!busy} className="text-xs text-accent hover:underline disabled:opacity-50" onClick={() => { setHistory(!history || !!current); setOrder(null); }}>{history || current ? "New order" : "History"}</button>}>
       <div className="flex flex-col gap-3 p-4">
         {error || state.error ? <p role="alert" className="rounded border border-decrease/30 bg-decrease/10 p-3 text-xs text-decrease">{error || failureMessage(state.error)}</p> : null}
         {current ? (
           <>
-            <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-medium text-text-100">Order {current.orderId || current.id.slice(0, 8)}</p><p className="mt-1 text-xs text-accent">{current.status}</p></div><button type="button" className={cx(smallBtn, "flex h-8 items-center gap-1.5")} disabled={tracked.loading || !current.remoteId} onClick={() => tracked.refresh()}><RefreshCw className="h-3.5 w-3.5" /> Refresh</button></div>
-            {current.error || tracked.error ? <p role="alert" className="text-xs leading-relaxed text-decrease">{current.error || failureMessage(tracked.error)}</p> : null}
-            {current.depositAddress && current.depositSol && !current.error && !tracked.error && !["Complete", "Failed", "Refunded", "Funds Confirmed"].includes(current.status) && !current.hashIn ? <div className="space-y-3 rounded-[10px] border border-accent/30 bg-accent/5 p-3">
-              <p className="text-[13px] font-medium text-text-100">Deposit exactly {current.depositSol} SOL · Solana mainnet</p>
-              <p className="text-xs text-text-300">Send to the Husher deposit address below. This order has not been funded by DONCHAIN.</p>
-              <p className="select-all break-all border border-line-100 bg-bg-50 p-3 font-mono text-xs text-text-100">{current.depositAddress}</p>
-              <div className="flex flex-wrap gap-2"><button type="button" className={cx(smallBtn, "flex h-8 items-center gap-1.5")} onClick={() => copy(current.depositAddress!)}><Copy className="h-3.5 w-3.5" /> Copy address</button><button type="button" className={cx(smallBtn, "h-8")} onClick={() => copy(current.depositSol!)}>Copy amount</button></div>
-            </div> : !current.remoteId ? <p className="text-xs leading-relaxed text-text-300">The creation outcome needs review. No deposit instruction is available and DONCHAIN has sent no funds. Check your order history on Husher before starting another order.</p> : null}
-            <div className="grid grid-cols-2 gap-2 text-xs text-text-300"><span>Deposit total</span><span className="text-right text-text-100">{current.plan.totalSol} SOL</span><span>Quoted output (estimate)</span><span className="text-right text-text-100">{current.quote.receiveSol} SOL</span><span>Exchange fee</span><span className="text-right text-text-100">{current.feeSol !== null ? `${current.feeSol} SOL` : "—"}</span><span>Network fee</span><span className="text-right text-text-100">{current.networkFeeSol !== null ? `${current.networkFeeSol} SOL` : "—"}</span></div>
-            <div className="rounded-[10px] border border-line-100">{current.recipients.map((r) => <div key={r.address} className="border-b border-line-50 px-3 py-2 text-xs last:border-b-0"><div className="flex justify-between gap-2"><span className="text-text-100">{short(r.address)}</span><span className="text-text-200">{r.status} · {r.receiveSol} SOL</span></div>{r.hashOut ? <a href={`https://solscan.io/tx/${encodeURIComponent(r.hashOut)}`} target="_blank" rel="noopener noreferrer" className={external}>Withdrawal transaction</a> : null}</div>)}</div>
+            {current.error || tracked.error ? <p role="alert" className="rounded border border-decrease/30 bg-decrease/10 p-3 text-xs leading-relaxed text-decrease">{current.error || failureMessage(tracked.error)}</p> : null}
+            {awaiting ? (
+              <div className={cx(card, "p-4")}>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-text-300">Deposit address</span>
+                  <button type="button" className={cx(smallBtn, "h-7")} onClick={() => setAddressOnly(!addressOnly)}>{addressOnly ? "Show QR" : "Address only"}</button>
+                </div>
+                {!addressOnly ? <div className="my-4 flex justify-center">{qr ? <QrImage src={qr} /> : <div className="h-[164px] w-[164px] rounded-lg bg-white/5" />}</div> : null}
+                <div className={cx("flex items-center gap-2", addressOnly && "mt-3")}>
+                  <span className="min-w-0 flex-1 select-all break-all font-mono text-xs text-text-100">{current.depositAddress}</span>
+                  <button type="button" aria-label="Copy deposit address" className="shrink-0 text-text-300 hover:text-accent" onClick={() => copy(current.depositAddress!)}><Copy className="h-4 w-4" /></button>
+                </div>
+                <p className="mt-3 text-sm text-text-200">Send <button type="button" className="font-semibold text-text-100 hover:text-accent" onClick={() => copy(current.depositSol!)}>{current.depositSol} SOL</button> to start the mixer.</p>
+              </div>
+            ) : null}
+            {awaiting ? (
+              <div className={card}>
+                <div className="border-b border-line-50 px-3 py-2 text-[13px] font-medium text-text-100">Pay from wallet</div>
+                {current.payment ? (
+                  <div className="space-y-2 px-3 py-3 text-xs text-text-300"><p>Paying from {nameOf(current.payment.from)} · {short(current.payment.from)}</p><BxJob jobId={current.payment.jobId} compact /></div>
+                ) : !unlocked ? (
+                  <p className="px-3 py-3 text-sm text-text-300">Unlock the vault to pay from one of your wallets.</p>
+                ) : payers.length ? (
+                  <div className="max-h-56 overflow-y-auto">
+                    {payers.map((w) => (
+                      <div key={w.address} className="flex items-center gap-3 border-b border-line-50 px-3 py-2 last:border-b-0">
+                        <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-text-100">{w.label || short(w.address)}</span><span className="block text-[11px] text-text-300">{short(w.address)} · {sol(balOf(w))} SOL</span></span>
+                        {confirmPay === w.address
+                          ? <span className="flex gap-1.5"><button type="button" className={cx(smallBtn, "h-8")} disabled={!!busy} onClick={() => setConfirmPay(null)}>Cancel</button><button type="button" className="h-8 rounded bg-accent px-3 text-xs font-medium text-white disabled:opacity-50" disabled={!!busy} onClick={() => pay(w.address)}>{busy === "pay" ? "Sending…" : `Send ${current.depositSol} SOL`}</button></span>
+                          : <button type="button" className={cx(smallBtn, "h-8")} disabled={!!busy} onClick={() => setConfirmPay(w.address)}>Pay</button>}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="px-3 py-3 text-sm text-text-300">No wallets have enough SOL.</p>
+                )}
+              </div>
+            ) : null}
+            <div className={cx(card, "grid grid-cols-2 gap-y-2 px-3 py-3 text-sm")}>
+              <span className="text-text-300">Status</span><span className="flex items-center justify-end gap-2 font-medium text-text-100">{current.status}{current.remoteId ? <button type="button" aria-label="Refresh status" disabled={tracked.loading} onClick={() => tracked.refresh()} className="text-text-300 hover:text-accent disabled:opacity-50"><RefreshCw className="h-3.5 w-3.5" /></button> : null}</span>
+              <span className="text-text-300">Service</span><span className="text-right font-medium text-text-100">Husher</span>
+              <span className="text-text-300">Order</span><span className="text-right font-mono text-xs font-medium leading-5 text-text-100">#{current.orderId || current.id.slice(0, 8)}</span>
+              <span className="text-text-300">Destinations</span><span className="text-right font-medium text-text-100">{current.plan.recipients.length} wallets</span>
+              {current.feeSol !== null ? <><span className="text-text-300">Exchange fee</span><span className="text-right text-text-100">{current.feeSol} SOL</span></> : null}
+            </div>
+            {!current.remoteId ? <p className="text-xs leading-relaxed text-text-300">The creation outcome needs review. No deposit instruction is available and no funds were sent. Check your order history on Husher before starting another order.</p> : null}
+            {current.recipients.length ? (
+              <div className={card}>
+                {current.recipients.map((r) => {
+                  const p = pickOf(r.address);
+                  return (
+                    <div key={r.address} className="border-b border-line-50 px-3 py-2 text-xs last:border-b-0">
+                      <div className="flex justify-between gap-2"><span className="text-text-100">{nameOf(r.address)}</span><span className="text-text-200">{r.status} · {r.receiveSol} SOL</span></div>
+                      <div className="mt-0.5 flex justify-between gap-2 text-[11px] text-text-300"><span>{p ? `${providerLabel(p.provider)} · ${p.delayMin ? `${p.delayMin} min delay` : "instant"}` : short(r.address)}</span>{r.hashOut ? <a href={`https://solscan.io/tx/${encodeURIComponent(r.hashOut)}`} target="_blank" rel="noopener noreferrer" className={external}>Withdrawal tx</a> : null}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
             <div className="flex gap-3 text-xs">
               {current.hashIn ? <a href={`https://solscan.io/tx/${encodeURIComponent(current.hashIn)}`} target="_blank" rel="noopener noreferrer" className={external}>Deposit transaction</a> : null}
               {current.trackingUrl ? <a href={current.trackingUrl} target="_blank" rel="noopener noreferrer" className={external}>Husher tracking page</a> : null}
             </div>
-            <button type="button" className={primary} onClick={() => { setOrder(null); setHistory(true); state.refresh(); }}>Back to history</button>
+            <button type="button" className={solid} disabled={!!busy} onClick={onClose}>Done</button>
           </>
         ) : history ? (
           <>
             <p className="text-xs text-text-300">Orders are saved locally and can be reopened after a restart.</p>
-            {state.data?.orders.length ? <div className="rounded-[10px] border border-line-100">{state.data.orders.map((o) => <button key={o.id} type="button" className="flex w-full items-center justify-between gap-3 border-b border-line-50 px-3 py-2.5 text-left last:border-b-0 hover:bg-white/[0.03]" onClick={() => setOrder(o)}><div><p className="text-sm text-text-100">{o.plan.totalSol} SOL · {o.plan.recipients.length} wallets</p><p className="mt-0.5 text-[11px] text-text-300">{new Date(o.at).toLocaleString()} · {o.orderId || o.id.slice(0, 8)}</p></div><span className="text-xs text-accent">{o.status}</span></button>)}</div> : <p className="px-1 py-4 text-sm text-text-300">No mixer orders yet.</p>}
+            {state.data?.orders.length ? <div className={card}>{state.data.orders.map((o) => <button key={o.id} type="button" className="flex w-full items-center justify-between gap-3 border-b border-line-50 px-3 py-2.5 text-left last:border-b-0 hover:bg-white/[0.03]" onClick={() => { setOrder(o); setHistory(false); }}><div><p className="text-sm text-text-100">{o.plan.totalSol} SOL · {o.plan.recipients.length} wallets</p><p className="mt-0.5 text-[11px] text-text-300">{new Date(o.at).toLocaleString()} · #{o.orderId || o.id.slice(0, 8)}</p></div><span className="text-xs text-accent">{o.status}</span></button>)}</div> : <p className="px-1 py-4 text-sm text-text-300">No mixer orders yet.</p>}
           </>
         ) : (
           <>
@@ -117,7 +265,7 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
               </div>
             </div>
             {service === "splitnow" ? <p className="text-xs leading-relaxed text-text-300">SplitNOW is not connected to DONCHAIN. Use Husher for SOL → SOL splits across your wallets.</p> : null}
-            {service === "husher" && state.data && !state.data.configured ? <div className="space-y-2 rounded-[10px] border border-line-100 p-3"><label htmlFor="husher-api-key" className="block text-xs text-text-300">Husher API key</label><div className="flex gap-2"><input id="husher-api-key" type="password" className={field} value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" placeholder="Paste your key" disabled={!!busy} /><button type="button" className={smallBtn} onClick={saveKey} disabled={!apiKey || !!busy || !vault.data?.unlocked}>Save key</button></div><p className="text-[11px] text-text-300">Unlock your vault to save the key. It stays on the local server and is never returned to the browser.</p></div> : null}
+            {service === "husher" && state.data && !state.data.configured ? <div className={cx(card, "space-y-2 p-3")}><label htmlFor="husher-api-key" className="block text-xs text-text-300">Husher API key</label><div className="flex gap-2"><input id="husher-api-key" type="password" className={field} value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" placeholder="Paste your key" disabled={!!busy} /><button type="button" className={smallBtn} onClick={saveKey} disabled={!apiKey || !!busy || !unlocked}>Save key</button></div><p className="text-[11px] text-text-300">Unlock your vault to save the key. It stays on the local server and is never returned to the browser.</p></div> : null}
             {!mainnet ? <p className="text-xs text-yellow-100">The mixer uses real SOL. Switch to mainnet in <Link href="/settings" className={external}>Settings</Link>.</p> : null}
             <div>
               <label htmlFor="husher-total" className="mb-1 block text-xs text-text-300">Total to mix (SOL)</label>
@@ -127,7 +275,7 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
               </div>
               <p className="mt-1 text-[11px] text-text-300">{min ? `Min ${min} SOL per wallet` : "Min checked by the quote"} · sol · splits across selected wallets</p>
             </div>
-            <div className="rounded-[10px] border border-line-100">
+            <div className={card}>
               <div className="flex items-center justify-between border-b border-line-50 px-3 py-2">
                 <span className="text-xs text-text-300">Destinations ({chosen.length}/{live.length})</span>
                 {chosen.length ? <button type="button" className="text-xs text-accent hover:underline" onClick={() => { setChosen([]); setAllocations({}); change(); }}>Clear</button> : <button type="button" className="text-xs text-accent hover:underline" onClick={() => { const all = live.map((w) => w.address); setChosen(all); if (total.trim()) split(all); else change(); }}>All</button>}
@@ -141,7 +289,7 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
                         <input type="checkbox" checked={on} disabled={!!busy} onChange={(e) => { setChosen((prev) => e.target.checked ? [...prev, w.address] : prev.filter((a) => a !== w.address)); change(); }} className="h-4 w-4 shrink-0 accent-accent" />
                         <span className="min-w-0">
                           <span className="block truncate text-sm font-medium text-text-100">{w.label || short(w.address)}</span>
-                          <span className="block truncate text-[11px] text-text-300">{short(w.address)} · {sol(balances?.[w.address] ?? w.sol)} SOL</span>
+                          <span className="block truncate text-[11px] text-text-300">{short(w.address)} · {sol(balOf(w))} SOL</span>
                         </span>
                       </label>
                       <input aria-label={`Allocation for ${w.label || w.address}`} inputMode="decimal" placeholder="0" className={cx(fieldBase, "w-[120px] shrink-0 text-right font-mono text-xs")} value={allocations[w.address] || ""} disabled={!on || !!busy} onChange={(e) => { setAllocations((p) => ({ ...p, [w.address]: e.target.value })); change(); }} />
@@ -155,9 +303,41 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
               </div>
             </div>
             {problem ? <p className="text-[11px] leading-relaxed text-text-300">{problem}</p> : null}
-            <button type="button" className={primary} disabled={service !== "husher" || !!busy || !total.trim() || !!problem || !mainnet || !state.data?.configured} onClick={fetchQuote}>{busy === "quote" ? "Fetching quote…" : "Fetch Quote"}</button>
-            {quote ? <div className="space-y-3 rounded-[10px] border border-accent/25 bg-accent/5 p-3"><div className="flex justify-between text-sm"><span className="text-text-200">Estimated total received</span><span className="font-medium text-text-100">{quote.receiveSol} SOL</span></div><div className="max-h-32 space-y-1 overflow-y-auto">{quote.rates.map((r) => <p key={r.address} className="flex justify-between text-xs text-text-300"><span>{short(r.address)}</span><span>{r.receiveSol} SOL</span></p>)}</div><p className="text-[11px] leading-relaxed text-text-300">Floating estimate after Husher fees. Review within 60 seconds; the final amount may change during execution. Creating the order generates deposit instructions and sends no funds.</p><label className="flex items-start gap-2 text-xs leading-relaxed text-text-200"><input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} disabled={!!busy} className="mt-0.5 accent-accent" /><span>I agree to Husher&apos;s <a className={external} href="https://www.husher.io/terms-of-service" target="_blank" rel="noopener noreferrer">Terms</a>, <a className={external} href="https://www.husher.io/privacy-policy" target="_blank" rel="noopener noreferrer">Privacy Policy</a> and <a className={external} href="https://www.husher.io/anti-money-policy" target="_blank" rel="noopener noreferrer">AML Policy</a>, and authorize sharing the selected destination addresses with Husher to create this order.</span></label><button type="button" className={primary} disabled={!consent || !!busy || !mainnet} onClick={create}>{busy === "create" ? "Creating order…" : "Create order"}</button></div> : null}
-            <p className="text-[11px] leading-relaxed text-text-300">Exchange execution is provided by Husher. Transactions may be delayed or subject to checks. This does not guarantee that wallet addresses become unlinkable.</p>
+            <button type="button" className={primary} disabled={service !== "husher" || !!busy || !total.trim() || !!problem || !mainnet || !state.data?.configured} onClick={fetchQuote}>{busy === "quote" ? "Fetching quote…" : quote ? "Refresh Quote" : "Fetch Quote"}</button>
+            {quote ? (
+              <>
+                <div className={cx(card, "grid grid-cols-2 gap-y-2 px-3 py-3 text-sm")}>
+                  <span className="text-text-300">Quote total</span><span className="text-right font-semibold text-text-100">{quote.totalSol} SOL</span>
+                  <span className="text-text-300">Providers</span><span className="text-right font-semibold text-text-100">{quote.providers.length} available</span>
+                </div>
+                <div className={card}>
+                  <div className="flex items-center justify-between gap-3 border-b border-line-50 px-3 py-2">
+                    <span className="text-xs text-text-300">Provider &amp; delay per wallet</span>
+                    <span className="flex items-center gap-2 text-xs text-text-300">Delay all<MinutesInput className="w-[96px]" value={delayAll} disabled={!!busy} onChange={(v) => { setDelayAll(v); setDelays(Object.fromEntries(quote.rates.map((r) => [r.address, v]))); }} /></span>
+                  </div>
+                  <div>
+                    {quote.rates.map((r) => {
+                      const prov = providers[r.address] ?? r.options[0].provider;
+                      const opt = r.options.find((o) => o.provider === prov) ?? r.options[0];
+                      return (
+                        <div key={r.address} className="border-b border-line-50 px-3 py-3 last:border-b-0">
+                          <div className="flex items-baseline justify-between gap-2"><span className="truncate text-sm font-medium text-text-100">{nameOf(r.address)}</span><span className="text-sm font-medium text-accent">~{opt.receiveSol} SOL</span></div>
+                          <div className="flex justify-between gap-2 text-[11px] text-text-300"><span>{short(r.address)} · in {r.sendSol} SOL</span><span>est. out</span></div>
+                          <div className="mt-2 flex gap-2">
+                            <ProviderSelect value={prov} options={r.options} disabled={!!busy} onChange={(p) => setProviders((m) => ({ ...m, [r.address]: p }))} />
+                            <MinutesInput className="w-[110px]" value={delays[r.address] ?? ""} disabled={!!busy} onChange={(v) => setDelays((m) => ({ ...m, [r.address]: v }))} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                {badDelay ? <p className="text-[11px] text-decrease">Delay is at most {HUSHER_MAX_DELAY_MIN} min (7 days).</p> : null}
+                <label className="flex items-start gap-2 text-[11px] leading-relaxed text-text-300"><input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} disabled={!!busy} className="mt-0.5 accent-accent" /><span>I agree to Husher&apos;s <a className={external} href="https://www.husher.io/terms-of-service" target="_blank" rel="noopener noreferrer">Terms</a>, <a className={external} href="https://www.husher.io/privacy-policy" target="_blank" rel="noopener noreferrer">Privacy Policy</a> and <a className={external} href="https://www.husher.io/anti-money-policy" target="_blank" rel="noopener noreferrer">AML Policy</a>, and to share the selected destination addresses with Husher.</span></label>
+                <button type="button" className={solid} disabled={!consent || !!busy || !mainnet || badDelay} onClick={create}>{busy === "create" ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" /> Creating order…</span> : <span className="inline-flex items-center gap-2"><Check className="h-4 w-4" /> Create order</span>}</button>
+                <p className="text-[11px] leading-relaxed text-text-300">Estimates float until execution. Creating the order only gives a deposit address; nothing is sent until you deposit.</p>
+              </>
+            ) : null}
           </>
         )}
       </div>

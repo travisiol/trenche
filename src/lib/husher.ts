@@ -1,9 +1,29 @@
 export type HusherRecipient = { address: string; label: string; sol: string };
 export type HusherPlan = { totalSol: string; recipients: HusherRecipient[] };
+/** One exchange route for a wallet: Husher sends each destination through the provider picked for it. */
+export type HusherOption = { provider: string; receiveSol: string };
 export type HusherQuote = HusherPlan & {
   id: string; expiresAt: number; receiveSol: string;
-  rates: { address: string; sendSol: string; receiveSol: string; percent: number; minimum: string | null }[];
+  /** providers that quoted at least one wallet */
+  providers: string[];
+  /** receiveSol = best option; options sorted best first */
+  rates: { address: string; sendSol: string; receiveSol: string; percent: number; minimum: string | null; options: HusherOption[] }[];
 };
+/** provider + delay (minutes, 0 = instant) chosen per wallet before the order is created */
+export type HusherPick = { address: string; provider: string; delayMin: number };
+export const HUSHER_MAX_DELAY_MIN = 10_080;
+export const HUSHER_PROVIDERS: Record<string, { label: string; color: string }> = {
+  binance: { label: "Binance", color: "#F0B90B" },
+  husher: { label: "Husher", color: "#3B82F6" },
+  kucoin: { label: "KuCoin", color: "#23AF91" },
+  bybit: { label: "Bybit", color: "#F7A600" },
+  bitget: { label: "Bitget", color: "#00F0FF" },
+  htx: { label: "HTX", color: "#2B6DEF" },
+  mexc: { label: "MEXC", color: "#1972E2" },
+  gate: { label: "Gate", color: "#2354E6" },
+  whitebit: { label: "WhiteBIT", color: "#E6E6E6" },
+};
+export const providerLabel = (p: string) => HUSHER_PROVIDERS[p]?.label ?? p;
 export type HusherOrder = {
   id: string; at: number; plan: HusherPlan; quote: HusherQuote;
   remoteId: string | null; orderId: string | null; status: string;
@@ -12,6 +32,10 @@ export type HusherOrder = {
   hashIn: string | null; trackingUrl: string | null;
   recipients: { address: string; status: string; receiveSol: string; hashOut: string | null }[];
   error: string | null; updatedAt: number;
+  /** absent on orders created before providers could be picked (= husher, no delay) */
+  picks?: HusherPick[];
+  /** "Pay from wallet": the vault send job that funds the deposit */
+  payment?: { from: string; jobId: string; at: number };
 };
 export type HusherState = { configured: boolean; mainnet: boolean; orders: HusherOrder[] };
 
