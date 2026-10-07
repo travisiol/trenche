@@ -869,6 +869,15 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
     else step(run, "prepare", true, "pump.fun lookup table not ready: the create carries no Astralane tip (built in the background for the next launch).");
   }
   if (astralane) step(run, "bundle", true, astraTx ? "Create and buys sent through Astralane's fast lane (Free key: no bundles — not atomic, every wallet its own trader)." : "Bundle sent through Astralane (Settings key).");
+  // Jito / Helius bundle: the static pump.fun table lets the dev buy fit INSIDE the create (without it the create often
+  // has no room: "Name/URI too long", the dev buy took a bundle slot of its own → dev + 3 wallets instead of dev + 4)
+  if (o.jito && !astralane && !tables.length && run.state.mode === "bundle") {
+    const stat = await staticLookupTable().catch(() => null);
+    if (stat) {
+      tables = [stat];
+      haveStatic = true;
+    } else step(run, "prepare", true, "pump.fun lookup table not ready: the dev buy may not fit in the create (built in the background for the next launch).");
+  }
   const prepOpts = { lookupTables: tables, inlineMax };
   // the chain refused the create for its instruction trace: one inline wallet fewer, same attempt (never more than INLINE_MAX times)
   const shrinkInline = (error: string | undefined): boolean => {

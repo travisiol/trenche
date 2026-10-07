@@ -1,9 +1,11 @@
-import { ComputeBudgetProgram, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction, type TransactionInstruction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction, type TransactionInstruction } from "@solana/web3.js";
 import { ASTRALANE_TIP_ACCOUNTS, HELIUS_BUNDLE_TIP_ACCOUNTS, JITO_BUNDLE_TIP_ACCOUNTS } from "@/engine/solana/config.js";
 import { base58Encode } from "@/engine/solana/keys.js";
 import { buildBuyTx, planBuys, signWith } from "@/engine/solana/pump/math.js";
 import { bondingCurvePda, parseBondingCurve, tokenProgramFor } from "@/engine/solana/pump/pdas.js";
-import { JITO_BLOCK_ENGINES, jitoBundleStatus, latestBlockhash, submitAstralaneBundle, submitHeliusBundle, submitJitoBundle } from "@/engine/solana/send.js";
+import { JITO_BLOCK_ENGINES, jitoBundleStatus, latestBlockhash, preflightBundle, submitAstralaneBundle, submitHeliusBundle, submitJitoBundle } from "@/engine/solana/send.js";
+import { prepareLaunch } from "@/engine/solana/pump/launch.js";
+import { staticLookupTable } from "@/server/alt";
 import { HttpError, json, readBody, route } from "@/server/api";
 import { readConn, requireUnlocked } from "@/server/engine";
 import { heliusBundleUrl, store } from "@/server/store";
@@ -17,7 +19,7 @@ export const maxDuration = 60;
  *  status, polled 30 s. Built to find why every launch bundle reported "Invalid" (2026-10-06). */
 export const POST = route(async (req: Request) => {
   requireUnlocked();
-  type Body = { wallet?: string; tipLamports?: number; /** one block engine only (e.g. https://ny.mainnet.block-engine.jito.wtf) */ region?: string; /** "two" (default): self-transfer then tip · "one": a single tx with both · "tx": the single tx via Jito's sendTransaction (control: not a bundle) */ mode?: "one" | "two" | "tx" | "pumpbuy"; /** pumpbuy: a live pump.fun coin and the SOL (lamports) to buy */ mint?: string; lamports?: number; /** pumpbuy variants */ tipInBuy?: boolean; cuPrice?: number; cuLimit?: number; /** send through Astralane (Settings key): every tx tips an Astralane wallet */ astralane?: boolean; /** with astralane: send the tipped buy alone through Astralane sendTransaction (Free tier) */ astralaneTx?: boolean; /** build the same transactions and only simulate them (nothing sent, nothing spent) */ simulate?: boolean; /** send through Helius sendBundle (Settings Helius key / RPC), forwarded to Jito */ helius?: boolean };
+  type Body = { wallet?: string; tipLamports?: number; /** one block engine only (e.g. https://ny.mainnet.block-engine.jito.wtf) */ region?: string; /** "two" (default): self-transfer then tip · "one": a single tx with both · "tx": the single tx via Jito's sendTransaction (control: not a bundle) */ mode?: "one" | "two" | "tx" | "pumpbuy"; /** pumpbuy: a live pump.fun coin and the SOL (lamports) to buy */ mint?: string; lamports?: number; /** pumpbuy variants */ tipInBuy?: boolean; cuPrice?: number; cuLimit?: number; /** send through Astralane (Settings key): every tx tips an Astralane wallet */ astralane?: boolean; /** with astralane: send the tipped buy alone through Astralane sendTransaction (Free tier) */ astralaneTx?: boolean; /** build the same transactions and only simulate them (nothing sent, nothing spent) */ simulate?: boolean; /** send through Helius sendBundle (Settings Helius key / RPC), forwarded to Jito */ helius?: boolean; /** launchsim: dev + bundle wallets (default: the richest vault wallets) */ dev?: string; wallets?: string[]; devBuyLamports?: number; buyLamports?: number };
   const body = await readBody<Body>(req).catch(() => ({}) as Body);
   const st = store();
   const bal = st.balances?.map ?? {};
@@ -41,6 +43,31 @@ export const POST = route(async (req: Request) => {
   const self = SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: kp.publicKey, lamports: 0 });
   const tipIx = SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: tipTo, lamports: tip });
   const mode = body.mode ?? "two";
+  // launchsim: the REAL launch bundle (create + dev buy + up to 4 wallets, static pump.fun table, Jito/Helius tip) built
+  // like a launch and only simulated — how many transactions, their size, is the dev buy inside the create. Nothing sent.
+  if ((mode as string) === "launchsim") {
+    const rich = st.sol.wallets.map((w) => [w.address, Number(bal[w.address] ?? 0)] as const).sort((a, b) => b[1] - a[1]).map(([a]) => a);
+    const devAddr = body.dev ?? rich[0];
+    const buyers = (body.wallets ?? rich.filter((a) => a !== devAddr).slice(0, 4)).slice(0, 4);
+    const last = st.launches.find((l) => l.uri);
+    const stat = await staticLookupTable().catch(() => null);
+    const rows = buyers.map((w) => ({ label: w.slice(0, 6), signer: st.sol.keypair(w), solIn: BigInt(Math.floor(body.buyLamports ?? 10_000_000)), cuPrice: 100_000 }));
+    const prep = await prepareLaunch(
+      conn,
+      { dev: st.sol.keypair(devAddr), name: last?.name ?? "Haaland", symbol: last?.symbol ?? "HAAL", uri: last?.uri ?? "https://ipfs.io/ipfs/bafkreigy2bnlvsqepuvjuda7ah4t3knobpfucqkvfqgqlaoy7ygrhoehue", devBuyLamports: BigInt(Math.floor(body.devBuyLamports ?? 100_000_000)), mint: Keypair.generate(), cashback: false },
+      rows,
+      { cuPrice: 100_000, slippageBps: 3000, tipLamports: tip, jitoTip: body.helius === true ? "helius" : true, lookupTables: stat ? [stat] : [], inlineMax: 0 },
+    );
+    const all = [prep.createTx, ...prep.buyTxs];
+    const pre = await preflightBundle(conn, all).catch((e) => ({ error: String(e), simulated: false }));
+    return json({
+      mode, staticTable: !!stat, metadata: { name: last?.name, symbol: last?.symbol, uriLength: last?.uri?.length },
+      devBuyInsideCreate: prep.atomic, transactions: all.length,
+      sizes: all.map((t) => t.serialize().length),
+      signers: all.map((t) => t.message.staticAccountKeys.slice(0, t.message.header.numRequiredSignatures).map((k) => k.toBase58().slice(0, 6))),
+      tipInCreate: prep.createHasTip ?? null, simulate: pre,
+    });
+  }
   // pumpbuy: OUR pump.fun buy transaction (engine buildBuyTx, as a launch bundle builds it) then a tip-only tx — tells
   // whether Jito drops our pump transactions or only our create
   let pumpTxs: VersionedTransaction[] | null = null;
