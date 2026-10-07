@@ -302,6 +302,35 @@ export function watchMint(mint: string, l: Listener): () => void {
   };
 }
 
+/** a launch about to land: subscribe to its curve BEFORE the create. The bundle's buys land in the create's own block;
+ *  the page used to subscribe only once it opened (after the create), so they came through the 2 s polling — the
+ *  chart and the trades showed a few seconds late (2026-10-07). Released after `ms` if no page watches it. */
+export function prewatchMint(mint: string, ms = 120_000): void {
+  const stop = watchMint(mint, { trades: () => {}, status: () => {} });
+  setTimeout(stop, ms);
+}
+
+/** our own landed transactions (the launch: create + dev buy + bundle buys): read once and published at once, in the
+ *  given order, without waiting for the socket or the polling */
+export async function ingestSignatures(mint: string, sigs: string[]): Promise<void> {
+  prewatchMint(mint);
+  const w = g().watches.get(mint);
+  if (!w || !sigs.length) return;
+  const rows = await Promise.all(
+    sigs.map(async (sig) => {
+      for (const wait of [0, 300, 900, 2000]) {
+        if (wait) await new Promise((r) => setTimeout(r, wait));
+        const tx = await getTransactionAnyVersion(readConn(), sig).catch(() => null);
+        if (!tx?.meta) continue;
+        w.fetched++;
+        return rowsOf(w, sig, tx.slot ?? 0, parseTxEvents(tx));
+      }
+      return [] as LiveTrade[];
+    }),
+  );
+  for (const r of rows) if (r.length) publish(w, r);
+}
+
 export function liveStatus(): LiveStatus {
   return g().status;
 }

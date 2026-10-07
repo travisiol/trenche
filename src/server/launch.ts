@@ -47,7 +47,7 @@ import { loops, TradeLoop, type SavedLoop } from "./tradeloop";
 import { resolveWashPairs, washPairs } from "./wash";
 import { markDraftLaunched } from "./drafts";
 import { ledgerMissing, ledgerReadNow } from "./ledger";
-import { liveTrades } from "./livefeed";
+import { ingestSignatures, liveTrades, prewatchMint } from "./livefeed";
 import { refreshCreatorRevenue } from "./creatorRevenue";
 import { SenderConnection } from "./sender";
 import { awaitWarmTable, deactivateLaunchTable, ensureStaticLookupTable, staticLookupTable, sweepLaunchTables, takeWarmTable, warmLaunchTable, warmTableEtaMs, warmTableFor, warmTableStatus } from "./alt";
@@ -899,6 +899,8 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   };
   let rateRetries = 0;
   let sendRetries = 0;
+  // the live feed listens to this mint before anything is sent: the create's block (dev buy + bundle buys) is not missed
+  prewatchMint(mint);
   for (let attempt = 0; attempt <= maxAttempts; attempt++) {
     let prep: LaunchPrep;
     try {
@@ -939,6 +941,8 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
         continue;
       }
       created = r.create;
+      // landed: our own transactions straight into the live feed (chart + trades at once, not after the 2 s polling)
+      if (created.confirmed) void ingestSignatures(mint, [prep.createTx, ...prep.buyTxs].map((t) => base58Encode(t.signatures[0]))).catch(() => null);
       buyOutcomes = [...Array.from({ length: inlined }, () => ({ confirmed: r.create.confirmed, error: r.create.confirmed ? undefined : (r.create.error ?? "create not landed") })), ...r.buys];
       // refused at the door by Jito's rate limit even after waiting: same tip again, a few times (never counted as a lost auction)
       if (!created.confirmed && /rate limit/i.test(created.error ?? "") && rateRetries < 4) {
@@ -995,6 +999,8 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
         continue;
       }
       created = r.create;
+      // fast lane: the create (re-signed or not) and the buys straight into the live feed too
+      if (created.confirmed) void ingestSignatures(mint, [created.signature ?? base58Encode(prep.createTx.signatures[0]), ...prep.buyTxs.map((t) => base58Encode(t.signatures[0]))]).catch(() => null);
       buyOutcomes = [...Array.from({ length: inlined }, () => ({ confirmed: r.create.confirmed, error: r.create.confirmed ? undefined : (r.create.error ?? "create not landed") })), ...r.buys];
       break;
     }
