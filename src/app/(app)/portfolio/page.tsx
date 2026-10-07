@@ -571,7 +571,7 @@ export default function PortfolioPage() {
       {modal === "airdrop" ? <AirdropModal open onClose={() => setModal(null)} {...base} /> : null}
       {drawer === "deposit" ? <DepositDrawer onClose={() => setDrawer(null)} wallets={scopeWallets} selected={sel} active={active} balances={bal} /> : null}
       {trashOpen ? <TrashModal open onClose={() => setTrashOpen(false)} /> : null}
-      {mixerOpen ? <HusherMixer onClose={() => setMixerOpen(false)} wallets={live} selected={sel} /> : null}
+      {mixerOpen ? <HusherMixer onClose={() => setMixerOpen(false)} wallets={live} balances={bal} selected={sel} /> : null}
       {modal === "private" ? <PrivateSendModal onClose={() => setModal(null)} wallets={live} balances={bal} selected={sel} active={active} /> : null}
       {drawer === "disperse" ? <DisperseDrawer onClose={() => setDrawer(null)} wallets={live} groups={groups} balances={bal} selected={sel} active={active} scopeLabel={scopeLabel} scopeGroup={curGroup?.id ?? null} onHistory={() => { setDrawer(null); setActivityTab("disperse"); }} /> : null}
       {drawer === "reverse" ? <ReverseDisperseDrawer onClose={() => setDrawer(null)} wallets={live} groups={groups} scopeLabel={scopeLabel} scopeGroup={curGroup?.id ?? null} balances={bal} /> : null}

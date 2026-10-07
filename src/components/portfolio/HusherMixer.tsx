@@ -1,23 +1,34 @@
 "use client";
+/** Mixer · Developer Wallets — Block X right-side drawer (design/blockx/portfolio-mixer.html): Service (Husher |
+ *  SplitNOW), Total to mix + Split equal, Destinations with one allocation per wallet, Deposit total, Fetch Quote.
+ *  Only Husher is wired; DONCHAIN creates the order and shows deposit instructions, it never sends the funds. */
 import { useState } from "react";
 import Link from "next/link";
-import { Copy, History, RefreshCw } from "lucide-react";
-import { BxButton, BxInput, BxModal } from "@/components/bx/ui";
+import { Copy, RefreshCw } from "lucide-react";
+import { Drawer } from "@/components/portfolio/Drawers";
+import { cx } from "@/components/bx/ui";
 import { failureMessage, post, useGet } from "@/lib/api";
 import { useSettings, useVault } from "@/lib/store";
-import { short } from "@/lib/format";
+import { short, sol } from "@/lib/format";
 import { toast } from "@/components/ui";
 import type { WalletInfo } from "@/lib/types";
-import { husherAllocation, splitHusherSol, type HusherOrder, type HusherPlan, type HusherQuote, type HusherState } from "@/lib/husher";
+import { formatHusherSol, husherAllocation, parseHusherSol, splitHusherSol, type HusherOrder, type HusherPlan, type HusherQuote, type HusherState } from "@/lib/husher";
 
-export function HusherMixer({ wallets, selected = [], onClose }: { wallets: WalletInfo[]; selected?: string[]; onClose: () => void }) {
+const field = "w-full border border-line-100 bg-bg-50 px-3 py-2 text-sm text-text-100 outline-none placeholder:text-text-300 focus:border-accent disabled:opacity-50";
+const smallBtn = "shrink-0 rounded border border-line-100 bg-bg-50 px-3 text-xs font-medium text-text-100 hover:border-accent/35 hover:text-accent disabled:opacity-45";
+const primary = "h-9 w-full rounded border border-accent/40 bg-accent/15 text-sm font-medium text-accent hover:bg-accent/25 disabled:opacity-50";
+const external = "inline underline text-accent";
+
+function lamOf(v: string): bigint {
+  try { return parseHusherSol(v); } catch { return BigInt(0); }
+}
+
+export function HusherMixer({ wallets, balances = null, selected = [], onClose }: { wallets: WalletInfo[]; balances?: Record<string, string | null> | null; selected?: string[]; onClose: () => void }) {
   const live = wallets.filter((w) => !w.archived);
+  const [service, setService] = useState<"husher" | "splitnow">("husher");
   const [chosen, setChosen] = useState<string[]>(() => selected.length ? live.filter((w) => selected.includes(w.address)).map((w) => w.address) : live.map((w) => w.address));
-  const [total, setTotal] = useState("0.1");
-  const [allocations, setAllocations] = useState<Record<string, string>>(() => {
-    const addresses = selected.length ? live.filter((w) => selected.includes(w.address)).map((w) => w.address) : live.map((w) => w.address);
-    try { return Object.fromEntries(addresses.map((a, i) => [a, splitHusherSol("0.1", addresses.length)[i]])); } catch { return {}; }
-  });
+  const [total, setTotal] = useState("");
+  const [allocations, setAllocations] = useState<Record<string, string>>({});
   const [quote, setQuote] = useState<HusherQuote | null>(null);
   const [order, setOrder] = useState<HusherOrder | null>(null);
   const [history, setHistory] = useState(false);
@@ -33,10 +44,12 @@ export function HusherMixer({ wallets, selected = [], onClose }: { wallets: Wall
   const current = tracked.data?.id === order?.id ? tracked.data : order;
   const mainnet = settings.data?.cluster === "mainnet";
   const plan: HusherPlan = { totalSol: total, recipients: chosen.map((address) => ({ address, label: live.find((w) => w.address === address)?.label || short(address), sol: allocations[address] || "" })) };
+  const depositLam = chosen.reduce((a, addr) => a + lamOf(allocations[addr] || ""), BigInt(0));
   let problem: string | null = null;
-  try { husherAllocation(plan); } catch (e) { problem = failureMessage(e); }
+  if (total.trim()) { try { husherAllocation(plan); } catch (e) { problem = failureMessage(e); } }
   const change = () => { setQuote(null); setConsent(false); setError(null); };
   function split(addresses = chosen) {
+    if (!addresses.length) return;
     try {
       const amounts = splitHusherSol(total, addresses.length);
       setAllocations(Object.fromEntries(addresses.map((a, i) => [a, amounts[i]]))); change();
@@ -65,48 +78,88 @@ export function HusherMixer({ wallets, selected = [], onClose }: { wallets: Wall
     try { await navigator.clipboard.writeText(value); toast("Copied", "ok"); }
     catch { toast("Select the value and copy it manually.", "info"); }
   }
-  const external = "inline underline text-accent";
+  const close = () => { if (!busy) onClose(); };
+  const min = limits.data?.minimumSol;
   return (
-    <BxModal open onClose={() => { if (!busy) onClose(); }} title="Mixer · Developer Wallets" width={550} headerRight={<BxButton size="sm" variant="ghost" disabled={!!busy} onClick={() => { setHistory(!history); setOrder(null); }}><History className="h-3.5 w-3.5" /> {history ? "New order" : "History"}</BxButton>}>
-      <div className="space-y-4">
+    <Drawer title="Mixer · Developer Wallets" onClose={close} right={<button type="button" disabled={!!busy} className="text-xs text-accent hover:underline disabled:opacity-50" onClick={() => { setHistory(!history); setOrder(null); }}>{history || current ? "New order" : "History"}</button>}>
+      <div className="flex flex-col gap-3 p-4">
         {error || state.error ? <p role="alert" className="rounded border border-decrease/30 bg-decrease/10 p-3 text-xs text-decrease">{error || failureMessage(state.error)}</p> : null}
         {current ? (
           <>
-            <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold text-text-100">Order {current.orderId || current.id.slice(0, 8)}</p><p className="mt-1 text-xs text-accent">{current.status}</p></div><BxButton size="sm" disabled={tracked.loading || !current.remoteId} onClick={() => tracked.refresh()}><RefreshCw className="h-3.5 w-3.5" /> Refresh</BxButton></div>
+            <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-medium text-text-100">Order {current.orderId || current.id.slice(0, 8)}</p><p className="mt-1 text-xs text-accent">{current.status}</p></div><button type="button" className={cx(smallBtn, "flex h-8 items-center gap-1.5")} disabled={tracked.loading || !current.remoteId} onClick={() => tracked.refresh()}><RefreshCw className="h-3.5 w-3.5" /> Refresh</button></div>
             {current.error || tracked.error ? <p role="alert" className="text-xs leading-relaxed text-decrease">{current.error || failureMessage(tracked.error)}</p> : null}
-            {current.depositAddress && current.depositSol && !current.error && !tracked.error && !["Complete", "Failed", "Refunded", "Funds Confirmed"].includes(current.status) && !current.hashIn ? <div className="space-y-3 rounded-lg border border-accent/30 bg-accent/5 p-4">
+            {current.depositAddress && current.depositSol && !current.error && !tracked.error && !["Complete", "Failed", "Refunded", "Funds Confirmed"].includes(current.status) && !current.hashIn ? <div className="space-y-3 rounded-[10px] border border-accent/30 bg-accent/5 p-3">
               <p className="text-[13px] font-medium text-text-100">Deposit exactly {current.depositSol} SOL · Solana mainnet</p>
               <p className="text-xs text-text-300">Send to the Husher deposit address below. This order has not been funded by DONCHAIN.</p>
-              <p className="select-all break-all rounded border border-line-100 bg-input-100 p-3 font-mono text-xs text-text-100">{current.depositAddress}</p>
-              <div className="flex flex-wrap gap-2"><BxButton size="sm" onClick={() => copy(current.depositAddress!)}><Copy className="h-3.5 w-3.5" /> Copy address</BxButton><BxButton size="sm" onClick={() => copy(current.depositSol!)}>Copy amount</BxButton></div>
+              <p className="select-all break-all border border-line-100 bg-bg-50 p-3 font-mono text-xs text-text-100">{current.depositAddress}</p>
+              <div className="flex flex-wrap gap-2"><button type="button" className={cx(smallBtn, "flex h-8 items-center gap-1.5")} onClick={() => copy(current.depositAddress!)}><Copy className="h-3.5 w-3.5" /> Copy address</button><button type="button" className={cx(smallBtn, "h-8")} onClick={() => copy(current.depositSol!)}>Copy amount</button></div>
             </div> : !current.remoteId ? <p className="text-xs leading-relaxed text-text-300">The creation outcome needs review. No deposit instruction is available and DONCHAIN has sent no funds. Check your order history on Husher before starting another order.</p> : null}
             <div className="grid grid-cols-2 gap-2 text-xs text-text-300"><span>Deposit total</span><span className="text-right text-text-100">{current.plan.totalSol} SOL</span><span>Quoted output (estimate)</span><span className="text-right text-text-100">{current.quote.receiveSol} SOL</span><span>Exchange fee</span><span className="text-right text-text-100">{current.feeSol !== null ? `${current.feeSol} SOL` : "—"}</span><span>Network fee</span><span className="text-right text-text-100">{current.networkFeeSol !== null ? `${current.networkFeeSol} SOL` : "—"}</span></div>
-            <div className="max-h-48 space-y-2 overflow-y-auto">{current.recipients.map((r) => <div key={r.address} className="rounded border border-line-100 p-3 text-xs"><div className="flex justify-between gap-2"><span className="text-text-100">{short(r.address)}</span><span className="text-text-200">{r.status} · {r.receiveSol} SOL</span></div>{r.hashOut ? <a href={`https://solscan.io/tx/${encodeURIComponent(r.hashOut)}`} target="_blank" rel="noopener noreferrer" className={external}>Withdrawal transaction</a> : null}</div>)}</div>
-            {current.hashIn ? <a href={`https://solscan.io/tx/${encodeURIComponent(current.hashIn)}`} target="_blank" rel="noopener noreferrer" className={`${external} text-xs`}>Deposit transaction</a> : null}
-            {current.trackingUrl ? <a href={current.trackingUrl} target="_blank" rel="noopener noreferrer" className={`${external} ml-3 text-xs`}>Husher tracking page</a> : null}
-            <BxButton className="w-full" onClick={() => { setOrder(null); setHistory(true); state.refresh(); }}>Back to history</BxButton>
+            <div className="rounded-[10px] border border-line-100">{current.recipients.map((r) => <div key={r.address} className="border-b border-line-50 px-3 py-2 text-xs last:border-b-0"><div className="flex justify-between gap-2"><span className="text-text-100">{short(r.address)}</span><span className="text-text-200">{r.status} · {r.receiveSol} SOL</span></div>{r.hashOut ? <a href={`https://solscan.io/tx/${encodeURIComponent(r.hashOut)}`} target="_blank" rel="noopener noreferrer" className={external}>Withdrawal transaction</a> : null}</div>)}</div>
+            <div className="flex gap-3 text-xs">
+              {current.hashIn ? <a href={`https://solscan.io/tx/${encodeURIComponent(current.hashIn)}`} target="_blank" rel="noopener noreferrer" className={external}>Deposit transaction</a> : null}
+              {current.trackingUrl ? <a href={current.trackingUrl} target="_blank" rel="noopener noreferrer" className={external}>Husher tracking page</a> : null}
+            </div>
+            <button type="button" className={primary} onClick={() => { setOrder(null); setHistory(true); state.refresh(); }}>Back to history</button>
           </>
         ) : history ? (
           <>
             <p className="text-xs text-text-300">Orders are saved locally and can be reopened after a restart.</p>
-            {state.data?.orders.length ? <div className="max-h-96 space-y-2 overflow-y-auto">{state.data.orders.map((o) => <button key={o.id} className="flex w-full items-center justify-between gap-3 rounded border border-line-100 p-3 text-left hover:border-accent/40" onClick={() => setOrder(o)}><div><p className="text-sm text-text-100">{o.plan.totalSol} SOL · {o.plan.recipients.length} wallets</p><p className="mt-1 text-xs text-text-300">{new Date(o.at).toLocaleString()} · {o.orderId || o.id.slice(0, 8)}</p></div><span className="text-xs text-accent">{o.status}</span></button>)}</div> : <p className="text-sm text-text-300">No Husher orders yet.</p>}
+            {state.data?.orders.length ? <div className="rounded-[10px] border border-line-100">{state.data.orders.map((o) => <button key={o.id} type="button" className="flex w-full items-center justify-between gap-3 border-b border-line-50 px-3 py-2.5 text-left last:border-b-0 hover:bg-white/[0.03]" onClick={() => setOrder(o)}><div><p className="text-sm text-text-100">{o.plan.totalSol} SOL · {o.plan.recipients.length} wallets</p><p className="mt-0.5 text-[11px] text-text-300">{new Date(o.at).toLocaleString()} · {o.orderId || o.id.slice(0, 8)}</p></div><span className="text-xs text-accent">{o.status}</span></button>)}</div> : <p className="px-1 py-4 text-sm text-text-300">No mixer orders yet.</p>}
           </>
         ) : (
           <>
-            <div><p className="mb-1.5 text-xs text-text-300">Service</p><div className="rounded border border-line-100 bg-accent/10 py-2 text-center text-sm font-medium text-accent">Husher · SOL → SOL</div></div>
-            {state.data && !state.data.configured ? <div className="space-y-2 rounded border border-line-100 p-3"><label htmlFor="husher-api-key" className="text-xs text-text-200">Husher API key</label><BxInput id="husher-api-key" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" placeholder="Paste your key" disabled={!!busy} /><BxButton onClick={saveKey} disabled={!apiKey || !!busy || !vault.data?.unlocked}>Save key</BxButton><p className="text-xs text-text-300">Unlock your vault to configure the key. It is stored on the local server and never returned to the browser.</p></div> : null}
-            {!mainnet ? <p className="text-xs text-yellow-100">Husher uses real SOL. Switch to mainnet in <Link href="/settings" className={external}>Settings</Link>.</p> : null}
-            <fieldset disabled={!!busy} className="space-y-4 disabled:opacity-60">
-              <div><label htmlFor="husher-total" className="mb-1.5 block text-xs text-text-300">Total to exchange (SOL)</label><div className="flex gap-2"><BxInput id="husher-total" inputMode="decimal" value={total} onChange={(e) => { setTotal(e.target.value); change(); }} /><BxButton onClick={() => split()}>Split equal</BxButton></div><p className="mt-1.5 text-[11px] text-text-300">{limits.data?.minimumSol ? `Current withdrawal minimum: ${limits.data.minimumSol} SOL per destination. The quote checks each allocation.` : "Limits and fees are checked by the live Husher quote."}</p></div>
-              <div className="rounded-lg border border-line-100"><div className="flex items-center justify-between border-b border-line-50 px-3 py-2 text-xs text-text-300"><span>Destinations ({chosen.length}/{live.length})</span><div className="flex gap-3"><button type="button" className="text-accent" onClick={() => { const all = live.map((w) => w.address); setChosen(all); split(all); }}>All</button><button type="button" className="text-accent" onClick={() => { setChosen([]); setAllocations({}); change(); }}>Clear</button></div></div><div className="max-h-64 space-y-1 overflow-y-auto p-2">{live.map((w) => <div key={w.address} className="flex items-center gap-3 rounded px-1 py-2"><label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"><input type="checkbox" checked={chosen.includes(w.address)} onChange={(e) => { setChosen((prev) => e.target.checked ? [...prev, w.address] : prev.filter((a) => a !== w.address)); change(); }} className="accent-accent" /><span className="min-w-0"><span className="block truncate text-sm font-medium text-text-100">{w.label || short(w.address)}</span><span className="block text-[11px] text-text-300">{short(w.address)}</span></span></label><BxInput aria-label={`Allocation for ${w.label || w.address}`} inputMode="decimal" className="w-32 text-right font-mono text-xs" value={allocations[w.address] || ""} disabled={!chosen.includes(w.address)} onChange={(e) => { setAllocations((p) => ({ ...p, [w.address]: e.target.value })); change(); }} /></div>)}</div></div>
-            </fieldset>
-            {problem ? <p className="text-xs text-text-300">{problem}</p> : null}
-            <BxButton variant="primary" className="w-full" disabled={!!busy || !!problem || !mainnet || !state.data?.configured} onClick={fetchQuote}>{busy === "quote" ? "Fetching quote…" : "Fetch Quote"}</BxButton>
-            {quote ? <div className="space-y-3 rounded-lg border border-accent/25 bg-accent/5 p-3"><div className="flex justify-between text-sm"><span className="text-text-200">Estimated total received</span><span className="font-semibold text-text-100">{quote.receiveSol} SOL</span></div><div className="max-h-32 space-y-1 overflow-y-auto">{quote.rates.map((r) => <p key={r.address} className="flex justify-between text-xs text-text-300"><span>{short(r.address)}</span><span>{r.receiveSol} SOL</span></p>)}</div><p className="text-[11px] leading-relaxed text-text-300">Floating estimate after Husher fees. Review within 60 seconds; the final amount may change during execution. Creating the order generates deposit instructions and sends no funds.</p><label className="flex items-start gap-2 text-xs leading-relaxed text-text-200"><input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} disabled={!!busy} className="mt-0.5 accent-accent" /><span>I agree to Husher&apos;s <a className={external} href="https://www.husher.io/terms-of-service" target="_blank" rel="noopener noreferrer">Terms</a>, <a className={external} href="https://www.husher.io/privacy-policy" target="_blank" rel="noopener noreferrer">Privacy Policy</a> and <a className={external} href="https://www.husher.io/anti-money-policy" target="_blank" rel="noopener noreferrer">AML Policy</a>, and authorize sharing the selected destination addresses with Husher to create this order.</span></label><BxButton variant="primary" className="w-full" disabled={!consent || !!busy || !mainnet} onClick={create}>{busy === "create" ? "Creating order…" : "Create Husher order"}</BxButton></div> : null}
-            <p className="text-[11px] leading-relaxed text-text-300">Exchange execution is provided by Husher. Transactions may be delayed or subject to checks. This service does not guarantee that wallet addresses become unlinkable.</p>
+            <div>
+              <label className="mb-1 block text-xs text-text-300">Service</label>
+              <div className="grid grid-cols-2 gap-1 rounded border border-line-100 bg-bg-50 p-0.5">
+                {(["husher", "splitnow"] as const).map((s) => <button key={s} type="button" onClick={() => { setService(s); change(); }} className={cx("h-7 rounded text-xs font-medium transition-colors", service === s ? "bg-accent/15 text-accent" : "text-text-300 hover:text-text-100")}>{s === "husher" ? "Husher" : "SplitNOW"}</button>)}
+              </div>
+            </div>
+            {service === "splitnow" ? <p className="text-xs leading-relaxed text-text-300">SplitNOW is not connected to DONCHAIN. Use Husher for SOL → SOL splits across your wallets.</p> : null}
+            {service === "husher" && state.data && !state.data.configured ? <div className="space-y-2 rounded-[10px] border border-line-100 p-3"><label htmlFor="husher-api-key" className="block text-xs text-text-300">Husher API key</label><div className="flex gap-2"><input id="husher-api-key" type="password" className={field} value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" placeholder="Paste your key" disabled={!!busy} /><button type="button" className={smallBtn} onClick={saveKey} disabled={!apiKey || !!busy || !vault.data?.unlocked}>Save key</button></div><p className="text-[11px] text-text-300">Unlock your vault to save the key. It stays on the local server and is never returned to the browser.</p></div> : null}
+            {!mainnet ? <p className="text-xs text-yellow-100">The mixer uses real SOL. Switch to mainnet in <Link href="/settings" className={external}>Settings</Link>.</p> : null}
+            <div>
+              <label htmlFor="husher-total" className="mb-1 block text-xs text-text-300">Total to mix (SOL)</label>
+              <div className="flex gap-2">
+                <input id="husher-total" className={field} placeholder="0.05" inputMode="decimal" value={total} disabled={!!busy} onChange={(e) => { setTotal(e.target.value); change(); }} />
+                <button type="button" className={smallBtn} disabled={!!busy || !total.trim() || !chosen.length} onClick={() => split()}>Split equal</button>
+              </div>
+              <p className="mt-1 text-[11px] text-text-300">{min ? `Min ${min} SOL per wallet` : "Min checked by the quote"} · sol · splits across selected wallets</p>
+            </div>
+            <div className="rounded-[10px] border border-line-100">
+              <div className="flex items-center justify-between border-b border-line-50 px-3 py-2">
+                <span className="text-xs text-text-300">Destinations ({chosen.length}/{live.length})</span>
+                {chosen.length ? <button type="button" className="text-xs text-accent hover:underline" onClick={() => { setChosen([]); setAllocations({}); change(); }}>Clear</button> : <button type="button" className="text-xs text-accent hover:underline" onClick={() => { const all = live.map((w) => w.address); setChosen(all); if (total.trim()) split(all); else change(); }}>All</button>}
+              </div>
+              <div className="max-h-64 overflow-y-auto">
+                {live.length ? live.map((w) => {
+                  const on = chosen.includes(w.address);
+                  return (
+                    <div key={w.address} className="flex items-center gap-3 px-3 py-2">
+                      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5">
+                        <input type="checkbox" checked={on} disabled={!!busy} onChange={(e) => { setChosen((prev) => e.target.checked ? [...prev, w.address] : prev.filter((a) => a !== w.address)); change(); }} className="h-4 w-4 shrink-0 accent-accent" />
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium text-text-100">{w.label || short(w.address)}</span>
+                          <span className="block truncate text-[11px] text-text-300">{short(w.address)} · {sol(balances?.[w.address] ?? w.sol)} SOL</span>
+                        </span>
+                      </label>
+                      <input aria-label={`Allocation for ${w.label || w.address}`} inputMode="decimal" placeholder="0" className={cx(field, "w-[120px] shrink-0 text-right font-mono text-xs")} value={allocations[w.address] || ""} disabled={!on || !!busy} onChange={(e) => { setAllocations((p) => ({ ...p, [w.address]: e.target.value })); change(); }} />
+                    </div>
+                  );
+                }) : <p className="px-3 py-4 text-sm text-text-300">No wallets in this section.</p>}
+              </div>
+              <div className="flex items-center justify-between border-t border-line-50 px-3 py-2 text-xs">
+                <span className="text-text-300">Deposit total</span>
+                <span className="font-medium text-text-100">{depositLam > BigInt(0) ? formatHusherSol(depositLam) : "0"} SOL</span>
+              </div>
+            </div>
+            {problem ? <p className="text-[11px] leading-relaxed text-text-300">{problem}</p> : null}
+            <button type="button" className={primary} disabled={service !== "husher" || !!busy || !total.trim() || !!problem || !mainnet || !state.data?.configured} onClick={fetchQuote}>{busy === "quote" ? "Fetching quote…" : "Fetch Quote"}</button>
+            {quote ? <div className="space-y-3 rounded-[10px] border border-accent/25 bg-accent/5 p-3"><div className="flex justify-between text-sm"><span className="text-text-200">Estimated total received</span><span className="font-medium text-text-100">{quote.receiveSol} SOL</span></div><div className="max-h-32 space-y-1 overflow-y-auto">{quote.rates.map((r) => <p key={r.address} className="flex justify-between text-xs text-text-300"><span>{short(r.address)}</span><span>{r.receiveSol} SOL</span></p>)}</div><p className="text-[11px] leading-relaxed text-text-300">Floating estimate after Husher fees. Review within 60 seconds; the final amount may change during execution. Creating the order generates deposit instructions and sends no funds.</p><label className="flex items-start gap-2 text-xs leading-relaxed text-text-200"><input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} disabled={!!busy} className="mt-0.5 accent-accent" /><span>I agree to Husher&apos;s <a className={external} href="https://www.husher.io/terms-of-service" target="_blank" rel="noopener noreferrer">Terms</a>, <a className={external} href="https://www.husher.io/privacy-policy" target="_blank" rel="noopener noreferrer">Privacy Policy</a> and <a className={external} href="https://www.husher.io/anti-money-policy" target="_blank" rel="noopener noreferrer">AML Policy</a>, and authorize sharing the selected destination addresses with Husher to create this order.</span></label><button type="button" className={primary} disabled={!consent || !!busy || !mainnet} onClick={create}>{busy === "create" ? "Creating order…" : "Create order"}</button></div> : null}
+            <p className="text-[11px] leading-relaxed text-text-300">Exchange execution is provided by Husher. Transactions may be delayed or subject to checks. This does not guarantee that wallet addresses become unlinkable.</p>
           </>
         )}
       </div>
-    </BxModal>
+    </Drawer>
   );
 }
