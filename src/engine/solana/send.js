@@ -337,11 +337,11 @@ export async function submitHeliusBundle(txs, helius) {
       return await submitHeliusBundleTo(txs, { ...helius, url });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (!/HTTP 5\d\d|fetch failed|ECONN|ETIMEDOUT|socket hang up/i.test(msg) || urls.length === 1) throw e;
-      failures.push(`${host(url)}: ${msg.replace(/^Helius /, "")}`);
+      if (!/HTTP 5\d\d|HTTP 429|too many requests|rate limit|fetch failed|ECONN|ETIMEDOUT|socket hang up/i.test(msg) || urls.length === 1) throw e;
+      failures.push(msg.replace(/^Helius /, ""));
     }
   }
-  throw new Error(`Helius HTTP 500 on every endpoint (${failures.join(" · ")})`);
+  throw new Error(`Helius did not take the bundle on any endpoint (${failures.join(" · ")})`);
 }
 
 async function submitHeliusBundleTo(txs, helius) {
@@ -358,8 +358,15 @@ async function submitHeliusBundleTo(txs, helius) {
         return null;
       }
     })();
-  if (data?.error) throw new Error(`Helius refused the bundle: ${data.error.message || JSON.stringify(data.error)}`);
-  if (!res.ok) throw new Error(`Helius HTTP ${res.status}: ${text.replace(/api-key=[^&\s"]+/g, "api-key=…").slice(0, 160)}`);
+  const where = (() => {
+    try {
+      return new URL(helius.url).host;
+    } catch {
+      return "helius";
+    }
+  })();
+  if (data?.error) throw new Error(`Helius (${where}) refused the bundle: ${data.error.message || JSON.stringify(data.error)}`);
+  if (!res.ok) throw new Error(`Helius (${where}) HTTP ${res.status}: ${text.replace(/api-key=[^&\s"]+/g, "api-key=…").slice(0, 160)}`);
   return String(data?.result ?? "sent");
 }
 
@@ -451,7 +458,7 @@ export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
       break;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e),
-        limited = /rate limit|429|retry after/i.test(msg);
+        limited = /rate limit|429|retry after|too many requests/i.test(msg);
       if (!limited || k >= 6) return { ok: !1, bundleId: null, sigs, error: msg, rateLimited: limited };
       const after = Number(/retry after (\d+)/i.exec(msg)?.[1] ?? 1000);
       await sleep(Math.min(5000, after + 150 + Math.floor(Math.random() * 250)));
