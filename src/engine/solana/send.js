@@ -321,6 +321,30 @@ export async function submitAstralaneBundle(txs, astralane) {
 /* Helius sendBundle (docs "Bundles via Helius"): ≤ 5 txs, base64, one tx tipping a Helius tip account; Helius forwards
    to Jito's block engine (geo-routed). `helius` = { url } = the Helius RPC URL with its api-key. Answer = bundle id. */
 export async function submitHeliusBundle(txs, helius) {
+  // several endpoints (dedicated, mainnet, beta): the next one only when an endpoint fails at the server (HTTP 5xx /
+  // network) — a JSON-RPC refusal (plan, bad bundle) is the answer and stops here
+  const urls = Array.isArray(helius.urls) && helius.urls.length ? helius.urls : [helius.url];
+  const host = u => {
+    try {
+      return new URL(u).host;
+    } catch {
+      return "helius";
+    }
+  };
+  const failures = [];
+  for (const url of urls) {
+    try {
+      return await submitHeliusBundleTo(txs, { ...helius, url });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/HTTP 5\d\d|fetch failed|ECONN|ETIMEDOUT|socket hang up/i.test(msg) || urls.length === 1) throw e;
+      failures.push(`${host(url)}: ${msg.replace(/^Helius /, "")}`);
+    }
+  }
+  throw new Error(`Helius HTTP 500 on every endpoint (${failures.join(" · ")})`);
+}
+
+async function submitHeliusBundleTo(txs, helius) {
   const res = await fetch(helius.url, {
       method: "POST",
       headers: { "content-type": "application/json", ...(helius.region ? { "jito-region": helius.region } : {}) },

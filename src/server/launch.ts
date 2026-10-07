@@ -42,7 +42,7 @@ import { syncPumpCluster } from "./pumpcluster";
 import { checkCreateOnChain, reconcileLaunches } from "./reconcile";
 import { fetchUriJson, imageUrl } from "./metadata";
 import { ipfsToHttp } from "@/engine/solana/pump/metadata.js";
-import { heliusBundleUrl, isDevnet, logActivity, saveLaunches, store, track, type Job, type PendingMint } from "./store";
+import { heliusBundleUrl, heliusBundleUrls, isDevnet, logActivity, saveLaunches, store, track, type Job, type PendingMint } from "./store";
 import { loops, TradeLoop, type SavedLoop } from "./tradeloop";
 import { resolveWashPairs, washPairs } from "./wash";
 import { markDraftLaunched } from "./drafts";
@@ -922,7 +922,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
       if (attempt > 0) step(run, "bundle", true, `${viaHelius ? "Helius" : "Jito"} bundle again with a ${solString(tipFor(attempt))} SOL tip (attempt ${attempt + 1}/${maxAttempts + 1}).`);
       const r = await launchBundle(conn, prep, {
         astralane,
-        helius: viaHelius && o.heliusUrl ? { url: o.heliusUrl } : undefined,
+        helius: viaHelius && o.heliusUrl ? { url: o.heliusUrl, urls: heliusBundleUrls(st.settings) } : undefined,
         maxPerBundle: astralane ? 4 : 5,
         // a landing bundle lands in 1–2 s (real tests): 9 s then a higher tip — the curve check after the window still
         // catches a late landing

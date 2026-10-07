@@ -8,7 +8,7 @@ import { prepareLaunch } from "@/engine/solana/pump/launch.js";
 import { staticLookupTable } from "@/server/alt";
 import { HttpError, json, readBody, route } from "@/server/api";
 import { readConn, requireUnlocked } from "@/server/engine";
-import { heliusBundleUrl, store } from "@/server/store";
+import { heliusBundleUrl, heliusBundleUrls, store } from "@/server/store";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -128,7 +128,7 @@ export const POST = route(async (req: Request) => {
   } else
     try {
       bundleId = heliusUrl
-        ? await submitHeliusBundle(txs, { url: heliusUrl }).then((id) => ((accepted["helius"] = id), id), (e) => ((refused["helius"] = e instanceof Error ? e.message : String(e)), Promise.reject(e)))
+        ? await submitHeliusBundle(txs, { url: heliusUrl, urls: heliusBundleUrls(st.settings) }).then((id) => ((accepted["helius"] = id), id), (e) => ((refused["helius"] = e instanceof Error ? e.message : String(e)), Promise.reject(e)))
         : astra
         ? await submitAstralaneBundle(txs, { key: astra }).then((id) => ((accepted["astralane"] = id), id), (e) => ((refused["astralane"] = e instanceof Error ? e.message : String(e)), Promise.reject(e)))
         : await submitJitoBundle(txs, { blockEngineUrl: regionList[0], onAccepted: (r, id) => (accepted[r] = id), onRefused: (r, e) => (refused[r] = e) });

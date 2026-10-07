@@ -326,13 +326,22 @@ export function effectiveRpcUrl(s: StoredSettings): string {
 
 /** Helius sendBundle endpoint: the Helius key, else an explicit RPC URL that is Helius; null when neither */
 export function heliusBundleUrl(s: StoredSettings): string | null {
+  return heliusBundleUrls(s)[0] ?? null;
+}
+/** every Helius endpoint a bundle may be sent to, tried in this order on an HTTP 5xx: the Settings RPC URL when it is a
+ *  Helius one (a Business plan's dedicated "…-fast-mainnet.helius-rpc.com" endpoint carries its auth in the host), then
+ *  mainnet and beta with the Helius key. sendBundle answered HTTP 500 on mainnet right after a Business upgrade. */
+export function heliusBundleUrls(s: StoredSettings): string[] {
+  const out: string[] = [];
+  const explicit = normalizeSolanaRpc(s.rpcUrl);
+  if (explicit && /^https:\/\/[a-z0-9.-]*helius-rpc\.com/i.test(explicit) && !/devnet/i.test(explicit)) out.push(explicit);
   if (s.heliusKey.trim()) {
     const k = s.heliusKey.trim();
     const m = /api-key=([A-Za-z0-9-]+)/.exec(k);
-    return `https://mainnet.helius-rpc.com/?api-key=${m ? m[1] : k}`;
+    const key = m ? m[1] : k;
+    out.push(`https://mainnet.helius-rpc.com/?api-key=${key}`, `https://beta.helius-rpc.com/?api-key=${key}`);
   }
-  const explicit = normalizeSolanaRpc(s.rpcUrl);
-  return explicit && /helius-rpc\.com/i.test(explicit) && /api-key=/i.test(explicit) && !/devnet/i.test(explicit) ? explicit : null;
+  return [...new Set(out)];
 }
 
 /** effective send RPC — devnet has no Helius Sender nor Jito: sends go to the read RPC */

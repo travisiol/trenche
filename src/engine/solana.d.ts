@@ -168,10 +168,10 @@ declare module "@/engine/solana/send.js" {
   export function sendBundleAndConfirm(
     read: Connection,
     txs: VersionedTransaction[],
-    opts?: { timeoutMs?: number; blockEngineUrl?: string; verify?: () => Promise<boolean>; astralane?: { key: string; url?: string }; /** send through Helius sendBundle (forwarded to Jito) */ helius?: { url: string; region?: string } },
+    opts?: { timeoutMs?: number; blockEngineUrl?: string; verify?: () => Promise<boolean>; astralane?: { key: string; url?: string }; /** send through Helius sendBundle (forwarded to Jito) */ helius?: { url: string; urls?: string[]; region?: string } },
   ): Promise<BundleResult>;
   export function submitAstralaneBundle(txs: VersionedTransaction[], astralane: { key: string; url?: string }): Promise<string>;
-  export function submitHeliusBundle(txs: VersionedTransaction[], helius: { url: string; region?: string }): Promise<string>;
+  export function submitHeliusBundle(txs: VersionedTransaction[], helius: { url: string; urls?: string[]; region?: string }): Promise<string>;
 }
 
 declare module "@/engine/solana/fund.js" {
@@ -512,7 +512,7 @@ declare module "@/engine/solana/pump/launch.js" {
   export function launchBundle(
     read: Connection,
     prep: LaunchPrep,
-    opts?: { onStep?: (s: BundleStep) => void; timeoutMs?: number; blockEngineUrl?: string; /** send through Astralane instead of Jito */ astralane?: { key: string; url?: string }; /** send through Helius sendBundle (forwarded to Jito) */ helius?: { url: string; region?: string }; /** txs per bundle: Jito 5, Astralane 4 */ maxPerBundle?: number },
+    opts?: { onStep?: (s: BundleStep) => void; timeoutMs?: number; blockEngineUrl?: string; /** send through Astralane instead of Jito */ astralane?: { key: string; url?: string }; /** send through Helius sendBundle (forwarded to Jito) */ helius?: { url: string; urls?: string[]; region?: string }; /** txs per bundle: Jito 5, Astralane 4 */ maxPerBundle?: number },
   ): Promise<{
     mint: string;
     create: { confirmed: boolean; signature?: string; error?: string };
