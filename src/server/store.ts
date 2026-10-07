@@ -39,6 +39,9 @@ export type StoredSettings = {
   husherKey: string;
   /** the Astralane key may send bundles (VIP tier): Jito-on launches then use Astralane sendBundle */
   astralaneBundles?: boolean;
+  /** Jito on with an Astralane key that has no bundles: send the launch bundle to Jito's public block engine anyway
+   *  (atomic, one tx per wallet) instead of the Astralane fast lane (not atomic) — Settings › Bundle route */
+  jitoPublic?: boolean;
   jitoEnabled: boolean;
   /** Launch Token modal "Auto-claim rewards → dev wallet" default (true) */
   autoClaimRewards: boolean;
@@ -365,6 +368,8 @@ export function publicSettings(s: StoredSettings): Settings {
     hasAstralaneKey: !!(s.astralaneKey ?? "").trim(),
     hasHusherKey: !!(process.env.HUSHER_API_KEY?.trim() || (s.husherKey ?? "").trim()),
     jitoEnabled: s.jitoEnabled,
+    astralaneBundles: s.astralaneBundles === true,
+    jitoPublic: s.jitoPublic === true,
     autoClaimRewards: s.autoClaimRewards !== false,
     slippageBps: s.slippageBps,
     cuPrice: s.cuPrice,

@@ -632,7 +632,8 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   // (same path as snipers, not atomic); Jito on: one atomic Jito bundle
   // with an Astralane key, Jito's public endpoint is never used (it drops our pump.fun bundles): bundles only when the
   // key may send them (Settings.astralaneBundles, VIP tier), else the Astralane fast lane
-  const jito = mode === "bundle" && !devnet && st.settings.jitoEnabled === true && (!(st.settings.astralaneKey ?? "").trim() || st.settings.astralaneBundles === true);
+  // Settings › Bundle route "Jito block engine" (jitoPublic) keeps the bundle atomic with a bundle-less Astralane key
+  const jito = mode === "bundle" && !devnet && st.settings.jitoEnabled === true && (!(st.settings.astralaneKey ?? "").trim() || st.settings.astralaneBundles === true || st.settings.jitoPublic === true);
   if (jito && bundleTip < BigInt(1000)) throw new HttpError(400, "A Jito bundle needs a tip (bundle task `tip` or Settings → default tip).");
 
   // balance pre-checks: a readable refusal instead of a failed broadcast — a reserved …pump address goes back to the pool
@@ -793,7 +794,10 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   const retries = bundleTasks.length ? Math.max(...bundleTasks.map((t) => t.autoRetryCount)) : 0;
   const devnet = isDevnet(st.settings);
   step(run, "prepare", true, `Preparing ${run.state.mode} launch · dev buy ${solString(o.devBuyLamports)} SOL · ${bundleRows.length} bundle wallet(s)${devnet ? " · devnet" : ""} · +${Date.now() - o.t0} ms after the click`);
-  if (!devnet && run.state.mode === "bundle" && !o.jito) step(run, "info", true, "Jito off (Settings): the bundle wallets buy right behind the dev — create and buys sent together, not atomic.");
+  if (!devnet && run.state.mode === "bundle" && !o.jito)
+    step(run, "info", true, st.settings.jitoEnabled === true
+      ? "Not atomic: Jito is on but the Astralane key has no bundles and Settings › Bundle route is \"Astralane fast lane\" — create and buys sent together, a sniper can land between them."
+      : "Jito off (Settings): the bundle wallets buy right behind the dev — create and buys sent together, not atomic.");
   if (devnet && run.state.mode === "bundle") step(run, "info", true, "Devnet: Jito is mainnet-only — the bundle is sent as sequential transactions (create first, then the buys), no tip, not atomic.");
   run.state.status = "sending";
   emit(run, { type: "state", data: launchStateOf(run) });
@@ -837,7 +841,10 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   // Astralane key: Jito on + bundles allowed on the key (VIP) → the bundle goes through Astralane's sendBundle;
   // otherwise (Free key: sendBundle answers 401, 2026-10-06) → create and buys through Astralane's sendTransaction
   // fast lane, buys as soon as the create is seen — not atomic, every wallet its own trader, 0.001 SOL tip per tx
-  const astralaneKey = !devnet && run.state.mode === "bundle" ? (st.settings.astralaneKey ?? "").trim() : "";
+  // Bundle route "Jito block engine": the Astralane key is left out, the bundle goes to Jito's public endpoint
+  const viaJitoPublic = o.jito && st.settings.astralaneBundles !== true && st.settings.jitoPublic === true;
+  const astralaneKey = !devnet && run.state.mode === "bundle" && !viaJitoPublic ? (st.settings.astralaneKey ?? "").trim() : "";
+  if (viaJitoPublic) step(run, "bundle", true, "Bundle sent to Jito's block engine (Settings › Bundle route): create + every wallet's own buy land together, in order, or not at all.");
   const astralane = astralaneKey ? { key: astralaneKey } : undefined;
   const astraTx = !!astralane && !o.jito;
   if (astralane && !tables.length) {

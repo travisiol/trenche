@@ -8,7 +8,7 @@ import { failureMessage, post, useGet } from "@/lib/api";
 import { refreshVaultDependents, settingsRes, useSettings, useVault } from "@/lib/store";
 import { setToastsMuted, toast, toastsMuted } from "@/components/ui";
 import { playSound, setSoundsMuted } from "@/lib/sounds";
-import { BxButton, BxInput, BxSwitch, cx } from "@/components/bx/ui";
+import { BxButton, BxInput, BxSeg, BxSwitch, cx } from "@/components/bx/ui";
 import { UnlockVaultModal, lockVault } from "@/components/bx/vault";
 import { KEYBINDS, KEYBIND_DEFAULTS, comboLabel, comboOf, useKeybinds, type KeybindId } from "@/lib/keybinds";
 
@@ -182,7 +182,7 @@ function Workspace() {
 }
 
 function WorkspaceForm({ initial }: { initial: Settings }) {
-  const [f, setF] = useState<SettingsUpdateRequest>({ cluster: initial.cluster, rpcUrl: initial.rpcUrl, sendRpcUrl: initial.sendRpcUrl, jitoEnabled: initial.jitoEnabled, autoClaimRewards: initial.autoClaimRewards !== false, slippageBps: initial.slippageBps, cuPrice: initial.cuPrice, launchCuPrice: initial.launchCuPrice, bundleInCreate: initial.bundleInCreate, tipSol: initial.tipSol });
+  const [f, setF] = useState<SettingsUpdateRequest>({ cluster: initial.cluster, rpcUrl: initial.rpcUrl, sendRpcUrl: initial.sendRpcUrl, jitoEnabled: initial.jitoEnabled, autoClaimRewards: initial.autoClaimRewards !== false, slippageBps: initial.slippageBps, cuPrice: initial.cuPrice, launchCuPrice: initial.launchCuPrice, bundleInCreate: initial.bundleInCreate, tipSol: initial.tipSol, astralaneBundles: initial.astralaneBundles, jitoPublic: initial.jitoPublic });
   const [pumpKey, setPumpKey] = useState("");
   const [heliusKey, setHeliusKey] = useState("");
   const [astraKey, setAstraKey] = useState("");
@@ -301,6 +301,15 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
         <Row title="Send through Jito by default" desc="Bundles land together or not at all (mainnet only). Every bundle wallet buys in its own transaction: trackers show each one as its own trader.">
           <BxSwitch checked={!!f.jitoEnabled} onChange={(v) => set("jitoEnabled", v)} />
         </Row>
+        {initial.hasAstralaneKey ? (
+          <Row title="Bundle route (Jito on)" desc={f.astralaneBundles ? "Astralane bundles: atomic, one transaction per wallet — needs an Astralane key with bundle access." : f.jitoPublic ? "Jito block engine: atomic, one transaction per wallet — create + buys land together or not at all. The tip goes up 0.001 → 0.003 → 0.01 SOL if a bundle does not land." : "Astralane fast lane: fastest send but NOT atomic — a sniper can land between the create and your wallets."}>
+            <BxSeg
+              value={f.astralaneBundles ? "astralane" : f.jitoPublic ? "jito" : "fast"}
+              onChange={(v) => setF((p) => ({ ...p, astralaneBundles: v === "astralane", jitoPublic: v === "jito" }))}
+              options={[{ value: "jito", label: "Jito block engine" }, { value: "astralane", label: "Astralane bundles" }, { value: "fast", label: "Fast lane (not atomic)" }]}
+            />
+          </Row>
+        ) : null}
         <Row title="Bundle inside the create (Jito off)" desc="The first 2 bundle wallets buy in the create transaction itself: no sniper between them, but trackers (Axiom, GMGN…) show the dev as the only buyer.">
           <BxSwitch checked={!!f.bundleInCreate} onChange={(v) => set("bundleInCreate", v)} />
         </Row>

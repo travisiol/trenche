@@ -301,6 +301,10 @@ export type Settings = {
   hasHusherKey: boolean;
   /** when true, trades/launches that carry a tip go through Jito bundles by default */
   jitoEnabled: boolean;
+  /** the Astralane key may send bundles (paid tier): Jito-on launches go as an Astralane bundle */
+  astralaneBundles: boolean;
+  /** Jito-on launches go to Jito's public block engine even with an Astralane key that has no bundles */
+  jitoPublic: boolean;
   /** default of the Launch Token modal "Auto-claim rewards → dev wallet" switch (true): every launch arms an
    *  auto-claim watcher that sends the pump.fun creator fees to the dev wallet (see AutoClaimStatus) */
   autoClaimRewards: boolean;

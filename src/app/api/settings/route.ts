@@ -79,6 +79,8 @@ export const POST = route(async (req: Request) => {
     s.husherKey = body.husherKey.trim();
   }
   if (body.jitoEnabled !== undefined) s.jitoEnabled = !!body.jitoEnabled;
+  if (body.astralaneBundles !== undefined) s.astralaneBundles = !!body.astralaneBundles;
+  if (body.jitoPublic !== undefined) s.jitoPublic = !!body.jitoPublic;
   if (body.autoClaimRewards !== undefined) s.autoClaimRewards = !!body.autoClaimRewards;
   if (body.slippageBps !== undefined) s.slippageBps = intIn(body.slippageBps, 0, 9000, 1000, "slippageBps");
   if (body.cuPrice !== undefined) s.cuPrice = intIn(body.cuPrice, 0, 50_000_000, 2_000_000, "cuPrice");
