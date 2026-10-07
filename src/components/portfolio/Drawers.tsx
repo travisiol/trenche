@@ -111,8 +111,7 @@ const RENT_MIN = BigInt(RENT_MIN_LAM);
 const solL = (l: bigint) => sol(Number(l) / 1e9, 6);
 const lamOfBalance = (v: string | number | null | undefined): bigint => (v === null || v === undefined ? ZERO : (solToLam(String(v)) ?? ZERO));
 
-export function DisperseDrawer({ onClose, wallets, groups, balances, selected, active, scopeLabel, scopeGroup, onHistory }: { onClose: () => void; wallets: WalletInfo[]; groups: WalletGroup[]; balances: Record<string, string | null> | null; selected: string[]; active: string | null; scopeLabel: string; scopeGroup: string | null; onHistory: () => void }) {
-  void groups;
+export function DisperseDrawer({ onClose, wallets, groups, balances, selected, active, scopeLabel, scopeGroup, viewFilter = null, onHistory }: { onClose: () => void; wallets: WalletInfo[]; groups: WalletGroup[]; balances: Record<string, string | null> | null; selected: string[]; active: string | null; scopeLabel: string; scopeGroup: string | null; /** the folder open in the Developer Wallets tab (tst, dev…): its wallets are the starting destinations */ viewFilter?: string | null; onHistory: () => void }) {
   void active;
   const presetsQ = useGet<DispersePresetsResponse>("/api/fund/disperse/presets", 0);
   const presetsMissing = isApiFailure(presetsQ.error) && (presetsQ.error.kind === "missing" || presetsQ.error.status === 404);
@@ -126,13 +125,25 @@ export function DisperseDrawer({ onClose, wallets, groups, balances, selected, a
   const [viaRelay, setViaRelay] = useState(true);
   const live = wallets.filter((w) => !w.archived);
   // Block X: a group's Disperse lists that group; the Developer Wallets one lists the wallets outside any group
-  const section = (scopeGroup ? live.filter((w) => w.group === scopeGroup) : live.filter((w) => !w.group)).map((w) => w.address);
+  // a group's Disperse lists that group; the Developer Wallets one lists every wallet, any folder, to tick freely
+  const section = (scopeGroup ? live.filter((w) => w.group === scopeGroup) : live).map((w) => w.address);
   const [extraDevs, setExtraDevs] = useState<string[]>([]);
   const listed = [...section, ...extraDevs.filter((a) => !section.includes(a))];
   const [destPick, setDestPick] = useState<string[]>(() => {
-    const picked = !scopeGroup ? selected.filter((a) => section.includes(a)) : [];
-    return picked.length ? picked : section;
+    if (scopeGroup) return section;
+    const picked = selected.filter((a) => section.includes(a));
+    if (picked.length) return picked;
+    return viewFilter ? live.filter((w) => w.group === viewFilter).map((w) => w.address) : [];
   });
+  /** which folder the list shows (Developer Wallets scope): All, a group, or the wallets in no folder */
+  const [show, setShow] = useState<string>(() => (!scopeGroup && viewFilter ? viewFilter : "all"));
+  const groupOf = (a: string) => wallets.find((w) => w.address === a)?.group ?? "";
+  const shown = scopeGroup || show === "all" ? listed : listed.filter((a) => groupOf(a) === (show === "none" ? "" : show));
+  const folderChips = scopeGroup ? [] : [
+    { id: "all", name: "All", count: live.length },
+    ...groups.map((g) => ({ id: g.id, name: g.name, count: live.filter((w) => w.group === g.id).length })).filter((c) => c.count),
+    ...(live.some((w) => !w.group) ? [{ id: "none", name: "No folder", count: live.filter((w) => !w.group).length }] : []),
+  ];
   const [devPick, setDevPick] = useState("");
   const [creatingDev, setCreatingDev] = useState(false);
   /** null = amounts follow total / variation; typing a row freezes them until the next change */
@@ -158,7 +169,7 @@ export function DisperseDrawer({ onClose, wallets, groups, balances, selected, a
   const perSend = BigInt(5_000 + (viaRelay ? RELAY_FEE_LAM : 0));
   const needLam = depositLam + BigInt(n) * perSend;
   const freeze = () => setEdited(null);
-  const devOptions = live.filter((w) => !w.group && !listed.includes(w.address));
+  const devOptions = scopeGroup ? live.filter((w) => w.group !== scopeGroup && !listed.includes(w.address)) : live.filter((w) => !destPick.includes(w.address));
   const problem =
     !n ? "Tick at least one destination."
     : !(delayNum >= 0 && delayNum <= 1440) ? "Delay: 0 to 1440 minutes."
@@ -484,26 +495,38 @@ export function DisperseDrawer({ onClose, wallets, groups, balances, selected, a
                   + Add
                 </button>
               </div>
-              <p className="mt-1 text-[11px] text-text-300">Adds a developer wallet alongside {scopeGroup ? "this group's" : "these"} destinations.</p>
+              <p className="mt-1 text-[11px] text-text-300">{scopeGroup ? "Adds a developer wallet alongside this group's destinations." : "Adds any wallet not ticked yet — or + New creates one."}</p>
             </div>
             <div className={card}>
               <div className="flex items-center justify-between border-b border-line-50 px-3 py-2">
                 <span className="text-xs text-text-300">
                   Destinations ({n}/{listed.length})
                 </span>
-                {n ? (
-                  <button type="button" onClick={() => { setDestPick([]); freeze(); }} className="text-xs text-accent hover:underline">
-                    Clear
-                  </button>
-                ) : (
-                  <button type="button" onClick={() => { setDestPick(listed); freeze(); }} className="text-xs text-accent hover:underline">
-                    All
-                  </button>
-                )}
+                <span className="flex gap-3">
+                  {shown.some((a) => !destPick.includes(a)) ? (
+                    <button type="button" onClick={() => { setDestPick((x) => [...new Set([...x, ...shown])]); freeze(); }} className="text-xs text-accent hover:underline">
+                      {scopeGroup || show === "all" ? "All" : "Tick shown"}
+                    </button>
+                  ) : null}
+                  {n ? (
+                    <button type="button" onClick={() => { setDestPick([]); freeze(); }} className="text-xs text-accent hover:underline">
+                      Clear
+                    </button>
+                  ) : null}
+                </span>
               </div>
+              {folderChips.length > 1 ? (
+                <div className="flex flex-wrap gap-1.5 border-b border-line-50 px-3 py-2">
+                  {folderChips.map((c) => (
+                    <button key={c.id} type="button" onClick={() => setShow(c.id)} className={cx("h-6 rounded-full border px-2.5 text-[11px] font-medium transition-colors", show === c.id ? "border-accent/40 bg-accent/15 text-accent" : "border-line-100 bg-bg-50 text-text-300 hover:text-text-100")}>
+                      {c.name} <span className="text-text-300">{c.count}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               <div className="max-h-72 overflow-y-auto">
-                {listed.length ? (
-                  listed.map((a) => {
+                {shown.length ? (
+                  shown.map((a) => {
                     const on = destPick.includes(a);
                     return (
                       <div key={a} className="flex items-center gap-3 px-3 py-2">
