@@ -33,6 +33,12 @@ const FONTS = [
 ] as const;
 const noop = () => () => {};
 
+/** the launch's Jito attempts for a base tip (server: MIN_JITO_BUNDLE_TIP 0.001, ladder ×1 ×3 ×10, JITO_TIP_CAP 0.02) */
+function jitoLadder(tip: unknown): string {
+  const base = Math.max(Number(String(tip ?? "").replace(",", ".")) || 0, 0.001);
+  return [1, 3, 10].map((k) => Math.min(base * k, 0.02)).map((x) => String(Math.round(x * 1e6) / 1e6)).join(" → ");
+}
+
 export default function SettingsPage() {
   return (
     <Suspense fallback={null}>
@@ -296,13 +302,13 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
           <BxInput type="number" min={0} value={f.launchCuPrice ?? 0} onChange={(e) => set("launchCuPrice", Number(e.target.value))} className={num} />
         </Row>
         <Row title="Jito tip (SOL)" desc="Paid once per bundle.">
-          <BxInput type="number" step="0.0001" min={0} value={f.tipSol ?? ""} onChange={(e) => set("tipSol", e.target.value)} className={num} />
+          <BxInput type="number" step="0.0001" min={0} value={f.tipSol ?? ""} onChange={(e) => set("tipSol", e.target.value.replace(",", "."))} className={num} />
         </Row>
         <Row title="Send through Jito by default" desc="Bundles land together or not at all (mainnet only). Every bundle wallet buys in its own transaction: trackers show each one as its own trader.">
           <BxSwitch checked={!!f.jitoEnabled} onChange={(v) => set("jitoEnabled", v)} />
         </Row>
         {initial.hasAstralaneKey ? (
-          <Row title="Bundle route (Jito on)" desc={f.astralaneBundles ? "Astralane bundles: atomic, one transaction per wallet — needs an Astralane key with bundle access." : f.jitoPublic ? "Jito block engine: atomic, one transaction per wallet — create + buys land together or not at all. The tip goes up 0.001 → 0.003 → 0.01 SOL if a bundle does not land." : "Astralane fast lane: fastest send but NOT atomic — a sniper can land between the create and your wallets."}>
+          <Row title="Bundle route (Jito on)" desc={f.astralaneBundles ? "Astralane bundles: atomic, one transaction per wallet — needs an Astralane key with bundle access." : f.jitoPublic ? `Jito block engine: atomic, one transaction per wallet — create + buys land together or not at all. Tips of the 3 attempts with this setting: ${jitoLadder(f.tipSol)} SOL (×1, ×3, ×10 of the tip, at least 0.001, at most 0.02).` : "Astralane fast lane: fastest send but NOT atomic — a sniper can land between the create and your wallets."}>
             <BxSeg
               value={f.astralaneBundles ? "astralane" : f.jitoPublic ? "jito" : "fast"}
               onChange={(v) => setF((p) => ({ ...p, astralaneBundles: v === "astralane", jitoPublic: v === "jito" }))}

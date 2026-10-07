@@ -86,7 +86,8 @@ export const POST = route(async (req: Request) => {
   if (body.cuPrice !== undefined) s.cuPrice = intIn(body.cuPrice, 0, 50_000_000, 2_000_000, "cuPrice");
   if (body.bundleInCreate !== undefined) s.bundleInCreate = !!body.bundleInCreate;
   if (body.launchCuPrice !== undefined) s.launchCuPrice = intIn(body.launchCuPrice, 0, 200_000_000, 10_000_000, "launchCuPrice");
-  if (body.tipSol !== undefined) s.tipSol = solString(lamportsOf(body.tipSol, "tipSol", true));
+  // "0,02" (French keyboard) is 0.02
+  if (body.tipSol !== undefined) s.tipSol = solString(lamportsOf(typeof body.tipSol === "string" ? body.tipSol.replace(",", ".") : body.tipSol, "tipSol", true));
   if (body.presets !== undefined) {
     if (!Array.isArray(body.presets) || body.presets.length !== 3) throw new HttpError(400, "presets: exactly 3 SOL amounts.");
     s.presets = body.presets.map((p, i) => solString(lamportsOf(p, `presets[${i}]`))) as [string, string, string];
