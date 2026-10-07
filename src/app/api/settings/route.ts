@@ -1,3 +1,4 @@
+import { requireUnlocked } from "@/server/engine";
 import { intIn, json, lamportsOf, readBody, route, solString } from "@/server/api";
 import { publicSettings, saveSettings, store } from "@/server/store";
 import { syncPumpCluster } from "@/server/pumpcluster";
@@ -71,6 +72,11 @@ export const POST = route(async (req: Request) => {
     // the bare key, or a gateway URL pasted whole ("…/iris?api-key=<key>")
     const raw = String(body.astralaneKey).trim();
     s.astralaneKey = /api-key=([^&\s]+)/.exec(raw)?.[1] ?? raw;
+  }
+  if (body.husherKey !== undefined) {
+    requireUnlocked();
+    if (typeof body.husherKey !== "string" || (body.husherKey.trim() && !/^[A-Za-z0-9_-]{16,256}$/.test(body.husherKey.trim()))) throw new HttpError(400, "Invalid Husher API key.");
+    s.husherKey = body.husherKey.trim();
   }
   if (body.jitoEnabled !== undefined) s.jitoEnabled = !!body.jitoEnabled;
   if (body.autoClaimRewards !== undefined) s.autoClaimRewards = !!body.autoClaimRewards;

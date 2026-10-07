@@ -18,6 +18,7 @@ import { PnlFees } from "@/components/bx/PnlFees";
 import { SharePnlButton } from "@/components/bx/SharePnl";
 import { AirdropModal, CreateModal, ExportModal, ImportModal, MoveModal, SendModal, type ModalKind } from "@/components/portfolio/BxModals";
 import { DepositDrawer, DisperseDrawer, ReverseDisperseDrawer, type DrawerKind } from "@/components/portfolio/Drawers";
+import { HusherMixer } from "@/components/portfolio/HusherMixer";
 import { PrivateSendModal } from "@/components/portfolio/PrivateSend";
 import { TrashModal } from "@/components/portfolio/TrashModal";
 import { DRAG_MIME, TransferView, type TransferKind } from "@/components/portfolio/TransferView";
@@ -35,6 +36,7 @@ export default function PortfolioPage() {
   const [tab, setTab] = useState<"wallets" | "groups">("wallets");
   const [modal, setModal] = useState<ModalKind>(null);
   const [trashOpen, setTrashOpen] = useState(false);
+  const [mixerOpen, setMixerOpen] = useState(false);
   const [drawer, setDrawer] = useState<DrawerKind>(null);
   const [transfer, setTransfer] = useState<TransferKind | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -511,6 +513,7 @@ export default function PortfolioPage() {
                         <Action icon={<EyeOff className="h-4 w-4 shrink-0" />} label="Private send" onClick={() => (live.length ? setModal("private") : toast("Create or import a wallet first.", "info"))} disabled={!canSign} />
                       </div>
                     </div>
+                    <div className="mt-2"><Action icon={<ArrowLeftRight className="h-4 w-4 shrink-0" />} label="Mixer · Husher" onClick={() => setMixerOpen(true)} /></div>
                     <p className="mt-2 text-[11px] leading-snug text-text-300">Random amounts, random delays, random order, one fresh relay wallet per payment. Relays break the direct link only — they stay visible on-chain.</p>
                   </div>
                   <div className="mt-3.5 border-t border-line-50 pt-3.5">
@@ -568,6 +571,7 @@ export default function PortfolioPage() {
       {modal === "airdrop" ? <AirdropModal open onClose={() => setModal(null)} {...base} /> : null}
       {drawer === "deposit" ? <DepositDrawer onClose={() => setDrawer(null)} wallets={scopeWallets} selected={sel} active={active} balances={bal} /> : null}
       {trashOpen ? <TrashModal open onClose={() => setTrashOpen(false)} /> : null}
+      {mixerOpen ? <HusherMixer onClose={() => setMixerOpen(false)} wallets={live} selected={sel} /> : null}
       {modal === "private" ? <PrivateSendModal onClose={() => setModal(null)} wallets={live} balances={bal} selected={sel} active={active} /> : null}
       {drawer === "disperse" ? <DisperseDrawer onClose={() => setDrawer(null)} wallets={live} groups={groups} balances={bal} selected={sel} active={active} scopeLabel={scopeLabel} scopeGroup={curGroup?.id ?? null} onHistory={() => { setDrawer(null); setActivityTab("disperse"); }} /> : null}
       {drawer === "reverse" ? <ReverseDisperseDrawer onClose={() => setDrawer(null)} wallets={live} groups={groups} scopeLabel={scopeLabel} scopeGroup={curGroup?.id ?? null} balances={bal} /> : null}

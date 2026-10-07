@@ -36,6 +36,7 @@ export type StoredSettings = {
   /** Astralane API key (portal.astralane.io): when set, launch bundles go through Astralane instead of the public Jito
    *  endpoint (which drops our pump.fun bundles — 6 real tests, 2026-10-06). Never sent to the browser. */
   astralaneKey: string;
+  husherKey: string;
   /** the Astralane key may send bundles (VIP tier): Jito-on launches then use Astralane sendBundle */
   astralaneBundles?: boolean;
   jitoEnabled: boolean;
@@ -125,6 +126,7 @@ const DEFAULT_SETTINGS: StoredSettings = {
   pumpportalKey: "",
   heliusKey: "",
   astralaneKey: "",
+  husherKey: "",
   jitoEnabled: false,
   autoClaimRewards: true,
   slippageBps: 1000,
@@ -361,6 +363,7 @@ export function publicSettings(s: StoredSettings): Settings {
     hasPumpportalKey: !!s.pumpportalKey.trim(),
     hasHeliusKey: !!s.heliusKey.trim(),
     hasAstralaneKey: !!(s.astralaneKey ?? "").trim(),
+    hasHusherKey: !!(process.env.HUSHER_API_KEY?.trim() || (s.husherKey ?? "").trim()),
     jitoEnabled: s.jitoEnabled,
     autoClaimRewards: s.autoClaimRewards !== false,
     slippageBps: s.slippageBps,

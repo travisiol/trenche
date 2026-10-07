@@ -186,6 +186,8 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
   const [pumpKey, setPumpKey] = useState("");
   const [heliusKey, setHeliusKey] = useState("");
   const [astraKey, setAstraKey] = useState("");
+  const [husherKey, setHusherKey] = useState("");
+  const [clearHusher, setClearHusher] = useState(false);
   const [clearAstra, setClearAstra] = useState(false);
   const [clearPump, setClearPump] = useState(false);
   const [clearHelius, setClearHelius] = useState(false);
@@ -201,10 +203,14 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
       else if (clearHelius) body.heliusKey = "";
       if (astraKey) body.astralaneKey = astraKey;
       else if (clearAstra) body.astralaneKey = "";
+      if (husherKey) body.husherKey = husherKey;
+      else if (clearHusher) body.husherKey = "";
       await post("/api/settings", body);
       setPumpKey("");
       setHeliusKey("");
       setAstraKey("");
+      setHusherKey("");
+      setClearHusher(false);
       setClearAstra(false);
       settingsRes.refresh();
       refreshVaultDependents();
@@ -259,6 +265,12 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
                 {clearAstra ? "Will clear" : "Clear"}
               </BxButton>
             ) : null}
+          </div>
+        </Row>
+        <Row title="Husher API key" desc={initial.hasHusherKey ? "A key is configured for Mixer quotes and orders. Unlock the vault to replace it." : "Husher SOL → SOL multi-wallet exchange. Unlock the vault to save a key."}>
+          <div className="flex gap-1.5">
+            <BxInput type="password" value={husherKey} onChange={(e) => setHusherKey(e.target.value)} placeholder={initial.hasHusherKey ? "••••••••" : "Not set"} className="h-9 w-[200px] font-mono text-xs" autoComplete="off" />
+            {initial.hasHusherKey ? <BxButton size="sm" className="h-9" variant={clearHusher ? "danger" : "secondary"} onClick={() => setClearHusher((c) => !c)}>{clearHusher ? "Will clear" : "Clear"}</BxButton> : null}
           </div>
         </Row>
         <Row title="PumpPortal API key" desc={initial.hasPumpportalKey ? "A key is stored." : "Optional: real per-token trade events."}>
