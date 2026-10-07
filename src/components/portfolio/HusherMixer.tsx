@@ -101,7 +101,8 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
   const [tab, setTab] = useState<"from" | "to">("from");
   const [fromSel, setFromSel] = useState<string[]>([]);
   const [fromAmt, setFromAmt] = useState<Record<string, string>>({});
-  const [allocations, setAllocations] = useState<Record<string, string>>({});
+  /** null = equal split of the total over the ticked destinations (follows every change); typing an amount freezes them */
+  const [edited, setEdited] = useState<Record<string, string> | null>(null);
   const [quote, setQuote] = useState<HusherQuote | null>(null);
   const [providers, setProviders] = useState<Record<string, string>>({});
   const [delays, setDelays] = useState<Record<string, string>>({});
@@ -137,18 +138,20 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
     if (lam <= BigInt(0)) { fromProblem = `${nameOfW(w)}: enter the SOL it sends.`; break; }
     if (lam > balLam(w)) { fromProblem = `${nameOfW(w)} holds only ${sol(balOf(w))} SOL.`; break; }
   }
+  let autoSplit: Record<string, string> = {};
+  if (total.trim() && chosen.length) { try { const parts = splitHusherSol(total, chosen.length); autoSplit = Object.fromEntries(chosen.map((a, i) => [a, parts[i]])); } catch { /* shown by the total check */ } }
+  const allocations = edited ?? autoSplit;
   const plan: HusherPlan = { totalSol: total, recipients: chosen.map((address) => ({ address, label: live.find((w) => w.address === address)?.label || short(address), sol: allocations[address] || "" })) };
   const depositLam = chosen.reduce((a, addr) => a + lamOf(allocations[addr]), BigInt(0));
   let problem: string | null = null;
-  if (total.trim()) { try { husherAllocation(plan); } catch (e) { problem = failureMessage(e); } }
+  if (total.trim() && !chosen.length) problem = "Tick at least one destination wallet.";
+  else if (total.trim() && chosen.some((a) => !(allocations[a] || "").trim())) problem = "Enter an amount for each ticked destination, or click Split equal.";
+  else if (total.trim()) { try { husherAllocation(plan); } catch (e) { problem = failureMessage(e); } }
   const change = () => { setQuote(null); setConsent(false); setError(null); };
   const nameOf = (addr: string) => live.find((w) => w.address === addr)?.label || short(addr);
-  function split(addresses = chosen) {
-    if (!addresses.length) return;
-    try {
-      const amounts = splitHusherSol(total, addresses.length);
-      setAllocations(Object.fromEntries(addresses.map((a, i) => [a, amounts[i]]))); change();
-    } catch (e) { setError(failureMessage(e)); }
+  function split() {
+    try { splitHusherSol(total, Math.max(1, chosen.length)); setEdited(null); change(); }
+    catch (e) { setError(failureMessage(e)); }
   }
   async function fetchQuote() {
     setBusy("quote"); setError(null); setQuote(null); setConsent(false);
@@ -176,12 +179,12 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
   }
   function toggleFrom(addr: string, on: boolean) {
     setFromSel((prev) => on ? [...prev, addr] : prev.filter((a) => a !== addr));
-    if (on) { setChosen((prev) => prev.filter((a) => a !== addr)); setAllocations((p) => { const n = { ...p }; delete n[addr]; return n; }); }
+    if (on) { setChosen((prev) => prev.filter((a) => a !== addr)); setEdited(null); }
     change();
   }
   function maxFrom(w: WalletInfo) {
     const lam = balLam(w) - HUSHER_KEEP_LAM;
-    setFromAmt((p) => ({ ...p, [w.address]: lam > BigInt(0) ? formatHusherSol(lam) : "" })); change();
+    setFromAmt((p) => ({ ...p, [w.address]: lam > BigInt(0) ? formatHusherSol(lam) : "" })); setEdited(null); change();
   }
   async function pay(from: string | null) {
     if (!current) return;
@@ -312,7 +315,7 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
                 <div className={card}>
                   <div className="flex items-center justify-between border-b border-line-50 px-3 py-2">
                     <span className="text-xs text-text-300">Sending wallets ({fromSel.length}/{Math.min(HUSHER_MAX_SOURCES, live.length)})</span>
-                    {fromSel.length ? <button type="button" className="text-xs text-accent hover:underline" onClick={() => { setFromSel([]); change(); }}>Clear</button> : null}
+                    {fromSel.length ? <button type="button" className="text-xs text-accent hover:underline" onClick={() => { setFromSel([]); setEdited(null); change(); }}>Clear</button> : null}
                   </div>
                   <div className="max-h-72 overflow-y-auto">
                     {live.length ? live.map((w) => {
@@ -328,7 +331,7 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
                             </span>
                           </label>
                           <div className="flex shrink-0 items-center gap-1.5">
-                            <input aria-label={`Amount sent by ${nameOfW(w)}`} inputMode="decimal" placeholder="0" className={cx(fieldBase, "w-[96px] text-right font-mono text-xs")} value={fromAmt[w.address] || ""} disabled={!on || !!busy} onChange={(e) => { setFromAmt((p) => ({ ...p, [w.address]: e.target.value })); change(); }} />
+                            <input aria-label={`Amount sent by ${nameOfW(w)}`} inputMode="decimal" placeholder="0" className={cx(fieldBase, "w-[96px] text-right font-mono text-xs")} value={fromAmt[w.address] || ""} disabled={!on || !!busy} onChange={(e) => { setFromAmt((p) => ({ ...p, [w.address]: e.target.value })); setEdited(null); change(); }} />
                             <button type="button" className={cx(smallBtn, "h-[34px] px-2")} disabled={!on || !!busy} onClick={() => maxFrom(w)}>Max</button>
                           </div>
                         </div>
@@ -348,15 +351,15 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
             <div>
               <label htmlFor="husher-total" className="mb-1 block text-xs text-text-300">Total to mix (SOL)</label>
               <div className="flex gap-2">
-                <input id="husher-total" className={cx(field, fromSel.length > 0 && "text-text-200")} placeholder="0.05" inputMode="decimal" value={total} readOnly={fromSel.length > 0} title={fromSel.length ? "Total of the From wallets" : undefined} disabled={!!busy} onChange={(e) => { if (!fromSel.length) { setTotal(e.target.value); change(); } }} />
-                <button type="button" className={smallBtn} disabled={!!busy || !total.trim() || !chosen.length} onClick={() => split()}>Split equal</button>
+                <input id="husher-total" className={cx(field, fromSel.length > 0 && "text-text-200")} placeholder="0.05" inputMode="decimal" value={total} readOnly={fromSel.length > 0} title={fromSel.length ? "Total of the From wallets" : undefined} disabled={!!busy} onChange={(e) => { if (!fromSel.length) { setTotal(e.target.value); setEdited(null); change(); } }} />
+                <button type="button" className={smallBtn} disabled={!!busy || !total.trim() || !chosen.length} onClick={split}>Split equal</button>
               </div>
               <p className="mt-1 text-[11px] text-text-300">{min ? `Min ${min} SOL per wallet` : "Min checked by the quote"} · sol · splits across selected wallets{fromSel.length ? ` · from ${fromSel.length} wallet${fromSel.length > 1 ? "s" : ""}` : ""}</p>
             </div>
             <div className={card}>
               <div className="flex items-center justify-between border-b border-line-50 px-3 py-2">
                 <span className="text-xs text-text-300">Destinations ({chosen.length}/{dests.length})</span>
-                {chosen.length ? <button type="button" className="text-xs text-accent hover:underline" onClick={() => { setChosen([]); setAllocations({}); change(); }}>Clear</button> : <button type="button" className="text-xs text-accent hover:underline" onClick={() => { const all = dests.map((w) => w.address); setChosen(all); if (total.trim()) split(all); else change(); }}>All</button>}
+                {chosen.length ? <button type="button" className="text-xs text-accent hover:underline" onClick={() => { setChosen([]); setEdited(null); change(); }}>Clear</button> : <button type="button" className="text-xs text-accent hover:underline" onClick={() => { setChosen(dests.map((w) => w.address)); setEdited(null); change(); }}>All</button>}
               </div>
               <div className="max-h-64 overflow-y-auto">
                 {dests.length ? dests.map((w) => {
@@ -364,13 +367,13 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
                   return (
                     <div key={w.address} className="flex items-center gap-3 px-3 py-2">
                       <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5">
-                        <input type="checkbox" checked={on} disabled={!!busy} onChange={(e) => { setChosen((prev) => e.target.checked ? [...prev, w.address] : prev.filter((a) => a !== w.address)); change(); }} className="h-4 w-4 shrink-0 accent-accent" />
+                        <input type="checkbox" checked={on} disabled={!!busy} onChange={(e) => { setChosen((prev) => e.target.checked ? [...prev, w.address] : prev.filter((a) => a !== w.address)); setEdited(null); change(); }} className="h-4 w-4 shrink-0 accent-accent" />
                         <span className="min-w-0">
                           <span className="block truncate text-sm font-medium text-text-100">{w.label || short(w.address)}</span>
                           <span className="block truncate text-[11px] text-text-300">{short(w.address)} · {sol(balOf(w))} SOL</span>
                         </span>
                       </label>
-                      <input aria-label={`Allocation for ${w.label || w.address}`} inputMode="decimal" placeholder="0" className={cx(fieldBase, "w-[120px] shrink-0 text-right font-mono text-xs")} value={allocations[w.address] || ""} disabled={!on || !!busy} onChange={(e) => { setAllocations((p) => ({ ...p, [w.address]: e.target.value })); change(); }} />
+                      <input aria-label={`Allocation for ${w.label || w.address}`} inputMode="decimal" placeholder="0" className={cx(fieldBase, "w-[120px] shrink-0 text-right font-mono text-xs")} value={allocations[w.address] || ""} disabled={!on || !!busy} onChange={(e) => { setEdited({ ...allocations, [w.address]: e.target.value }); change(); }} />
                     </div>
                   );
                 }) : <p className="px-3 py-4 text-sm text-text-300">No wallets in this section.</p>}
