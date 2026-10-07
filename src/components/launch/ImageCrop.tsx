@@ -163,6 +163,25 @@ export function CropModal({ src, onClose, onDone }: { src: string; onClose: () =
   );
 }
 
+/** A token's own image as a data URL, byte for byte: downloaded by our server (GET /api/token/[mint]/image, IPFS
+ *  gateways tried in turn), so no image host can block it the way it blocks a browser download (CORS). */
+export async function tokenImageDataUrl(mint: string, fallbackUrl?: string | null): Promise<string> {
+  try {
+    const res = await fetch(`/api/token/${encodeURIComponent(mint)}/image`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`image ${res.status}`);
+    const blob = await res.blob();
+    return await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.onerror = () => reject(new Error("read failed"));
+      r.readAsDataURL(blob);
+    });
+  } catch (e) {
+    if (fallbackUrl) return urlToDataUrl(fallbackUrl);
+    throw e;
+  }
+}
+
 /** Paste-a-URL helper used by Clone: fetches the image and returns a data URL (fails on CORS). */
 export async function urlToDataUrl(url: string): Promise<string> {
   const res = await fetch(url, { mode: "cors" });

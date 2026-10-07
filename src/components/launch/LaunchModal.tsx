@@ -11,7 +11,7 @@ import { isMint, short, sol } from "@/lib/format";
 import { mintAddressOfSecret } from "@/lib/base58";
 import { toast } from "@/components/ui";
 import { BxButton, BxModal, BxSwitch, cx } from "@/components/bx/ui";
-import { CropModal, urlToDataUrl } from "./ImageCrop";
+import { CropModal, tokenImageDataUrl } from "./ImageCrop";
 import { CopyCa } from "@/components/bx/CopyCa";
 import { useLaunchCalc } from "./calc";
 import { EMPTY_FORM, taskBuyFor, taskWallets, type LaunchForm } from "./model";
@@ -107,7 +107,7 @@ function LaunchModalBody({ onClose, form, onChange, wallets, balances }: Props) 
       let img = form.imageDataUrl;
       if (t.image) {
         try {
-          img = await urlToDataUrl(t.image);
+          img = await tokenImageDataUrl(clone.trim(), t.image);
         } catch {
           toast("Metadata copied; the image host blocked the download — upload it by hand", "info");
         }

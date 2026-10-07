@@ -6,7 +6,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { BxButton, BxModal, PadAvatar, cx } from "@/components/bx/ui";
 import { get, useGet } from "@/lib/api";
-import { urlToDataUrl } from "@/components/launch/ImageCrop";
+import { tokenImageDataUrl } from "@/components/launch/ImageCrop";
 import { isMint, short } from "@/lib/format";
 import type { PresetsResponse, TokenInfo } from "@/lib/types";
 
@@ -71,6 +71,6 @@ export function VampDialog({ open, onClose }: { open: boolean; onClose: () => vo
 export async function vampInto<F extends { name: string; symbol: string; description: string; twitter: string; telegram: string; website: string; imageDataUrl: string }>(form: F, mint: string): Promise<{ form: F; imageCopied: boolean }> {
   const t = await get<TokenInfo>(`/api/token/${mint}`);
   let img = form.imageDataUrl; let imageCopied = false;
-  if (t.image) { try { img = await urlToDataUrl(t.image); imageCopied = true; } catch { /* host blocked the download */ } }
+  if (t.image) { try { img = await tokenImageDataUrl(mint, t.image); imageCopied = true; } catch { /* no gateway answered */ } }
   return { form: { ...form, name: t.name ?? form.name, symbol: t.symbol ?? form.symbol, description: t.description ?? "", twitter: t.twitter ?? "", telegram: t.telegram ?? "", website: t.website ?? "", imageDataUrl: img }, imageCopied };
 }
