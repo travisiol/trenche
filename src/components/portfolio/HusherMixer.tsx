@@ -231,7 +231,7 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
               <span className="text-text-300">Destinations</span><span className="text-right font-medium text-text-100">{current.plan.recipients.length} wallets</span>
               {current.feeSol !== null ? <><span className="text-text-300">Exchange fee</span><span className="text-right text-text-100">{current.feeSol} SOL</span></> : null}
             </div>
-            {!current.remoteId ? <p className="text-xs leading-relaxed text-text-300">The creation outcome needs review. No deposit instruction is available and no funds were sent. Check your order history on Husher before starting another order.</p> : null}
+            {current.status === "Creation needs review" ? <p className="text-xs leading-relaxed text-text-300">The creation outcome needs review. No deposit instruction is available and no funds were sent. Check your order history on Husher before starting another order.</p> : null}
             {current.recipients.length ? (
               <div className={card}>
                 {current.recipients.map((r) => {
@@ -249,6 +249,7 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
               {current.hashIn ? <a href={`https://solscan.io/tx/${encodeURIComponent(current.hashIn)}`} target="_blank" rel="noopener noreferrer" className={external}>Deposit transaction</a> : null}
               {current.trackingUrl ? <a href={current.trackingUrl} target="_blank" rel="noopener noreferrer" className={external}>Husher tracking page</a> : null}
             </div>
+            {current.status === "Rejected" ? <button type="button" className={primary} disabled={!!busy} onClick={() => { setOrder(null); setQuote(null); setConsent(false); setHistory(false); setError(null); }}>New quote</button> : null}
             <button type="button" className={solid} disabled={!!busy} onClick={onClose}>Done</button>
           </>
         ) : history ? (

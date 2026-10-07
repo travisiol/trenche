@@ -52,7 +52,12 @@ async function call(endpoint: string, body?: unknown): Promise<Record<string, un
   } catch { throw new HttpError(502, "Husher did not return a response. Check the order history before creating another order."); }
   let j: Record<string, unknown>;
   try { j = await res.json(); } catch { throw new HttpError(502, "Husher returned an unreadable response."); }
-  if (!j || typeof j !== "object" || !res.ok || j.success !== true) throw new HttpError(res.status === 401 || res.status === 403 ? 403 : 502, scrub(j?.message || j?.error || `Husher HTTP ${res.status}`));
+  if (!j || typeof j !== "object" || !res.ok || j.success !== true) {
+    // Husher answered and said no: nothing was created on its side (unlike a timeout, which stays "needs review").
+    const err = new HttpError(res.status === 401 || res.status === 403 ? 403 : 502, scrub(j?.message || j?.error || `Husher HTTP ${res.status}`));
+    Object.assign(err, { rejected: res.status < 500, httpStatus: res.status });
+    throw err;
+  }
   return j;
 }
 function validate(raw: HusherPlan): HusherPlan {
@@ -198,6 +203,17 @@ export async function husherCreate(quoteId: string, consent: boolean, rawPicks?:
   const plan = validate(quote);
   const picks = checkPicks(quote, rawPicks);
   st.creating.add(quoteId);
+  try {
+    // Husher keeps the last rate it gave this key; Fetch Quote priced every provider in parallel, so price the exact
+    // picks again right before creating (a stale rate is answered with "Please reload and try again").
+    const j = await call("/api/v1/multi-exchange/rate", {
+      sendToken: "SOL", sendNetwork: "SOL", receiveToken: "SOL", receiveNetwork: "SOL",
+      totalAmount: Number(plan.totalSol), recipients: quote.rates.map((r, i) => ({ percent: r.percent, provider: picks[i].provider })),
+    });
+    const rows = (j.data as { recipients?: Record<string, unknown>[] } | undefined)?.recipients;
+    const bad = Array.isArray(rows) && rows.length === picks.length ? rows.findIndex((r) => r.success !== true) : 0;
+    if (bad >= 0) throw new HttpError(409, `${plan.recipients[bad]?.label ?? "A wallet"}: ${scrub(text(rows?.[bad]?.error) ?? "the picked provider no longer quotes this amount")}. Fetch a new quote.`);
+  } catch (e) { st.creating.delete(quoteId); throw e; }
   const rec: HusherOrder = { id: quoteId, at: Date.now(), plan, quote, remoteId: null, orderId: null, status: "Creating", depositAddress: null, depositSol: null, feeSol: null, feePercentage: null, networkFeeSol: null, hashIn: null, trackingUrl: null, recipients: [], error: null, updatedAt: Date.now(), picks };
   try {
     save(rec); // durable before the non-idempotent remote POST
@@ -210,8 +226,12 @@ export async function husherCreate(quoteId: string, consent: boolean, rawPicks?:
     logActivity(store(), { kind: "fund", ok: true, message: `Husher order created: ${plan.totalSol} SOL → ${plan.recipients.length} destinations. Awaiting deposit.`, wallets: plan.recipients.map((r) => r.address) });
     return await husherRefresh(rec.id);
   } catch (e) {
-    rec.status = rec.remoteId ? "Awaiting Deposit" : "Creation needs review";
-    rec.error = scrub(e instanceof Error ? e.message : e); rec.updatedAt = Date.now(); save(rec);
+    const rejected = !rec.remoteId && !!(e as { rejected?: boolean })?.rejected;
+    rec.status = rec.remoteId ? "Awaiting Deposit" : rejected ? "Rejected" : "Creation needs review";
+    const msg = scrub(e instanceof Error ? e.message : e);
+    const http = (e as { httpStatus?: number })?.httpStatus;
+    rec.error = rejected ? `Husher refused the order: ${msg} (HTTP ${http}). No order was created and nothing was sent. Fetch a new quote and try again.` : http ? `${msg} (HTTP ${http})` : msg;
+    rec.updatedAt = Date.now(); save(rec);
     return rec;
   } finally { st.creating.delete(quoteId); }
 }

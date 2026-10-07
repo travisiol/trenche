@@ -73,7 +73,7 @@ test('missing consent and expired quotes never create a remote order', async()=>
 });
 test('ambiguous remote creation is retained and never retried automatically',async()=>{
   const t=setup(); const q=await t.api.husherQuote(t.plan);
-  t.setBehavior(async()=>{throw new Error('timeout');});
+  t.setBehavior(async(url)=>{if(url.endsWith('/rate'))return t.quote;throw new Error('timeout');});
   const failed=await t.api.husherCreate(q.id,true);assert.equal(failed.status,'Creation needs review');
   assert.equal(failed.depositAddress,null);
   await t.api.husherCreate(q.id,true);assert.equal(t.calls.filter(c=>c.url.endsWith('/multi-exchange')).length,1);
@@ -135,4 +135,24 @@ test('pay from wallet sends exactly the verified deposit once, never from a dest
   t.data.status = 'Awaiting Deposit'; t.data.sendAddress = 'not-a-key';
   await assert.rejects(t.api.husherPay(order.id, payer, send, () => true));
   assert.equal(sends.length, 2);
+});
+
+test('the exact picks are priced again right before creating; a Husher refusal is final, not "needs review"', async () => {
+  const t = setup(); const q = await t.api.husherQuote(t.plan);
+  t.calls.length = 0;
+  t.setBehavior(async (url) => {
+    if (url.endsWith('/rate')) return t.quote;
+    if (url.endsWith('/multi-exchange')) return null;
+    return t.data;
+  });
+  global.fetch = async (url, opts) => { t.calls.push({url,opts}); const refused = url.endsWith('/multi-exchange');
+    return new Response(JSON.stringify(refused ? {success:false,message:'Please reload and try again'} : {success:true,data:url.endsWith('/rate')?t.quote:t.data}), {status: refused ? 400 : 200}); };
+  const r = await t.api.husherCreate(q.id, true);
+  assert.deepEqual(t.calls.map(c=>c.url.split('/v1/')[1]), ['multi-exchange/rate','multi-exchange']);
+  assert.equal(r.status, 'Rejected'); assert.match(r.error, /refused.*HTTP 400.*nothing was sent/);
+  const t2 = setup(); const q2 = await t2.api.husherQuote(t2.plan);
+  t2.setBehavior(async (url) => url.endsWith('/rate') ? {recipients:[{success:false,error:'Minimum 0.05 SOL'},{success:true,sendAmount:'0.03',receiveAmount:'0.028'}]} : t2.data);
+  await assert.rejects(t2.api.husherCreate(q2.id, true), /dev 1: Minimum 0.05 SOL/);
+  assert.equal(t2.saved().length, 0);
+  assert.equal(t2.calls.filter(c=>c.url.endsWith('/multi-exchange')).length, 0);
 });
