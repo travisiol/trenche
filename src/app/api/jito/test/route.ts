@@ -17,7 +17,7 @@ export const maxDuration = 60;
  *  status, polled 30 s. Built to find why every launch bundle reported "Invalid" (2026-10-06). */
 export const POST = route(async (req: Request) => {
   requireUnlocked();
-  type Body = { wallet?: string; tipLamports?: number; /** one block engine only (e.g. https://ny.mainnet.block-engine.jito.wtf) */ region?: string; /** "two" (default): self-transfer then tip · "one": a single tx with both · "tx": the single tx via Jito's sendTransaction (control: not a bundle) */ mode?: "one" | "two" | "tx" | "pumpbuy"; /** pumpbuy: a live pump.fun coin and the SOL (lamports) to buy */ mint?: string; lamports?: number; /** pumpbuy variants */ tipInBuy?: boolean; cuPrice?: number; cuLimit?: number; /** send through Astralane (Settings key): every tx tips an Astralane wallet */ astralane?: boolean; /** with astralane: send the tipped buy alone through Astralane sendTransaction (Free tier) */ astralaneTx?: boolean };
+  type Body = { wallet?: string; tipLamports?: number; /** one block engine only (e.g. https://ny.mainnet.block-engine.jito.wtf) */ region?: string; /** "two" (default): self-transfer then tip · "one": a single tx with both · "tx": the single tx via Jito's sendTransaction (control: not a bundle) */ mode?: "one" | "two" | "tx" | "pumpbuy"; /** pumpbuy: a live pump.fun coin and the SOL (lamports) to buy */ mint?: string; lamports?: number; /** pumpbuy variants */ tipInBuy?: boolean; cuPrice?: number; cuLimit?: number; /** send through Astralane (Settings key): every tx tips an Astralane wallet */ astralane?: boolean; /** with astralane: send the tipped buy alone through Astralane sendTransaction (Free tier) */ astralaneTx?: boolean; /** build the same transactions and only simulate them (nothing sent, nothing spent) */ simulate?: boolean };
   const body = await readBody<Body>(req).catch(() => ({}) as Body);
   const st = store();
   const bal = st.balances?.map ?? {};
@@ -57,6 +57,13 @@ export const POST = route(async (req: Request) => {
   }
   const txs = pumpTxs ? pumpTxs : mode === "two" ? [mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), self]), mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 1000 }), tipIx])] : [mk([ComputeBudgetProgram.setComputeUnitLimit({ units: 2000 }), self, tipIx])];
   const signatures = txs.map((t) => base58Encode(t.signatures[0]));
+  if (body.simulate) {
+    const sims = await Promise.all(txs.map(async (t) => {
+      const r = await conn.simulateTransaction(t, { sigVerify: false, replaceRecentBlockhash: true }).catch((e) => ({ value: { err: String(e), logs: [] as string[], unitsConsumed: 0 } }));
+      return { err: r.value.err, unitsConsumed: r.value.unitsConsumed ?? null, logs: (r.value.logs ?? []).slice(-12), bytes: t.serialize().length, accounts: t.message.staticAccountKeys.map((k) => k.toBase58()) };
+    }));
+    return json({ mode, simulate: true, wallet, sims });
+  }
   const accepted: Record<string, string> = {};
   const refused: Record<string, string> = {};
   const t0 = Date.now();
