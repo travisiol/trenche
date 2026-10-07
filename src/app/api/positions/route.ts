@@ -1,18 +1,35 @@
 import { json, requireAddress, route } from "@/server/api";
 import { positions } from "@/server/positions";
 import { store } from "@/server/store";
+import type { PositionRow } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-/** ?wallets=a,b (default: every vault wallet + the wallets of the asked mints' launches, so a dev deleted after its
- *  launch still counts) · ?mints=m1,m2 (default: launched + tracked mints) */
+/** ?wallets=a,b (default: every vault wallet + each launch's own wallets for its mint, so a dev deleted after its
+ *  launch still counts) · ?mints=m1,m2 (default: launched + tracked mints).
+ *  Without ?mints= (Dashboard, Portfolio) a deleted launch wallet only adds the tokens it still holds: the Dashboard's
+ *  holdings would otherwise miss them while the launch's ledger counts what it bought (FRAME: 7 % of the supply left
+ *  on a trashed dev = −2.2 SOL on the Dashboard, −0.14 SOL in Tasks). */
 export const GET = route(async (req: Request) => {
   const q = new URL(req.url).searchParams;
   const st = store();
   const wallets = (q.get("wallets") ?? "").split(",").map((s) => s.trim()).filter(Boolean).map((a) => requireAddress(a, "wallets"));
   const mints = (q.get("mints") ?? "").split(",").map((s) => s.trim()).filter(Boolean).map((a) => requireAddress(a, "mints"));
-  const asked = new Set(mints);
-  const launchWallets = st.launches.filter((l) => asked.has(l.mint)).flatMap((l) => [l.dev, ...(l.wallets ?? [])]);
-  const defaults = [...new Set([...st.sol.wallets.map((w) => w.address), ...launchWallets])];
-  return json(await positions(wallets.length ? wallets : defaults, mints.length ? mints : [...new Set([...st.launches.map((l) => l.mint), ...st.tracked])]));
+  const mintList = mints.length ? mints : [...new Set([...st.launches.map((l) => l.mint), ...st.tracked])];
+  if (wallets.length) return json(await positions(wallets, mintList));
+  const active = new Set(st.sol.wallets.map((w) => w.address));
+  const rows = await positions([...active], mintList);
+  // each launch's wallets that are no longer active (deleted dev / buyers), read for that launch's mint only
+  const asked = new Set(mintList.slice(0, 40));
+  const extra = st.launches
+    .filter((l) => asked.has(l.mint))
+    .map((l) => ({ mint: l.mint, wallets: [...new Set([l.dev, ...(l.wallets ?? [])])].filter((a) => a && !active.has(a)) }))
+    .filter((x) => x.wallets.length);
+  const more: PositionRow[] = [];
+  for (let i = 0; i < extra.length; i += 4) {
+    const parts = await Promise.all(extra.slice(i, i + 4).map((x) => positions(x.wallets, [x.mint]).catch(() => [] as PositionRow[])));
+    for (const p of parts) more.push(...(mints.length ? p : p.filter((r) => Number(r.amount) > 0)));
+  }
+  const seen = new Set(rows.map((r) => `${r.wallet}:${r.mint}`));
+  return json([...rows, ...more.filter((r) => !seen.has(`${r.wallet}:${r.mint}`))]);
 });

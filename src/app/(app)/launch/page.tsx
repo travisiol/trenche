@@ -1,7 +1,8 @@
 "use client";
 /** Block X /sol/launch: "Launches" sidebar (search, + New launch, CTO, Draft / Launched tabs), workspace
  *  (Chart · Tasks · Token info · Activity), right rail. BEHAVIOUR.md §4.1–4.3.
- *  ?new=1 opens a fresh draft in the Launch Token modal · ?open=<mint> shows a launched token · ?quick=<presetId> replays a preset. */
+ *  ?new=1 opens a fresh draft in the Launch Token modal · ?open=<mint> shows a launched token · ?quick=<presetId> replays a preset
+ *  · ?vamp=<mint>[&quick=<presetId>] = that preset (or a fresh form) wearing the token's name, ticker, links and image. */
 import { Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useSearchParams } from "next/navigation";
 import { ChevronsLeft, ChevronsRight, Flag, Pencil, Plus, Rocket, Search, Trash2 } from "lucide-react";
@@ -14,6 +15,7 @@ import { BxButton, BxModal, PadAvatar, cx } from "@/components/bx/ui";
 import { BxJob } from "@/components/bx/Job";
 import { trackTradeJob } from "@/lib/pendingTrades";
 import { LaunchModal } from "@/components/launch/LaunchModal";
+import { vampInto } from "@/components/launch/VampDialog";
 import { CtoModal } from "@/components/launch/CtoModal";
 import { ActivityPanel, ChartPanel, Gutter, RightRail, TasksPanel, TokenInfoPanel, type PanelFrame } from "@/components/launch/Workspace";
 import { resetWorkspaceLayout, setWorkspaceLayout, useWorkspaceLayout, type PanelId } from "@/components/launch/layout";
@@ -187,12 +189,25 @@ function LaunchScreen() {
     const quick = params.get("quick");
     const draftId = params.get("draft");
     const ctoId = params.get("cto");
+    const vamp = params.get("vamp");
     if (quick && !presetsQ.data) return;
     if (ctoId && !ctos.data) return;
     const t = setTimeout(() => {
       bootDone.current = true;
       if (params.get("new")) newLaunch(true);
-      else if (draftId) {
+      else if (vamp) {
+        // Vamp (bottom bar): the preset's launch setup + the pasted token's face, then the launch confirmation
+        const p = quick ? presetsQ.data?.presets.find((x) => x.id === quick) : undefined;
+        const base = p ? fromPresetSnapshot(p.data, newForm(active)) : newForm(active);
+        vampInto(base, vamp)
+          .then(({ form: f, imageCopied }) => {
+            saveDraft(f).catch(() => {});
+            openDraft(f, !p);
+            if (p) setConfirm(true);
+            toast(imageCopied ? `Vamped ${f.symbol}${p ? ` · preset “${p.name}”` : ""}` : "Vamped — the image host blocked the download, add the image by hand", imageCopied ? "ok" : "info");
+          })
+          .catch((e) => toast(failureMessage(e), "err"));
+      } else if (draftId) {
         const d = drafts.find((x) => x.id === draftId);
         if (d) openDraft(d.parsed, false);
         else toast("Draft not found", "err");

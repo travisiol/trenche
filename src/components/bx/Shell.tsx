@@ -7,7 +7,8 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { Bell, BookOpen, Check, ChevronDown, Copy, History, Menu, Search, Settings, SlidersHorizontal } from "lucide-react";
+import { Bell, BookOpen, Check, ChevronDown, Copy, History, Menu, Search, Settings, SlidersHorizontal, Zap } from "lucide-react";
+import { VampDialog } from "@/components/launch/VampDialog";
 import { useRecent, clearRecent } from "./recent";
 import { VaultPill } from "./vault";
 import { PadAvatar, cx } from "./ui";
@@ -210,6 +211,7 @@ function BottomBar() {
     };
   }, []);
   const quick = presets.data?.presets[0] ?? null;
+  const [vamp, setVamp] = useState(false);
   const cluster = settings.data?.cluster ?? "mainnet";
   // RPC situation from the server's queue (GET /api/rpc/health every 10 s): honest pill instead of raw 429 toasts
   const rpc = useGet<RpcHealthResponse>("/api/rpc/health", 10000);
@@ -240,6 +242,10 @@ pump.fun API: ${h.pump.ok ? "ok" : `in back-off (${h.pump.lastError ?? "blocked"
           <Link href="/launch" className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[4px] text-text-300 transition-colors duration-150 ease-in-out hover:bg-hover-200 hover:text-text-100" aria-label="Quick Launch settings" title="Quick Launch settings">
             <SlidersHorizontal className="h-3.5 w-3.5" />
           </Link>
+          <button type="button" onClick={() => setVamp(true)} title="Vamp: paste a CA, launch its copy with a preset" className="ml-0.5 flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[7px] px-1.5 py-1 text-sm font-normal leading-4 text-text-300 transition-colors hover:bg-hover-200 hover:text-text-100">
+            <Zap className="h-3.5 w-3.5 text-accent" /> Vamp
+          </button>
+          <VampDialog open={vamp} onClose={() => setVamp(false)} />
         </div>
         <div className="mx-0.5 h-4 w-px shrink-0 bg-line-50" />
         <div className="hidden md:contents">
