@@ -349,6 +349,10 @@ export function TasksPanel({
   const lp = useLivePnl(mint, rowWallets, positions, mintPnl);
   const posMap = lp.posMap;
   const pnl = positionPnl([...posMap.values()], lp.spot, mintPnl.data?.row ?? null, lp.ledger);
+  // right after a launch the badge only had the live trades: no positions read and no ledger row (creation costs, fees)
+  // yet, so it showed a made-up figure for ~2 s before the real one — "PnL…" until both have caught up instead
+  const serverHasPosition = (positions.data ?? []).some((r) => r.mint === mint && (Number(r.costSol) > 0 || Number(r.amount) > 0 || Number(r.realisedSol) > 0));
+  const pnlSettling = !!mint && pnl !== null && (!serverHasPosition || !mintPnl.data?.row);
   const ctx: TradeCtx = { mint, wallets, balances: lp.balances(balances), positions: posMap, tp, presetIndex, unit, sortBy, onTraded: positions.refresh };
   const dumpAll = () => {
     if (!live || !onDump) return toast("Dump All failed — No launch wallets to sell.", "err");
@@ -366,7 +370,7 @@ export function TasksPanel({
   return (
     <Panel
       title="Tasks"
-      titleExtra={mint ? <PnlBadge pnl={pnl} solUsd={lp.solUsd ?? price.data?.usd ?? null} loading={positions.loading && !positions.data} /> : null}
+      titleExtra={mint ? <PnlBadge pnl={pnlSettling ? null : pnl} solUsd={lp.solUsd ?? price.data?.usd ?? null} loading={pnlSettling || (positions.loading && !positions.data)} /> : null}
       frame={frame}
       className={className}
       right={
