@@ -952,6 +952,9 @@ export type LaunchExecuteRequest = {
    *  vault every `intervalSec` (default 300) and claims to the dev wallet when pending ≥ `minSol` (default 0.01).
    *  Omitted = `enabled: Settings.autoClaimRewards` (true by default). */
   autoClaim?: AutoClaimRequestConfig;
+  /** Launch Token modal "Send": "jito" = one atomic Jito bundle (create + every wallet's own buy), "fast" = sent
+   *  together but not atomic. Omitted = Settings (Jito on + Bundle route). Bundle launches only. */
+  route?: "jito" | "fast";
   slippageBps?: number;
   cuPrice?: number;
   /** bundle buys in their own tx + snipers, µL/CU (default Settings.launchCuPrice) */

@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ClipboardPaste, Copy, Crop, Hash, KeyRound, Plus, Save, Trash2, Upload, Wallet, X } from "lucide-react";
 import type { JobCreated, TokenInfo, WalletInfo, WalletsGenerateResponse } from "@/lib/types";
 import { failureMessage, get, isApiFailure, post, waitJob } from "@/lib/api";
-import { refreshVaultDependents } from "@/lib/store";
+import { refreshVaultDependents, useSettings } from "@/lib/store";
 import { isMint, short, sol } from "@/lib/format";
 import { mintAddressOfSecret } from "@/lib/base58";
 import { toast } from "@/components/ui";
@@ -61,6 +61,9 @@ function LaunchModalBody({ onClose, form, onChange, wallets, balances }: Props) 
     formRef.current = form;
   }, [form]);
   const set = <K extends keyof LaunchForm>(k: K, v: LaunchForm[K]) => onChange({ ...form, [k]: v });
+  // "Send": what Settings would do for a bundle launch (Jito on + Bundle route), shown on the Default choice
+  const settings = useSettings().data;
+  const defaultJito = !!settings?.jitoEnabled && (!settings.hasAstralaneKey || !!settings.astralaneBundles || !!settings.jitoPublic);
   const dev = wallets.find((w) => w.address === form.devWallet) ?? null;
   const balOf = (a: string) => Number(balances?.[a] ?? wallets.find((w) => w.address === a)?.sol ?? 0) || 0;
   const bundleSols = form.tasks.filter((t) => t.type === "bundle").flatMap((t) => taskWallets(t, wallets).map((a) => taskBuyFor(t, a)));
@@ -397,6 +400,14 @@ function LaunchModalBody({ onClose, form, onChange, wallets, balances }: Props) 
                     <div className={cx("inline-flex h-8 items-center gap-2 rounded-md border px-2.5 text-xs transition-colors", form.autoClaimEnabled ? "border-accent/40 bg-accent/15 text-text-100" : "border-line-100 bg-bg-50 text-text-200")} title="Once the token is live, the server reads the pump.fun creator vault on a timer and claims the creator fees to the developer wallet by itself — no manual Claim. pump.fun pays the vault out to the creator account, so the SOL always lands on the dev wallet.">
                       <BxSwitch checked={form.autoClaimEnabled} onChange={(v) => set("autoClaimEnabled", v)} />
                       <span>Auto-claim rewards → dev wallet</span>
+                    </div>
+                    <div className="inline-flex h-8 items-center gap-0.5 rounded-md border border-line-100 bg-bg-50 p-0.5 text-xs" title="How the create and the bundle wallets' buys are sent. Jito bundle: one atomic bundle, every wallet its own transaction, nobody can land between them (a 0.001 SOL+ tip, raised if it does not land). Fast lane: sent together but not atomic — a sniper can land between them.">
+                      <span className="px-1.5 text-text-300">Send</span>
+                      {([["", `Default · ${defaultJito ? "Jito" : "Fast"}`], ["jito", "Jito bundle"], ["fast", "Fast lane"]] as const).map(([v, label]) => (
+                        <button key={v || "default"} type="button" onClick={() => set("sendRoute", v)} className={cx("h-7 rounded px-2 font-medium transition-colors", (form.sendRoute ?? "") === v ? "bg-accent/15 text-accent" : "text-text-300 hover:text-text-100")}>
+                          {label}
+                        </button>
+                      ))}
                     </div>
                     {form.autoClaimEnabled ? (
                       <>

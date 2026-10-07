@@ -80,6 +80,8 @@ export type LaunchForm = {
   /** Auto-claim rewards → dev wallet: the server claims the pump.fun creator vault to the dev wallet on a timer
    *  (default on = Settings.autoClaimRewards; min SOL 0.01, every 300 s) */
   autoClaimEnabled: boolean;
+  /** how the bundle is sent: "" = Settings default, "jito" = atomic Jito bundle, "fast" = not atomic */
+  sendRoute: "" | "jito" | "fast";
   autoClaimMinSol: string;
   autoClaimIntervalSec: string;
   updatedAt: number;
@@ -148,6 +150,7 @@ export const EMPTY_FORM: LaunchForm = {
   autoDevSellMode: "ms",
   autoDevSellValue: "",
   autoClaimEnabled: true,
+  sendRoute: "",
   autoClaimMinSol: "0.01",
   autoClaimIntervalSec: "300",
   updatedAt: 0,
@@ -361,6 +364,7 @@ export function toExecuteRequest(f: LaunchForm, mint: string): LaunchExecuteRequ
     sellOnExternalThreshold: f.sellOnExternalEnabled ? f.sellOnExternalThreshold : undefined,
     autoDevSell: f.autoDevSellEnabled && v > 0 ? { mode: f.autoDevSellMode, value: v } : undefined,
     autoClaim: { enabled: !!f.autoClaimEnabled, minSol: f.autoClaimMinSol || undefined, intervalSec: Number(f.autoClaimIntervalSec) || undefined },
+    ...(f.sendRoute === "jito" || f.sendRoute === "fast" ? { route: f.sendRoute } : {}),
     slippageBps: f.slippageBps,
     cashback: false,
     draftId: f.id || undefined,
