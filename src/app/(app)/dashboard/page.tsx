@@ -46,7 +46,9 @@ export default function DashboardPage() {
   const holdings = grouped.filter((p) => Number(p.amount) > 0).reduce((n, p) => n + Number(p.valueSol), 0);
   /** realized is average-cost (a held coin's cost is not in it): total = realized + (held value − held cost) */
   const openCost = d ? Number(d.openCostSol ?? 0) : 0;
-  const total = realised + holdings - openCost;
+  // positions not read yet: no held value to set against their cost — the total stays the realized figure meanwhile
+  const heldKnown = !!positions.data;
+  const total = realised + (heldKnown ? holdings - openCost : 0);
   const basis = pnl ? Number(pnl.buysSol) : 0;
   const pct = basis > 0 ? (total / basis) * 100 : 0;
   const launches = d?.recentLaunches ?? [];
@@ -198,7 +200,7 @@ export default function DashboardPage() {
                     <div className="mt-3 grid grid-cols-2 gap-x-5 gap-y-2 xl:mt-4 xl:gap-y-3">
                       {[
                         [`${win} Net Realized`, money(realised, solUsd, unit, true), realised],
-                        ["Holdings (current value)", money(holdings, solUsd, unit), 0],
+                        ["Holdings (current value)", heldKnown ? money(holdings, solUsd, unit) : "—", 0],
                         [`${win} Total Volume`, money(volume, solUsd, unit), 0],
                         [`${win} Gross (sells − buys)`, money(pnl ? Number(pnl.realisedSol) : 0, solUsd, unit, true), pnl ? Number(pnl.realisedSol) : 0],
                       ].map(([k, v, tone]) => (
