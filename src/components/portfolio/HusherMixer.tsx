@@ -5,120 +5,21 @@
  *  2. Quote total · Providers N available · Provider & delay per wallet (best provider preselected, Delay all).
  *  3. Deposit address (QR / Address only) · "Send X SOL to start the mixer" · Pay from wallet · Status · Done.
  *  Only Husher is wired. Funds move only when the user deposits by hand or confirms Pay from wallet. */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
-import QRCode from "qrcode";
-import { Check, ChevronDown, Copy, RefreshCw, X } from "lucide-react";
+import { Check, Copy, RefreshCw } from "lucide-react";
 import { Drawer } from "@/components/portfolio/Drawers";
+import { HusherPairs } from "@/components/portfolio/HusherPairs";
 import { BxJob } from "@/components/bx/Job";
 import { useJob } from "@/components/JobProgress";
+import { fieldBase, field, smallBtn, primary, solid, card, external, PAY_FEE_LAM, FINAL, lamOf, useQr, Step, QrImage, ProviderSelect, MinutesInput, browserMeta } from "@/components/portfolio/HusherUi";
 import { cx } from "@/components/bx/ui";
 import { failureMessage, post, useGet } from "@/lib/api";
 import { refreshVaultDependents, useSettings, useVault } from "@/lib/store";
 import { short, sol } from "@/lib/format";
 import { toast } from "@/components/ui";
 import type { WalletInfo } from "@/lib/types";
-import { HUSHER_KEEP_LAM, HUSHER_MAX_DELAY_MIN, HUSHER_MAX_SOURCES, HUSHER_PROVIDERS, formatHusherSol, husherAllocation, parseHusherSol, providerLabel, splitHusherSol, type HusherOrder, type HusherPlan, type HusherQuote, type HusherState } from "@/lib/husher";
-
-const fieldBase = "border border-line-100 bg-bg-50 px-3 py-2 text-sm text-text-100 outline-none placeholder:text-text-300 focus:border-accent disabled:opacity-50";
-const field = `w-full ${fieldBase}`;
-const smallBtn = "shrink-0 rounded border border-line-100 bg-bg-50 px-3 text-xs font-medium text-text-100 hover:border-accent/35 hover:text-accent disabled:opacity-45";
-const primary = "h-9 w-full rounded border border-accent/40 bg-accent/15 text-sm font-medium text-accent hover:bg-accent/25 disabled:opacity-50";
-const solid = "h-10 w-full rounded bg-accent text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-50";
-const card = "rounded-[10px] border border-line-100";
-const external = "inline underline text-accent";
-/** SOL kept for the deposit transaction fee when listing wallets that can pay. */
-const PAY_FEE_LAM = BigInt(10_000);
-const FINAL = ["Complete", "Failed", "Refunded"];
-
-function lamOf(v: string | null | undefined): bigint {
-  try { return parseHusherSol(String(v ?? "")); } catch { return BigInt(0); }
-}
-
-function ProviderMark({ provider }: { provider: string }) {
-  const p = HUSHER_PROVIDERS[provider];
-  return <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-[10px] font-bold text-black" style={{ background: p?.color ?? "#888" }}>{(p?.label ?? provider).slice(0, 1)}</span>;
-}
-
-function useQr(text: string | null) {
-  const [qr, setQr] = useState<{ text: string; url: string } | null>(null);
-  useEffect(() => {
-    if (!text) return;
-    let alive = true;
-    QRCode.toDataURL(text, { margin: 1, width: 164, color: { dark: "#000000", light: "#ffffff" } }).then((url) => alive && setQr({ text, url }));
-    return () => { alive = false; };
-  }, [text]);
-  return qr && qr.text === text ? qr.url : null;
-}
-
-type StepState = "done" | "active" | "todo" | "failed";
-/** One line of the From-wallets progress: Order created → Deposit sent → Received by Husher → Sent to wallets. */
-function Step({ state, title, detail, last }: { state: StepState; title: string; detail?: React.ReactNode; last?: boolean }) {
-  return (
-    <div className="flex gap-3">
-      <div className="flex flex-col items-center">
-        <span className={cx("flex h-6 w-6 shrink-0 items-center justify-center rounded-full border",
-          state === "done" ? "border-green-100 bg-green-100/15 text-green-100" : state === "active" ? "border-accent bg-accent/15 text-accent" : state === "failed" ? "border-decrease bg-decrease/15 text-decrease" : "border-line-100 text-text-300")}>
-          {state === "done" ? <Check className="h-3.5 w-3.5" /> : state === "active" ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : state === "failed" ? <X className="h-3.5 w-3.5" /> : <span className="h-1.5 w-1.5 rounded-full bg-line-100" />}
-        </span>
-        {!last ? <span className={cx("my-1 w-px flex-1", state === "done" ? "bg-green-100/40" : "bg-line-100")} /> : null}
-      </div>
-      <div className={cx("min-w-0 pb-4", last && "pb-0")}>
-        <p className={cx("text-sm font-medium", state === "todo" ? "text-text-300" : "text-text-100")}>{title}</p>
-        {detail ? <div className="mt-0.5 text-[11px] leading-relaxed text-text-300">{detail}</div> : null}
-      </div>
-    </div>
-  );
-}
-
-function QrImage({ src }: { src: string }) {
-  // eslint-disable-next-line @next/next/no-img-element -- data URL generated client-side
-  return <img src={src} alt="Deposit address QR code" width={164} height={164} className="rounded-lg bg-white p-1.5" />;
-}
-
-/** Block X's provider dropdown: logo · name · ~receive, list sorted best first. */
-function ProviderSelect({ value, options, onChange, disabled }: { value: string; options: { provider: string; receiveSol: string }[]; onChange: (p: string) => void; disabled?: boolean }) {
-  const [open, setOpen] = useState(false);
-  const cur = options.find((o) => o.provider === value) ?? options[0];
-  return (
-    <div className="relative min-w-0 flex-1">
-      <button type="button" disabled={disabled} onClick={() => setOpen(!open)} className={cx(fieldBase, "flex h-9 w-full items-center gap-2 text-left")}>
-        <ProviderMark provider={cur.provider} />
-        <span className="min-w-0 flex-1 truncate">{providerLabel(cur.provider)} · ~{cur.receiveSol} SOL</span>
-        <ChevronDown className="h-4 w-4 shrink-0 text-text-300" />
-      </button>
-      {open ? (
-        <>
-          <div className="fixed inset-0 z-[1]" onMouseDown={() => setOpen(false)} />
-          <div className="absolute left-0 right-0 top-full z-[2] mt-1 overflow-hidden rounded border border-line-100 bg-bg-100 shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
-            {options.map((o) => (
-              <button key={o.provider} type="button" onClick={() => { onChange(o.provider); setOpen(false); }} className={cx("flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm hover:bg-white/[0.04]", o.provider === cur.provider ? "bg-accent/10 text-accent" : "text-text-100")}>
-                <ProviderMark provider={o.provider} />
-                <span className="flex-1">{providerLabel(o.provider)}</span>
-                <span className="text-xs text-text-300">~{o.receiveSol} SOL</span>
-              </button>
-            ))}
-          </div>
-        </>
-      ) : null}
-    </div>
-  );
-}
-
-function MinutesInput({ value, onChange, disabled, className }: { value: string; onChange: (v: string) => void; disabled?: boolean; className?: string }) {
-  return (
-    <div className={cx("relative shrink-0", className)}>
-      <input inputMode="numeric" placeholder="0" value={value} disabled={disabled} onChange={(e) => onChange(e.target.value.replace(/[^\d]/g, ""))} className={cx(fieldBase, "h-9 w-full pr-10 text-right font-mono")} />
-      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-text-300">min</span>
-    </div>
-  );
-}
-
-function browserMeta() {
-  let timezone = "";
-  try { timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { /* unknown */ }
-  return { timezone, language: navigator.language || "", userAgent: navigator.userAgent || "" };
-}
+import { HUSHER_KEEP_LAM, HUSHER_MAX_DELAY_MIN, HUSHER_MAX_SOURCES, formatHusherSol, husherAllocation, providerLabel, splitHusherSol, type HusherOrder, type HusherPlan, type HusherQuote, type HusherState } from "@/lib/husher";
 
 export function HusherMixer({ wallets, balances = null, selected = [], onClose }: { wallets: WalletInfo[]; balances?: Record<string, string | null> | null; selected?: string[]; onClose: () => void }) {
   const live = wallets.filter((w) => !w.archived);
@@ -126,6 +27,8 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
   const [chosen, setChosen] = useState<string[]>(() => selected.length ? live.filter((w) => selected.includes(w.address)).map((w) => w.address) : live.map((w) => w.address));
   const [manualTotal, setTotal] = useState("");
   const [tab, setTab] = useState<"from" | "to">("from");
+  const [mode, setMode] = useState<"split" | "pairs">("split");
+  const [pairsRunning, setPairsRunning] = useState(false);
   const [fromSel, setFromSel] = useState<string[]>([]);
   const [fromAmt, setFromAmt] = useState<Record<string, string>>({});
   /** null = equal split of the total over the ticked destinations (follows every change); typing an amount freezes them */
@@ -238,7 +141,7 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
     try { await navigator.clipboard.writeText(value); toast("Copied", "ok"); }
     catch { toast("Select the value and copy it manually.", "info"); }
   }
-  const close = () => { if (!busy) onClose(); };
+  const close = () => { if (!busy && !pairsRunning) onClose(); };
   const min = limits.data?.minimumSol;
   const awaiting = !!current && !!current.depositAddress && !!current.depositSol && !current.error && !tracked.error && current.status === "Awaiting Deposit" && !current.hashIn;
   const destinations = new Set(current?.plan.recipients.map((r) => r.address) ?? []);
@@ -355,8 +258,8 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
             <p className="text-xs text-text-300">Orders are saved locally and can be reopened after a restart.</p>
             {state.data?.orders.length ? <div className={card}>{state.data.orders.map((o) => <button key={o.id} type="button" className="flex w-full items-center justify-between gap-3 border-b border-line-50 px-3 py-2.5 text-left last:border-b-0 hover:bg-white/[0.03]" onClick={() => { setOrder(o); setHistory(false); }}><div><p className="text-sm text-text-100">{o.plan.totalSol} SOL · {o.plan.recipients.length} wallets</p><p className="mt-0.5 text-[11px] text-text-300">{new Date(o.at).toLocaleString()} · #{o.orderId || o.id.slice(0, 8)}</p></div><span className="text-xs text-accent">{o.status}</span></button>)}</div> : <p className="px-1 py-4 text-sm text-text-300">No mixer orders yet.</p>}
           </>
-        ) : (
-          <>
+        ) : null}
+        <div className={cx("flex flex-col gap-3", (current || history) && "hidden")}>
             <div>
               <label className="mb-1 block text-xs text-text-300">Service</label>
               <div className="grid grid-cols-2 gap-1 rounded border border-line-100 bg-bg-50 p-0.5">
@@ -366,6 +269,13 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
             {service === "splitnow" ? <p className="text-xs leading-relaxed text-text-300">SplitNOW is not connected to DONCHAIN. Use Husher for SOL → SOL splits across your wallets.</p> : null}
             {service === "husher" && state.data && !state.data.configured ? <div className={cx(card, "space-y-2 p-3")}><label htmlFor="husher-api-key" className="block text-xs text-text-300">Husher API key</label><div className="flex gap-2"><input id="husher-api-key" type="password" className={field} value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" placeholder="Paste your key" disabled={!!busy} /><button type="button" className={smallBtn} onClick={saveKey} disabled={!apiKey || !!busy || !unlocked}>Save key</button></div><p className="text-[11px] text-text-300">Unlock your vault to save the key. It stays on the local server and is never returned to the browser.</p></div> : null}
             {!mainnet ? <p className="text-xs text-yellow-100">The mixer uses real SOL. Switch to mainnet in <Link href="/settings" className={external}>Settings</Link>.</p> : null}
+            <div className="grid grid-cols-2 gap-1 rounded border border-line-100 bg-bg-50 p-0.5">
+              {(["split", "pairs"] as const).map((m) => <button key={m} type="button" disabled={pairsRunning} onClick={() => setMode(m)} className={cx("h-7 rounded text-xs font-medium transition-colors", mode === m ? "bg-accent/15 text-accent" : "text-text-300 hover:text-text-100")}>{m === "split" ? "Split · many → many" : "Pairs · one → one"}</button>)}
+            </div>
+            {mode === "pairs" ? (
+              <HusherPairs wallets={live} balances={balances} minSol={min} ready={service === "husher" && mainnet && !!state.data?.configured} unlocked={unlocked}
+                onOpenOrder={(o) => { setOrder(o); setHistory(false); }} onRunning={setPairsRunning} onOrdersChanged={() => state.refresh()} />
+            ) : (<>
             <div className="grid grid-cols-2 gap-1 rounded border border-line-100 bg-bg-50 p-0.5">
               {(["from", "to"] as const).map((t) => <button key={t} type="button" onClick={() => setTab(t)} className={cx("h-8 rounded text-xs font-medium transition-colors", tab === t ? "bg-accent/15 text-accent" : "text-text-300 hover:text-text-100")}>{t === "from" ? `1 · From (${fromSel.length})` : `2 · To (${chosen.length})`}</button>)}
             </div>
@@ -480,8 +390,9 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
               </>
             ) : null}
             </>)}
-          </>
-        )}
+            </>)}
+        </div>
+
       </div>
     </Drawer>
   );
