@@ -217,7 +217,7 @@ function planView(plan: PlanRow[], res: (RowResult | undefined)[]) {
 
 /** send a plan from one keypair, one payment at a time (direct or each through its own fresh relay), waiting each
  *  row's drawn delay first. `onRow` fires after every payment (job.extra refresh). */
-async function sendPlan(job: Job, fromKp: Keypair, plan: PlanRow[], o: { viaRelay: boolean; range: DelayRange; cuPrice?: number; onRow?: (res: (RowResult | undefined)[]) => void }): Promise<{ sent: number; results: (RowResult | undefined)[] }> {
+async function sendPlan(job: Job, fromKp: Keypair, plan: PlanRow[], o: { viaRelay: boolean; range: DelayRange; cuPrice?: number; /** deposit wallet: the last payment sends what is really left (minus its fee) so the wallet ends at 0 */ drainLast?: boolean; onRow?: (res: (RowResult | undefined)[]) => void }): Promise<{ sent: number; results: (RowResult | undefined)[] }> {
   const st = store();
   const conn = readConn();
   const cuPrice = o.cuPrice ?? st.sol.config.priorityMicroLamports;
@@ -226,6 +226,19 @@ async function sendPlan(job: Job, fromKp: Keypair, plan: PlanRow[], o: { viaRela
   for (let i = 0; i < plan.length; i++) {
     const p = plan[i];
     if (!(await waitTurn(job, p.delayMs, i, plan.length, o.range))) break;
+    // a deposit wallet must end at exactly 0: a few lamports off the planned fees (6 000 on 2026-10-07) left it between
+    // 0 and the rent minimum and the runtime refused the last payment (InsufficientFundsForRent) — re-read and drain
+    if (o.drainLast && i === plan.length - 1) {
+      const bal = await getSolBalance(conn, fromKp.publicKey.toBase58()).catch(() => null);
+      if (bal !== null) {
+        const target = bal - BASE_FEE - (o.viaRelay ? RELAY_FEE : BigInt(0));
+        const diff = target > p.lamports ? target - p.lamports : p.lamports - target;
+        if (target > BigInt(0) && target !== p.lamports && diff <= BigInt(1_000_000)) {
+          jobNote(job, `Last payment set to what the deposit really holds: ${solString(target)} SOL (planned ${solString(p.lamports)}) so it ends at 0.`, { address: p.address });
+          p.lamports = target;
+        }
+      }
+    }
     if (plan.length > 1) jobNote(job, `Payment ${i + 1}/${plan.length} · ${solString(p.lamports)} SOL → ${p.label}`, { phase: "pay", address: p.address });
     let res: RowResult;
     const waitedMs = i > 0 ? p.delayMs : 0;
@@ -419,7 +432,7 @@ export function disperseV2(o: DisperseOpts): DisperseStarted {
     }
     j.extra = { ...(j.extra ?? {}), phase: "sending", balanceSol: solString(bal!), plan: planView(plan, results) };
     jobNote(j, `${srcLabel} holds ${solString(bal!)} SOL — sending to ${plan.length} wallet(s)${o.shuffle ? " in random order" : ""}.`);
-    const r = await sendPlan(j, st.sol.keypair(from), plan, { viaRelay: o.viaRelay, range: o.delay, cuPrice: isDeposit ? 0 : undefined, onRow: (res) => (j.extra = { ...(j.extra ?? {}), plan: planView(plan, res) }) });
+    const r = await sendPlan(j, st.sol.keypair(from), plan, { viaRelay: o.viaRelay, range: o.delay, cuPrice: isDeposit ? 0 : undefined, drainLast: isDeposit, onRow: (res) => (j.extra = { ...(j.extra ?? {}), plan: planView(plan, res) }) });
     j.extra = { ...(j.extra ?? {}), phase: "done", sent: r.sent, total: plan.length, plan: planView(plan, r.results) };
     logActivity(st, { kind, ok: r.sent > 0, message: `${kind === "distribute" ? "Distribute" : "Disperse"} from ${srcLabel}${o.viaRelay ? " via relays" : ""}: ${r.sent}/${plan.length} wallet(s) funded.`, wallets: [from, ...plan.map((p) => p.address)], jobId: j.id });
     if (r.sent === 0) throw new Error(j.stop ? "Stopped before any wallet was funded." : "No wallet funded.");
