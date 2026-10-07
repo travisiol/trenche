@@ -28,6 +28,21 @@ export function normalizeSolanaRpc(t) {
    A Jito bundle must write-lock one of THESE — Helius Sender's accounts below are refused ("Bundles must write lock
    at least one tip account"). */
 /* Astralane tip wallets (docs "Endpoints and Configs", read 2026-10-06): every tx of an Astralane bundle tips one */
+/* Helius sendBundle (docs "Bundles via Helius", 2026-10-07): at least one transaction of the bundle tips one of these;
+   Helius forwards the bundle to Jito's block engine. Minimum 5 000 lamports. */
+export var HELIUS_BUNDLE_TIP_ACCOUNTS = [
+  "4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE",
+  "D2L6yPZ2FmmmTKPgzaMKdhu6EWZcTpLy1Vhx8uvZe7NZ",
+  "9bnz4RShgq1hAnLnZbP8kbgBg1kEmcJBYQq3gQbmnSta",
+  "5VY91ws6B2hMmBFRsXkoAAdsPHBJwRfBht4DXox3xkwn",
+  "2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD",
+  "2q5pghRs6arqVjRvT5gfgWfWcHWmw1ZuCzphgd5KfWGJ",
+  "wyvPkWjVZz1M8fHQnMMCDTQDbkManefNNhweYk5WkcF",
+  "3KCKozbAaF75qEU33jtzozcJ29yJuaLJTy2jFdzUY8bT",
+  "4vieeGHPYPG2MmyPRcYjdiDmmhN3ww7hsFNap8pVN3Ey",
+  "4TQLFNWK8AovT1gFvda5jfw2oJeRMKEmw7aH6MGBJ3or",
+];
+
 export var ASTRALANE_TIP_ACCOUNTS = [
   "astrazznxsGUhWShqgNtAdfrzP2G83DzcWVJDxwV9bF",
   "astra4uejePWneqNaJKuFFA8oonqCE1sqF6b45kDMZm",

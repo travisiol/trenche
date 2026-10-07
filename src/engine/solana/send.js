@@ -318,6 +318,27 @@ export async function submitAstralaneBundle(txs, astralane) {
   return Array.isArray(data?.result) ? data.result.join(",") : String(data?.result ?? "sent");
 }
 
+/* Helius sendBundle (docs "Bundles via Helius"): ≤ 5 txs, base64, one tx tipping a Helius tip account; Helius forwards
+   to Jito's block engine (geo-routed). `helius` = { url } = the Helius RPC URL with its api-key. Answer = bundle id. */
+export async function submitHeliusBundle(txs, helius) {
+  const res = await fetch(helius.url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(helius.region ? { "jito-region": helius.region } : {}) },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "sendBundle", params: [txs.map(tx => Buffer.from(tx.serialize()).toString("base64")), { encoding: "base64" }] }),
+    }),
+    text = await res.text(),
+    data = (() => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    })();
+  if (data?.error) throw new Error(`Helius refused the bundle: ${data.error.message || JSON.stringify(data.error)}`);
+  if (!res.ok) throw new Error(`Helius HTTP ${res.status}: ${text.replace(/api-key=[^&\s"]+/g, "api-key=…").slice(0, 160)}`);
+  return String(data?.result ?? "sent");
+}
+
 /* Before a bundle leaves: Jito drops a bundle silently (status "Invalid") when one transaction fails its simulation or
    carries a bad signature, so check both here. 1) every required signature verified locally (ed25519); 2) the whole
    bundle simulated in order with Jito's `simulateBundle` on the read RPC when it offers the method (Helius / Jito RPCs)
@@ -400,7 +421,9 @@ export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
     try {
       bundleId = opts.astralane
         ? await submitAstralaneBundle(txs, opts.astralane)
-        : await submitJitoBundle(txs, { ...opts, blockEngineUrl: opts.blockEngineUrl || JITO_DEFAULT_REGION, onAccepted: base => regions.push(base) });
+        : opts.helius
+          ? await submitHeliusBundle(txs, opts.helius)
+          : await submitJitoBundle(txs, { ...opts, blockEngineUrl: opts.blockEngineUrl || JITO_DEFAULT_REGION, onAccepted: base => regions.push(base) });
       break;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e),
@@ -418,7 +441,7 @@ export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
     failedSeen = 0;
   for (; Date.now() - t0 < timeoutMs;) {
     // Jito's verdict every ~3 s: two "Failed" in a row = dropped (a tx fails simulation), stop waiting
-    if (!opts.astralane && Date.now() - jitoAt > 3000) {
+    if (!opts.astralane && !opts.helius && Date.now() - jitoAt > 3000) {
       jitoAt = Date.now();
       jito = (await jitoBundleStatus(bundleId, { ...opts, regions })) ?? jito;
       failedSeen = jito === "Failed" ? failedSeen + 1 : 0;
@@ -446,6 +469,8 @@ export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
         ? `Jito dropped the bundle (status Failed, id ${bundleId}) — a transaction of the bundle fails simulation; nothing was spent (atomic).`
         : opts.astralane
           ? `Bundle not landed within the window (Astralane) — nothing was spent (atomic).`
+          : opts.helius
+            ? `Helius forwarded the bundle to Jito but no block included it within the window (id ${bundleId}) — nothing was spent (atomic).`
           // "Invalid" = Jito no longer tracks it — NOT a bad bundle: a plain test bundle landed while Jito said "Invalid" (2026-10-07)
           : `Jito accepted the bundle but no block included it within the window (status ${jito ?? "unknown"} = no longer tracked, not an invalid bundle) — on pump.fun its tip competes with every other bundle touching the same accounts; nothing was spent (atomic). Id ${bundleId}.`,
   };

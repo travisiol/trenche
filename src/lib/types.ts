@@ -305,6 +305,10 @@ export type Settings = {
   astralaneBundles: boolean;
   /** Jito-on launches go to Jito's public block engine even with an Astralane key that has no bundles */
   jitoPublic: boolean;
+  /** Jito-on launches go through Helius sendBundle (forwarded to Jito) */
+  heliusBundles: boolean;
+  /** a Helius key or Helius RPC URL is set: Helius bundles are possible */
+  hasHeliusBundleUrl: boolean;
   /** default of the Launch Token modal "Auto-claim rewards → dev wallet" switch (true): every launch arms an
    *  auto-claim watcher that sends the pump.fun creator fees to the dev wallet (see AutoClaimStatus) */
   autoClaimRewards: boolean;
@@ -329,7 +333,7 @@ export type Settings = {
 /** POST /api/settings — partial; `pumpportalKey: ""` clears the key, omit to keep.
  *  `tradingPresets`: 3 entries, each a PARTIAL TradingPreset merged over the saved one (omit a field to keep it). */
 export type SettingsUpdateRequest = Partial<
-  Omit<Settings, "hasPumpportalKey" | "hasHeliusKey" | "hasAstralaneKey" | "hasHusherKey" | "theme" | "explorerSuffix" | "effectiveRpcUrl" | "effectiveSendRpcUrl" | "pump" | "tradingPresets">
+  Omit<Settings, "hasPumpportalKey" | "hasHeliusKey" | "hasAstralaneKey" | "hasHusherKey" | "hasHeliusBundleUrl" | "theme" | "explorerSuffix" | "effectiveRpcUrl" | "effectiveSendRpcUrl" | "pump" | "tradingPresets">
 > & {
   pumpportalKey?: string;
   /** "" clears, omit keeps */
@@ -954,7 +958,7 @@ export type LaunchExecuteRequest = {
   autoClaim?: AutoClaimRequestConfig;
   /** Launch Token modal "Send": "jito" = one atomic Jito bundle (create + every wallet's own buy), "fast" = sent
    *  together but not atomic. Omitted = Settings (Jito on + Bundle route). Bundle launches only. */
-  route?: "jito" | "fast";
+  route?: "jito" | "helius" | "fast";
   slippageBps?: number;
   cuPrice?: number;
   /** bundle buys in their own tx + snipers, µL/CU (default Settings.launchCuPrice) */

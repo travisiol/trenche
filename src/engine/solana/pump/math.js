@@ -6,7 +6,7 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
-import { ASTRALANE_TIP_ACCOUNTS, JITO_BUNDLE_TIP_ACCOUNTS, JITO_TIP_ACCOUNTS } from "../config.js";
+import { ASTRALANE_TIP_ACCOUNTS, HELIUS_BUNDLE_TIP_ACCOUNTS, JITO_BUNDLE_TIP_ACCOUNTS, JITO_TIP_ACCOUNTS } from "../config.js";
 import {
   ATA_PROGRAM,
   INITIAL_REAL_TOKENS,
@@ -186,8 +186,8 @@ export function buildBuyTx(t, e) {
 
 /** tip transfer: `jito` = a transaction of a Jito bundle (block-engine tip accounts), else Helius Sender's */
 export function tipInstruction(t, e, r, jito = !1) {
-  // jito: true = Jito block-engine tip accounts, "astralane" = Astralane's, false = Helius Sender's
-  const list = jito === "astralane" ? ASTRALANE_TIP_ACCOUNTS : jito ? JITO_BUNDLE_TIP_ACCOUNTS : JITO_TIP_ACCOUNTS,
+  // jito: true = Jito block-engine tip accounts, "astralane" = Astralane's, "helius" = Helius sendBundle's, false = Helius Sender's
+  const list = jito === "astralane" ? ASTRALANE_TIP_ACCOUNTS : jito === "helius" ? HELIUS_BUNDLE_TIP_ACCOUNTS : jito ? JITO_BUNDLE_TIP_ACCOUNTS : JITO_TIP_ACCOUNTS,
     n = (r ?? Math.floor(Math.random() * list.length)) % list.length;
   return SystemProgram.transfer({
     fromPubkey: t,

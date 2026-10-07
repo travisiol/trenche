@@ -431,6 +431,7 @@ export async function launchBundle(readConn, prep, opts = {}) {
         timeoutMs: opts.timeoutMs ?? 45000,
         blockEngineUrl: opts.blockEngineUrl,
         astralane: opts.astralane,
+        helius: opts.helius,
         // the first bundle holds the create: after the window, the curve's existence proves it landed (RPC 429 ≠ lost)
         verify: ci === 0 ? async () => !!(await readConn.getAccountInfo(bondingCurvePda(prep.mint.publicKey), "confirmed").catch(() => null)) : void 0,
       }),

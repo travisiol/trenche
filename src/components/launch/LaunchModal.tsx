@@ -63,7 +63,7 @@ function LaunchModalBody({ onClose, form, onChange, wallets, balances }: Props) 
   const set = <K extends keyof LaunchForm>(k: K, v: LaunchForm[K]) => onChange({ ...form, [k]: v });
   // "Send": what Settings would do for a bundle launch (Jito on + Bundle route), shown on the Default choice
   const settings = useSettings().data;
-  const defaultJito = !!settings?.jitoEnabled && (!settings.hasAstralaneKey || !!settings.astralaneBundles || !!settings.jitoPublic);
+  const defaultRoute = !settings?.jitoEnabled ? "Fast" : settings.heliusBundles && settings.hasHeliusBundleUrl ? "Helius" : settings.astralaneBundles ? "Astralane" : !settings.hasAstralaneKey || settings.jitoPublic ? "Jito" : "Fast";
   const dev = wallets.find((w) => w.address === form.devWallet) ?? null;
   const balOf = (a: string) => Number(balances?.[a] ?? wallets.find((w) => w.address === a)?.sol ?? 0) || 0;
   const bundleSols = form.tasks.filter((t) => t.type === "bundle").flatMap((t) => taskWallets(t, wallets).map((a) => taskBuyFor(t, a)));
@@ -403,7 +403,7 @@ function LaunchModalBody({ onClose, form, onChange, wallets, balances }: Props) 
                     </div>
                     <div className="inline-flex h-8 items-center gap-0.5 rounded-md border border-line-100 bg-bg-50 p-0.5 text-xs" title="How the create and the bundle wallets' buys are sent. Jito bundle: one atomic bundle, every wallet its own transaction, nobody can land between them (a 0.001 SOL+ tip, raised if it does not land). Fast lane: sent together but not atomic — a sniper can land between them.">
                       <span className="px-1.5 text-text-300">Send</span>
-                      {([["", `Default · ${defaultJito ? "Jito" : "Fast"}`], ["jito", "Jito bundle"], ["fast", "Fast lane"]] as const).map(([v, label]) => (
+                      {([["", `Default · ${defaultRoute}`], ["jito", "Jito bundle"], ...(settings?.hasHeliusBundleUrl ? [["helius", "Helius bundle"] as const] : []), ["fast", "Fast lane"]] as const).map(([v, label]) => (
                         <button key={v || "default"} type="button" onClick={() => set("sendRoute", v)} className={cx("h-7 rounded px-2 font-medium transition-colors", (form.sendRoute ?? "") === v ? "bg-accent/15 text-accent" : "text-text-300 hover:text-text-100")}>
                           {label}
                         </button>

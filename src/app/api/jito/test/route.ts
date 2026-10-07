@@ -1,12 +1,12 @@
 import { ComputeBudgetProgram, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction, type TransactionInstruction } from "@solana/web3.js";
-import { ASTRALANE_TIP_ACCOUNTS, JITO_BUNDLE_TIP_ACCOUNTS } from "@/engine/solana/config.js";
+import { ASTRALANE_TIP_ACCOUNTS, HELIUS_BUNDLE_TIP_ACCOUNTS, JITO_BUNDLE_TIP_ACCOUNTS } from "@/engine/solana/config.js";
 import { base58Encode } from "@/engine/solana/keys.js";
 import { buildBuyTx, planBuys, signWith } from "@/engine/solana/pump/math.js";
 import { bondingCurvePda, parseBondingCurve, tokenProgramFor } from "@/engine/solana/pump/pdas.js";
-import { JITO_BLOCK_ENGINES, jitoBundleStatus, latestBlockhash, submitAstralaneBundle, submitJitoBundle } from "@/engine/solana/send.js";
+import { JITO_BLOCK_ENGINES, jitoBundleStatus, latestBlockhash, submitAstralaneBundle, submitHeliusBundle, submitJitoBundle } from "@/engine/solana/send.js";
 import { HttpError, json, readBody, route } from "@/server/api";
 import { readConn, requireUnlocked } from "@/server/engine";
-import { store } from "@/server/store";
+import { heliusBundleUrl, store } from "@/server/store";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -17,7 +17,7 @@ export const maxDuration = 60;
  *  status, polled 30 s. Built to find why every launch bundle reported "Invalid" (2026-10-06). */
 export const POST = route(async (req: Request) => {
   requireUnlocked();
-  type Body = { wallet?: string; tipLamports?: number; /** one block engine only (e.g. https://ny.mainnet.block-engine.jito.wtf) */ region?: string; /** "two" (default): self-transfer then tip · "one": a single tx with both · "tx": the single tx via Jito's sendTransaction (control: not a bundle) */ mode?: "one" | "two" | "tx" | "pumpbuy"; /** pumpbuy: a live pump.fun coin and the SOL (lamports) to buy */ mint?: string; lamports?: number; /** pumpbuy variants */ tipInBuy?: boolean; cuPrice?: number; cuLimit?: number; /** send through Astralane (Settings key): every tx tips an Astralane wallet */ astralane?: boolean; /** with astralane: send the tipped buy alone through Astralane sendTransaction (Free tier) */ astralaneTx?: boolean; /** build the same transactions and only simulate them (nothing sent, nothing spent) */ simulate?: boolean };
+  type Body = { wallet?: string; tipLamports?: number; /** one block engine only (e.g. https://ny.mainnet.block-engine.jito.wtf) */ region?: string; /** "two" (default): self-transfer then tip · "one": a single tx with both · "tx": the single tx via Jito's sendTransaction (control: not a bundle) */ mode?: "one" | "two" | "tx" | "pumpbuy"; /** pumpbuy: a live pump.fun coin and the SOL (lamports) to buy */ mint?: string; lamports?: number; /** pumpbuy variants */ tipInBuy?: boolean; cuPrice?: number; cuLimit?: number; /** send through Astralane (Settings key): every tx tips an Astralane wallet */ astralane?: boolean; /** with astralane: send the tipped buy alone through Astralane sendTransaction (Free tier) */ astralaneTx?: boolean; /** build the same transactions and only simulate them (nothing sent, nothing spent) */ simulate?: boolean; /** send through Helius sendBundle (Settings Helius key / RPC), forwarded to Jito */ helius?: boolean };
   const body = await readBody<Body>(req).catch(() => ({}) as Body);
   const st = store();
   const bal = st.balances?.map ?? {};
@@ -29,7 +29,9 @@ export const POST = route(async (req: Request) => {
   const { blockhash } = await latestBlockhash(conn);
   const astra = body.astralane === true ? (st.settings.astralaneKey ?? "").trim() : "";
   if (body.astralane === true && !astra) throw new HttpError(400, "No Astralane key in Settings.");
-  const tipList = astra ? ASTRALANE_TIP_ACCOUNTS : JITO_BUNDLE_TIP_ACCOUNTS;
+  const heliusUrl = body.helius === true ? heliusBundleUrl(st.settings) : null;
+  if (body.helius === true && !heliusUrl) throw new HttpError(400, "No Helius key or Helius RPC URL in Settings.");
+  const tipList = astra ? ASTRALANE_TIP_ACCOUNTS : heliusUrl ? HELIUS_BUNDLE_TIP_ACCOUNTS : JITO_BUNDLE_TIP_ACCOUNTS;
   const tipTo = new PublicKey(tipList[Math.floor(Math.random() * tipList.length)]);
   const mk = (ixs: TransactionInstruction[]) => {
     const tx = new VersionedTransaction(new TransactionMessage({ payerKey: kp.publicKey, recentBlockhash: blockhash, instructions: ixs }).compileToV0Message());
@@ -98,7 +100,9 @@ export const POST = route(async (req: Request) => {
     );
   } else
     try {
-      bundleId = astra
+      bundleId = heliusUrl
+        ? await submitHeliusBundle(txs, { url: heliusUrl }).then((id) => ((accepted["helius"] = id), id), (e) => ((refused["helius"] = e instanceof Error ? e.message : String(e)), Promise.reject(e)))
+        : astra
         ? await submitAstralaneBundle(txs, { key: astra }).then((id) => ((accepted["astralane"] = id), id), (e) => ((refused["astralane"] = e instanceof Error ? e.message : String(e)), Promise.reject(e)))
         : await submitJitoBundle(txs, { blockEngineUrl: regionList[0], onAccepted: (r, id) => (accepted[r] = id), onRefused: (r, e) => (refused[r] = e) });
     } catch (e) {
@@ -110,7 +114,7 @@ export const POST = route(async (req: Request) => {
   if (bundleId || mode === "tx" || (astra && body.astralaneTx)) {
     for (let i = 0; i < 30 && Date.now() - t0 < 32_000; i++) {
       let regions: Record<string, string | null> = {};
-      const best = bundleId && !astra ? await jitoBundleStatus(bundleId, { regions: regionList, perRegion: (r) => (regions = r) }) : null;
+      const best = bundleId && !astra && !heliusUrl ? await jitoBundleStatus(bundleId, { regions: regionList, perRegion: (r) => (regions = r) }) : null;
       const stx = (await conn.getSignatureStatuses(signatures).catch(() => null))?.value ?? [];
       const landed = signatures.map((_, k) => !!stx[k] && !stx[k]!.err);
       timeline.push({ ms: Date.now() - t0, best, regions, landed });

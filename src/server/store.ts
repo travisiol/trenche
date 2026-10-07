@@ -42,6 +42,8 @@ export type StoredSettings = {
   /** Jito on with an Astralane key that has no bundles: send the launch bundle to Jito's public block engine anyway
    *  (atomic, one tx per wallet) instead of the Astralane fast lane (not atomic) — Settings › Bundle route */
   jitoPublic?: boolean;
+  /** Jito on: launch bundles go through Helius sendBundle (the Helius key / RPC), which forwards them to Jito */
+  heliusBundles?: boolean;
   jitoEnabled: boolean;
   /** Launch Token modal "Auto-claim rewards → dev wallet" default (true) */
   autoClaimRewards: boolean;
@@ -322,6 +324,17 @@ export function effectiveRpcUrl(s: StoredSettings): string {
   return SOLANA_PUBLIC_RPC;
 }
 
+/** Helius sendBundle endpoint: the Helius key, else an explicit RPC URL that is Helius; null when neither */
+export function heliusBundleUrl(s: StoredSettings): string | null {
+  if (s.heliusKey.trim()) {
+    const k = s.heliusKey.trim();
+    const m = /api-key=([A-Za-z0-9-]+)/.exec(k);
+    return `https://mainnet.helius-rpc.com/?api-key=${m ? m[1] : k}`;
+  }
+  const explicit = normalizeSolanaRpc(s.rpcUrl);
+  return explicit && /helius-rpc\.com/i.test(explicit) && /api-key=/i.test(explicit) && !/devnet/i.test(explicit) ? explicit : null;
+}
+
 /** effective send RPC — devnet has no Helius Sender nor Jito: sends go to the read RPC */
 export function effectiveSendRpcUrl(s: StoredSettings): string {
   const read = effectiveRpcUrl(s);
@@ -370,6 +383,8 @@ export function publicSettings(s: StoredSettings): Settings {
     jitoEnabled: s.jitoEnabled,
     astralaneBundles: s.astralaneBundles === true,
     jitoPublic: s.jitoPublic === true,
+    heliusBundles: s.heliusBundles === true,
+    hasHeliusBundleUrl: !!heliusBundleUrl(s),
     autoClaimRewards: s.autoClaimRewards !== false,
     slippageBps: s.slippageBps,
     cuPrice: s.cuPrice,

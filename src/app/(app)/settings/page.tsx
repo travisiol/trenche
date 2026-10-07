@@ -188,7 +188,7 @@ function Workspace() {
 }
 
 function WorkspaceForm({ initial }: { initial: Settings }) {
-  const [f, setF] = useState<SettingsUpdateRequest>({ cluster: initial.cluster, rpcUrl: initial.rpcUrl, sendRpcUrl: initial.sendRpcUrl, jitoEnabled: initial.jitoEnabled, autoClaimRewards: initial.autoClaimRewards !== false, slippageBps: initial.slippageBps, cuPrice: initial.cuPrice, launchCuPrice: initial.launchCuPrice, bundleInCreate: initial.bundleInCreate, tipSol: initial.tipSol, astralaneBundles: initial.astralaneBundles, jitoPublic: initial.jitoPublic });
+  const [f, setF] = useState<SettingsUpdateRequest>({ cluster: initial.cluster, rpcUrl: initial.rpcUrl, sendRpcUrl: initial.sendRpcUrl, jitoEnabled: initial.jitoEnabled, autoClaimRewards: initial.autoClaimRewards !== false, slippageBps: initial.slippageBps, cuPrice: initial.cuPrice, launchCuPrice: initial.launchCuPrice, bundleInCreate: initial.bundleInCreate, tipSol: initial.tipSol, astralaneBundles: initial.astralaneBundles, jitoPublic: initial.jitoPublic, heliusBundles: initial.heliusBundles });
   const [pumpKey, setPumpKey] = useState("");
   const [heliusKey, setHeliusKey] = useState("");
   const [astraKey, setAstraKey] = useState("");
@@ -307,12 +307,16 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
         <Row title="Send through Jito by default" desc="Bundles land together or not at all (mainnet only). Every bundle wallet buys in its own transaction: trackers show each one as its own trader.">
           <BxSwitch checked={!!f.jitoEnabled} onChange={(v) => set("jitoEnabled", v)} />
         </Row>
-        {initial.hasAstralaneKey ? (
-          <Row title="Bundle route (Jito on)" desc={f.astralaneBundles ? "Astralane bundles: atomic, one transaction per wallet — needs an Astralane key with bundle access." : f.jitoPublic ? `Jito block engine: atomic, one transaction per wallet — create + buys land together or not at all. Tips of the 3 attempts with this setting: ${jitoLadder(f.tipSol)} SOL (×1, ×3, ×10 of the tip, at least 0.001, at most 0.02).` : "Astralane fast lane: fastest send but NOT atomic — a sniper can land between the create and your wallets."}>
+        {initial.hasAstralaneKey || initial.hasHeliusBundleUrl ? (
+          <Row title="Bundle route (Jito on)" desc={f.heliusBundles ? `Helius bundles: your Helius key sends the bundle (1 credit per send), Helius forwards it to Jito — atomic, one transaction per wallet, dev + 4 wallets. Tips of the 3 attempts: ${jitoLadder(f.tipSol)} SOL.` : f.astralaneBundles ? "Astralane bundles: atomic, one transaction per wallet — needs an Astralane key with bundle access." : f.jitoPublic || !initial.hasAstralaneKey ? `Jito block engine: atomic, one transaction per wallet — create + buys land together or not at all. Tips of the 3 attempts with this setting: ${jitoLadder(f.tipSol)} SOL (×1, ×3, ×10 of the tip, at least 0.001, at most 0.02).` : "Astralane fast lane: fastest send but NOT atomic — a sniper can land between the create and your wallets."}>
             <BxSeg
-              value={f.astralaneBundles ? "astralane" : f.jitoPublic ? "jito" : "fast"}
-              onChange={(v) => setF((p) => ({ ...p, astralaneBundles: v === "astralane", jitoPublic: v === "jito" }))}
-              options={[{ value: "jito", label: "Jito block engine" }, { value: "astralane", label: "Astralane bundles" }, { value: "fast", label: "Fast lane (not atomic)" }]}
+              value={f.heliusBundles && initial.hasHeliusBundleUrl ? "helius" : f.astralaneBundles ? "astralane" : f.jitoPublic || !initial.hasAstralaneKey ? "jito" : "fast"}
+              onChange={(v) => setF((p) => ({ ...p, astralaneBundles: v === "astralane", jitoPublic: v === "jito", heliusBundles: v === "helius" }))}
+              options={[
+                { value: "jito", label: "Jito block engine" },
+                ...(initial.hasHeliusBundleUrl ? [{ value: "helius" as const, label: "Helius bundles" }] : []),
+                ...(initial.hasAstralaneKey ? [{ value: "astralane" as const, label: "Astralane bundles" }, { value: "fast" as const, label: "Fast lane (not atomic)" }] : []),
+              ]}
             />
           </Row>
         ) : null}

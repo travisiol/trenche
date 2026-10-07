@@ -42,7 +42,7 @@ import { syncPumpCluster } from "./pumpcluster";
 import { checkCreateOnChain, reconcileLaunches } from "./reconcile";
 import { fetchUriJson, imageUrl } from "./metadata";
 import { ipfsToHttp } from "@/engine/solana/pump/metadata.js";
-import { isDevnet, logActivity, saveLaunches, store, track, type Job, type PendingMint } from "./store";
+import { heliusBundleUrl, isDevnet, logActivity, saveLaunches, store, track, type Job, type PendingMint } from "./store";
 import { loops, TradeLoop, type SavedLoop } from "./tradeloop";
 import { resolveWashPairs, washPairs } from "./wash";
 import { markDraftLaunched } from "./drafts";
@@ -631,8 +631,12 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   // a Jito bundle tipping 0.0001–0.0002 SOL never landed (real tests 2026-10-06: 0.0001 dropped in every region,
   // 0.001 landed in 1.6–1.9 s in frankfurt / amsterdam / all regions) — whatever a saved task says
   // the Launch Token modal's "Send" choice wins over Settings for this launch
-  const route = req.route === "jito" || req.route === "fast" ? req.route : null;
-  const jitoWanted = route ? route === "jito" : st.settings.jitoEnabled === true;
+  const route = req.route === "jito" || req.route === "helius" || req.route === "fast" ? req.route : null;
+  // Helius sendBundle: the modal's "Helius bundle", or Settings › Bundle route "Helius bundles" (Jito on)
+  const heliusWanted = route === "helius" || (route === null && st.settings.jitoEnabled === true && st.settings.heliusBundles === true);
+  const heliusUrl = heliusWanted && !devnet ? heliusBundleUrl(st.settings) : null;
+  if (heliusWanted && !devnet && !heliusUrl && mode === "bundle") throw new HttpError(400, "Helius bundles need a Helius API key (Settings › Workspace) or a Helius RPC URL.");
+  const jitoWanted = route ? route === "jito" || route === "helius" : st.settings.jitoEnabled === true;
   const bundleTip = devnet ? BigInt(0) : mode === "bundle" && jitoWanted && taskTip < MIN_JITO_BUNDLE_TIP ? MIN_JITO_BUNDLE_TIP : taskTip;
   // Settings → Jito off: the bundle wallets snipe the dev — create + their buys sent together through the normal sender
   // (same path as snipers, not atomic); Jito on: one atomic Jito bundle
@@ -640,8 +644,8 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   // key may send them (Settings.astralaneBundles, VIP tier), else the Astralane fast lane
   // Settings › Bundle route "Jito block engine" (jitoPublic) keeps the bundle atomic with a bundle-less Astralane key
   // "Jito bundle" picked in the modal: atomic even with a bundle-less Astralane key (Jito's block engine)
-  const jito = mode === "bundle" && !devnet && jitoWanted && (route === "jito" || !(st.settings.astralaneKey ?? "").trim() || st.settings.astralaneBundles === true || st.settings.jitoPublic === true);
-  const jitoPublic = jito && st.settings.astralaneBundles !== true && (route === "jito" || st.settings.jitoPublic === true);
+  const jito = mode === "bundle" && !devnet && jitoWanted && (!!heliusUrl || route === "jito" || !(st.settings.astralaneKey ?? "").trim() || st.settings.astralaneBundles === true || st.settings.jitoPublic === true);
+  const jitoPublic = jito && !heliusUrl && st.settings.astralaneBundles !== true && (route === "jito" || st.settings.jitoPublic === true);
   if (jito && bundleTip < BigInt(1000)) throw new HttpError(400, "A Jito bundle needs a tip (bundle task `tip` or Settings → default tip).");
 
   // balance pre-checks: a readable refusal instead of a failed broadcast — a reserved …pump address goes back to the pool
@@ -736,7 +740,7 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   saveLaunches(st);
   track(st, mint);
   job.extra = { mint, mode, phase: "preparing" };
-  jobRun(job, async () => runLaunch(run, { pendingKeypair: pending.keypair, uri: pending.uri, devBuyLamports, slippageBps, cuPrice, launchCuPrice: intIn(req.launchCuPrice, 0, 200_000_000, st.settings.launchCuPrice ?? 10_000_000), bundleTip, jito, jitoPublic, route, cashback: false, autoClaim, req, t0: clickT0 })); // pump.fun rejects cashback coins since 2026-10 (create_v2 error 6082 CashbackDeprecated): the flag is never sent
+  jobRun(job, async () => runLaunch(run, { pendingKeypair: pending.keypair, uri: pending.uri, devBuyLamports, slippageBps, cuPrice, launchCuPrice: intIn(req.launchCuPrice, 0, 200_000_000, st.settings.launchCuPrice ?? 10_000_000), bundleTip, jito, jitoPublic, heliusUrl: jito ? heliusUrl : null, route, cashback: false, autoClaim, req, t0: clickT0 })); // pump.fun rejects cashback coins since 2026-10 (create_v2 error 6082 CashbackDeprecated): the flag is never sent
   return { jobId: job.id, id: mint, mint, mode, tasks: tasks.map((t) => ({ id: t.id, type: t.type })) };
 }
 
@@ -768,7 +772,7 @@ const TRACE_LIMIT = /MaxInstructionTraceLength|TooManyInstructionTrace|Instructi
 const sweeper = globalThis as unknown as { __trenchAltSweep?: ReturnType<typeof setInterval> };
 if (!sweeper.__trenchAltSweep) sweeper.__trenchAltSweep = setInterval(() => void sweepLaunchTables(readConn()).catch(() => null), 5 * 60_000);
 
-type RunOpts = { pendingKeypair: import("@solana/web3.js").Keypair; uri: string; devBuyLamports: bigint; slippageBps: number; cuPrice: number; /** bundle buys in their own tx + snipers (Settings → Launch priority) */ launchCuPrice: number; bundleTip: bigint; /** atomic Jito bundle (Settings → Jito on, or the modal's "Send: Jito bundle") */ jito: boolean; /** through Jito's own block engine, not Astralane */ jitoPublic: boolean; /** the modal's per-launch choice, null = Settings */ route: "jito" | "fast" | null; cashback: boolean; autoClaim: { minSol: string; intervalSec: number } | null; req: LaunchExecuteRequest; /** the Launch click (client clock, same machine) or the execute request's arrival: every timing step is measured from it */ t0: number };
+type RunOpts = { pendingKeypair: import("@solana/web3.js").Keypair; uri: string; devBuyLamports: bigint; slippageBps: number; cuPrice: number; /** bundle buys in their own tx + snipers (Settings → Launch priority) */ launchCuPrice: number; bundleTip: bigint; /** atomic Jito bundle (Settings → Jito on, or the modal's "Send: Jito bundle") */ jito: boolean; /** through Jito's own block engine, not Astralane */ jitoPublic: boolean; /** Helius sendBundle endpoint when the bundle goes through Helius */ heliusUrl: string | null; /** the modal's per-launch choice, null = Settings */ route: "jito" | "helius" | "fast" | null; cashback: boolean; autoClaim: { minSol: string; intervalSec: number } | null; req: LaunchExecuteRequest; /** the Launch click (client clock, same machine) or the execute request's arrival: every timing step is measured from it */ t0: number };
 
 /** the click → send path: the create is visible (signature, "pending") the moment it is broadcast, not once confirmed */
 function markCreateSent(run: LaunchRun, sig: string, t0: number): void {
@@ -853,7 +857,9 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
   // fast lane, buys as soon as the create is seen — not atomic, every wallet its own trader, 0.001 SOL tip per tx
   // Bundle route "Jito block engine": the Astralane key is left out, the bundle goes to Jito's public endpoint
   const viaJitoPublic = o.jitoPublic;
-  const astralaneKey = !devnet && run.state.mode === "bundle" && !viaJitoPublic ? (st.settings.astralaneKey ?? "").trim() : "";
+  const viaHelius = o.jito && !!o.heliusUrl;
+  const astralaneKey = !devnet && run.state.mode === "bundle" && !viaJitoPublic && !viaHelius ? (st.settings.astralaneKey ?? "").trim() : "";
+  if (viaHelius) step(run, "bundle", true, `Bundle sent through Helius sendBundle (${o.route === "helius" ? "chosen for this launch" : "Settings › Bundle route"}), forwarded to Jito: create + every wallet's own buy land together, in order, or not at all.`);
   if (viaJitoPublic) step(run, "bundle", true, `Bundle sent to Jito's block engine (${o.route === "jito" ? "chosen for this launch" : "Settings › Bundle route"}): create + every wallet's own buy land together, in order, or not at all.`);
   const astralane = astralaneKey ? { key: astralaneKey } : undefined;
   const astraTx = !!astralane && !o.jito;
@@ -893,7 +899,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
         conn,
         { dev: st.sol.keypair(dev), name: run.state.name, symbol: run.state.symbol, uri: o.uri, devBuyLamports: o.devBuyLamports, mint: o.pendingKeypair, cashback: o.cashback },
         bundleRows,
-        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? (o.jito ? tipFor(attempt) : astraTx ? ASTRALANE_MIN_TIP : o.bundleTip) : tipLamportsFor(undefined), jitoTip: astralane ? ("astralane" as const) : o.jito, ...prepOpts, recentBlockhash: bh ? { blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight } : undefined },
+        { cuPrice: o.cuPrice, slippageBps: o.slippageBps, tipLamports: devnet ? BigInt(0) : run.state.mode === "bundle" ? (o.jito ? tipFor(attempt) : astraTx ? ASTRALANE_MIN_TIP : o.bundleTip) : tipLamportsFor(undefined), jitoTip: astralane ? ("astralane" as const) : viaHelius ? ("helius" as const) : o.jito, ...prepOpts, recentBlockhash: bh ? { blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight } : undefined },
       );
     } catch (e) {
       created = { confirmed: false, error: e instanceof Error ? e.message : String(e) };
@@ -903,16 +909,17 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
     if (attempt === 0) step(run, "prepare", true, prep.atomic ? "Dev buy is atomic with the creation (guaranteed first buyer)." : o.devBuyLamports > BigInt(0) ? "Name/URI too long for an atomic dev buy: the dev buy goes in a separate transaction." : "No dev buy.");
     if (attempt === 0 && inlineMax > 0) step(run, "prepare", true, prep.inline > 0 ? `${prep.inline} bundle wallet(s) buy inside the create, right behind the dev — no sniper can get between them${bundleRows.length > prep.inline ? `; ${bundleRows.length - prep.inline} more in their own transactions` : ""}.` : "No bundle wallet fits inside the create: they buy in their own transactions.");
     if (o.jito) {
-      if (attempt > 0) step(run, "bundle", true, `Jito bundle again with a ${solString(tipFor(attempt))} SOL tip (attempt ${attempt + 1}/${maxAttempts + 1}).`);
+      if (attempt > 0) step(run, "bundle", true, `${viaHelius ? "Helius" : "Jito"} bundle again with a ${solString(tipFor(attempt))} SOL tip (attempt ${attempt + 1}/${maxAttempts + 1}).`);
       const r = await launchBundle(conn, prep, {
         astralane,
+        helius: viaHelius && o.heliusUrl ? { url: o.heliusUrl } : undefined,
         maxPerBundle: astralane ? 4 : 5,
         // a landing bundle lands in 1–2 s (real tests): 9 s then a higher tip — the curve check after the window still
         // catches a late landing
         timeoutMs: attempt < maxAttempts ? 9_000 : 30_000,
         onStep: (s) => {
           if (s.phase === "preflight") step(run, "bundle", true, s.simulated ? "Bundle checked: signatures valid, whole bundle simulated OK (simulateBundle)." : "Signatures valid · this RPC has no simulateBundle: only the create is simulated before sending.");
-          if (s.phase === "bundle") step(run, "bundle", true, `Sending Jito bundle ${s.index + 1}/${s.total ?? 1}…`);
+          if (s.phase === "bundle") step(run, "bundle", true, `Sending ${viaHelius ? "Helius" : astralane ? "Astralane" : "Jito"} bundle ${s.index + 1}/${s.total ?? 1}…`);
           if (s.phase === "bundle" && s.index === 0) markCreateSent(run, base58Encode(prep.createTx.signatures[0]), o.t0);
         },
       });
