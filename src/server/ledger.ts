@@ -524,6 +524,28 @@ export function costBasis(): { realized: Map<string, bigint>; open: Map<string, 
   basisCache = { entries, realized, open };
   return basisCache;
 }
+/** tokens each wallet holds per mint (raw units), summed from the token deltas of every transaction the ledger read —
+ *  no RPC call. Used to re-read only the deleted launch wallets that still hold something (a full re-read of every
+ *  old launch wallet made /api/positions take 67 s and drew Helius 429s, 2026-10-07). */
+let heldCache: { entries: LedgerEntry[]; map: Map<string, Map<string, bigint>> } | null = null;
+export function ledgerTokenBalances(): Map<string, Map<string, bigint>> {
+  const entries = ledgerEntries();
+  if (heldCache && heldCache.entries === entries) return heldCache.map;
+  const vault = new Set(historyWallets());
+  const map = new Map<string, Map<string, bigint>>();
+  for (const tx of Object.values(file().txs)) {
+    if (tx.err) continue;
+    for (const t of tx.tokens) {
+      if (!vault.has(t.owner)) continue;
+      const m = map.get(t.mint) ?? new Map<string, bigint>();
+      m.set(t.owner, (m.get(t.owner) ?? BigInt(0)) + big(t.delta));
+      map.set(t.mint, m);
+    }
+  }
+  heldCache = { entries, map };
+  return map;
+}
+
 /** realized PnL of one entry: average cost for trades / creates, the plain SOL movement otherwise */
 function realizedOf(e: LedgerEntry, realized: Map<string, bigint>): bigint {
   return (e.kind === "trade" || e.kind === "create") && e.mint ? (realized.get(e.sig) ?? e.delta - e.claim) : e.delta - e.claim;

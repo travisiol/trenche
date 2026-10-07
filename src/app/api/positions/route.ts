@@ -1,6 +1,7 @@
 import { json, requireAddress, route } from "@/server/api";
 import { positions } from "@/server/positions";
 import { store } from "@/server/store";
+import { ledgerTokenBalances } from "@/server/ledger";
 import type { PositionRow } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -21,9 +22,12 @@ export const GET = route(async (req: Request) => {
   const rows = await positions([...active], mintList);
   // each launch's wallets that are no longer active (deleted dev / buyers), read for that launch's mint only
   const asked = new Set(mintList.slice(0, 40));
+  // without ?mints=, only the deleted wallets the ledger says still hold this launch's token (a handful, not every
+  // old wallet of every launch — that re-read took 67 s and drew RPC 429s)
+  const held = mints.length ? null : ledgerTokenBalances();
   const extra = st.launches
     .filter((l) => asked.has(l.mint))
-    .map((l) => ({ mint: l.mint, wallets: [...new Set([l.dev, ...(l.wallets ?? [])])].filter((a) => a && !active.has(a)) }))
+    .map((l) => ({ mint: l.mint, wallets: [...new Set([l.dev, ...(l.wallets ?? [])])].filter((a) => a && !active.has(a) && (!held || (held.get(l.mint)?.get(a) ?? BigInt(0)) > BigInt(0))) }))
     .filter((x) => x.wallets.length);
   const more: PositionRow[] = [];
   for (let i = 0; i < extra.length; i += 4) {
