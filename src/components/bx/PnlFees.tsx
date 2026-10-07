@@ -58,6 +58,7 @@ export function PnlFees({ pnl, solUsd, unit, className, compact }: { pnl: PnlWin
           {pending !== null ? <Row label={earnedBasis ? "of which still to claim (all time)" : "Creator fees pending (not counted)"} value={pending} solUsd={solUsd} unit={unit} muted /> : null}
           {other ? <Row label="Other SOL movements (rent refunds…)" value={other} solUsd={solUsd} unit={unit} /> : null}
           <Row label="Gross trading (sells − buys)" value={Number(pnl.realisedSol)} solUsd={solUsd} unit={unit} />
+          {Number(pnl.heldCostSol ?? 0) ? <Row label="Cost of tokens still held (counted when sold)" value={Number(pnl.heldCostSol)} solUsd={solUsd} unit={unit} /> : null}
           <Row label="Net PnL" value={Number(pnl.netSol)} solUsd={solUsd} unit={unit} strong />
         </dl>
       ) : null}

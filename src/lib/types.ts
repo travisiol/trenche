@@ -1272,6 +1272,9 @@ export type PnlWindow = {
   /** SOL movements of the vault wallets that are neither a trade, a transfer nor a claim (rent refunds of closed
    *  token accounts, unknown programs) — included in netSol */
   otherSol: string;
+  /** cost of the tokens bought in the window and still held: counted when they are sold, not as a loss on the day
+   *  they were bought (average-cost realized PnL) — netSol = gross − costs + fees + other + heldCostSol */
+  heldCostSol?: string;
   /** true while transactions of the window are still being fetched (figures may grow) */
   estimated: boolean;
 };
@@ -1335,6 +1338,8 @@ export type DashboardResponse = {
   activeTasks: { launchId: string; mint: string; symbol: string; task: LaunchTaskState }[];
   totalSol: string | null;
   solPrice: number | null;
+  /** what the tokens still held cost (average cost, all time): unrealized = their current value − this */
+  openCostSol: string;
 };
 
 /* -------------------------------------------------------------- share PnL */

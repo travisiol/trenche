@@ -111,7 +111,8 @@ export default function PortfolioPage() {
   const volume = pnl ? Number(pnl.buysSol) + Number(pnl.sellsSol) : null;
   /** current value of the tokens the scoped wallets still hold (their cost is inside the net figure) */
   const unrealised = (positions.data ?? []).filter((r) => Number(r.amount) > 0 && scopeWallets.some((w) => w.address === r.wallet)).reduce((n, r) => n + Number(r.valueSol), 0);
-  const totalPnl = realised === null ? null : realised + unrealised;
+  const openCost = dash.data ? Number(dash.data.openCostSol ?? 0) : 0;
+  const totalPnl = realised === null ? null : realised + unrealised - openCost;
   const money = (s: number | null) => (s === null ? "—" : unit === "USD" && solUsd ? `${s < 0 ? "-" : ""}${usd(Math.abs(s) * solUsd, 2)}` : `${sol(s)} SOL`);
   const days = new Map<string, DayPnl>((dash.data?.days ?? []).map((x) => [x.date, x]));
 

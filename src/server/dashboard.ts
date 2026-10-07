@@ -7,7 +7,7 @@ import { feedCard, feedSolUsd } from "./feed";
 import { readCreatorFees } from "./fees";
 import { launchGet } from "./launch";
 import { creatorFeesByDay, refreshCreatorRevenue } from "./creatorRevenue";
-import { ledgerDay, ledgerDays, ledgerEntries, ledgerMints, ledgerPnl, ledgerStatus, refreshLedger } from "./ledger";
+import { ledgerDay, ledgerDays, ledgerEntries, ledgerMints, ledgerPnl, ledgerStatus, openCostSol, refreshLedger } from "./ledger";
 import { positions } from "./positions";
 import { reconcileLaunches } from "./reconcile";
 import { solPrice } from "./price";
@@ -84,6 +84,7 @@ export async function dashboard(): Promise<DashboardResponse> {
     activeTasks,
     totalSol,
     solPrice: usd,
+    openCostSol: f9(openCostSol()),
   };
 }
 
@@ -100,7 +101,7 @@ function calendarWindow(days: number, now: number, pending: string | null): PnlW
     .reduce((s, d) => s + d.sol, 0);
   let earned = 0;
   for (const [date, perMint] of creatorFeesByDay()) if (date >= startDate) for (const v of perMint.values()) earned += Number(v) / 1e9;
-  const explained = Number(w.realisedSol) - Number(w.fees.totalCostSol) + earned;
+  const explained = Number(w.realisedSol) - Number(w.fees.totalCostSol) + earned + Number(w.heldCostSol ?? 0);
   return { ...w, netSol: f9(net), otherSol: f9(net - explained), fees: { ...w.fees, creatorFeesEarnedSol: f9(earned) } };
 }
 
@@ -130,7 +131,8 @@ export async function pnlShare(period: PnlSharePeriod, day?: string): Promise<Pn
     try {
       const wallets = st.sol.wallets.map((x) => x.address);
       const mintList = [...new Set([...st.launches.map((l) => l.mint), ...st.tracked])];
-      unrealisedSol = wallets.length && mintList.length ? (await positions(wallets, mintList)).filter((r) => Number(r.amount) > 0).reduce((n, r) => n + Number(r.valueSol), 0) : 0;
+      // unrealized = what the held tokens are worth − what they cost (average cost; the realized figure no longer holds that cost)
+      unrealisedSol = wallets.length && mintList.length ? (await positions(wallets, mintList)).filter((r) => Number(r.amount) > 0).reduce((n, r) => n + Number(r.valueSol), 0) - openCostSol() : 0;
     } catch {
       unrealisedSol = null;
     }

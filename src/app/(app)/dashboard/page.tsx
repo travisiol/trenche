@@ -44,7 +44,9 @@ export default function DashboardPage() {
   const grouped = groupPositions(positions.data);
   /** what the tokens still held are worth now (their cost is already inside the net figure) */
   const holdings = grouped.filter((p) => Number(p.amount) > 0).reduce((n, p) => n + Number(p.valueSol), 0);
-  const total = realised + holdings;
+  /** realized is average-cost (a held coin's cost is not in it): total = realized + (held value − held cost) */
+  const openCost = d ? Number(d.openCostSol ?? 0) : 0;
+  const total = realised + holdings - openCost;
   const basis = pnl ? Number(pnl.buysSol) : 0;
   const pct = basis > 0 ? (total / basis) * 100 : 0;
   const launches = d?.recentLaunches ?? [];

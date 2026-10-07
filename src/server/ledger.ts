@@ -369,6 +369,8 @@ export type LedgerEntry = {
   rent: bigint;
   launchRent: bigint;
   claim: bigint;
+  /** Σ token deltas of the vault wallets on `mint` (raw units): + bought, − sold (average-cost PnL) */
+  tokenDelta: bigint;
   /** external counterparties of transfers: + received, − sent (for the relay heuristic) */
   external: Map<string, bigint>;
 };
@@ -448,7 +450,8 @@ export function classify(tx: LedgerTx, vault: Set<string>): LedgerEntry | null {
     // the bonding curve of a create holds the dev buy: its rent part is the real-sol-free remainder — folded into launchRent via the SOL delta below
     if (kind === "create" && curve && tx.created[curve]) launchRent += big(tx.created[curve]) - grossBuy;
   }
-  return { sig: tx.sig, at: tx.at, kind, mint, delta, grossBuy, grossSell, base, priority, tip, pumpFee, rent, launchRent, claim, external };
+  const tokenDelta = mint ? tx.tokens.reduce((n, t) => (t.mint === mint && vault.has(t.owner) ? n + big(t.delta) : n), BigInt(0)) : BigInt(0);
+  return { sig: tx.sig, at: tx.at, kind, mint, delta, grossBuy, grossSell, base, priority, tip, pumpFee, rent, launchRent, claim, tokenDelta, external };
 }
 
 function safeCurve(mint: string): string | null {
@@ -486,9 +489,58 @@ export function ledgerEntries(): LedgerEntry[] {
   return entries;
 }
 
+/** Average-cost accounting of our trades, oldest first (Axiom-style realized PnL). A buy (or a create with its dev /
+ *  inline buys) adds its whole SOL out — fees and rent included — to the mint's cost; a sell realizes what it brought
+ *  in minus the average cost of the tokens it sold. So a coin bought and still held is no loss on the day it was
+ *  bought (FRAME, 2026-10-06: −2.2 SOL "lost" while ~2.06 SOL of it sat on a deleted dev) — its cost stays `open`
+ *  until it is sold, and the held value minus that cost is the unrealized part.
+ *  `realized`: per trade / create signature (lamports) · `open`: per mint, tokens still held and their cost. */
+export type OpenPosition = { tokens: bigint; cost: bigint };
+let basisCache: { entries: LedgerEntry[]; realized: Map<string, bigint>; open: Map<string, OpenPosition> } | null = null;
+export function costBasis(): { realized: Map<string, bigint>; open: Map<string, OpenPosition> } {
+  const entries = ledgerEntries();
+  if (basisCache && basisCache.entries === entries) return basisCache;
+  const realized = new Map<string, bigint>();
+  const open = new Map<string, OpenPosition>();
+  const zero = BigInt(0);
+  for (const e of entries) {
+    if ((e.kind !== "trade" && e.kind !== "create") || !e.mint) continue;
+    const p = open.get(e.mint) ?? { tokens: zero, cost: zero };
+    const cash = e.delta - e.claim;
+    if (e.tokenDelta > zero) {
+      p.tokens += e.tokenDelta;
+      p.cost -= cash;
+      realized.set(e.sig, zero);
+    } else if (e.tokenDelta < zero) {
+      const out = -e.tokenDelta;
+      const costOut = p.tokens <= zero ? zero : out >= p.tokens ? p.cost : (p.cost * out) / p.tokens;
+      p.cost -= costOut;
+      p.tokens = p.tokens > out ? p.tokens - out : zero;
+      if (p.tokens === zero) p.cost = zero;
+      realized.set(e.sig, cash - costOut);
+    } else realized.set(e.sig, cash);
+    open.set(e.mint, p);
+  }
+  basisCache = { entries, realized, open };
+  return basisCache;
+}
+/** realized PnL of one entry: average cost for trades / creates, the plain SOL movement otherwise */
+function realizedOf(e: LedgerEntry, realized: Map<string, bigint>): bigint {
+  return (e.kind === "trade" || e.kind === "create") && e.mint ? (realized.get(e.sig) ?? e.delta - e.claim) : e.delta - e.claim;
+}
+/** cost (SOL) of the tokens still held, all mints */
+export function openCostSol(): number {
+  let n = BigInt(0);
+  for (const p of costBasis().open.values()) if (p.tokens > BigInt(0) && p.cost > BigInt(0)) n += p.cost;
+  return Number(n) / 1e9;
+}
+
 /** PnL of the window [since, until] (epoch ms; since = 0 for all time). `pendingClaims` = creator fees still in the vaults. */
 export function ledgerPnl(since: number, until = Number.POSITIVE_INFINITY, pendingClaims: string | null = null): LedgerPnl {
   const entries = ledgerEntries().filter((e) => e.at >= since && e.at <= until);
+  const { realized } = costBasis();
+  let held = BigInt(0);
+  for (const e of entries) if ((e.kind === "trade" || e.kind === "create") && e.mint) held += realizedOf(e, realized) - (e.delta - e.claim);
   let network = BigInt(0), priority = BigInt(0), jito = BigInt(0), pump = BigInt(0), rent = BigInt(0), launch = BigInt(0), transfer = BigInt(0), claims = BigInt(0), other = BigInt(0), buys = BigInt(0), sells = BigInt(0);
   let trades = 0;
   const mints = new Map<string, MintAcc>();
@@ -535,7 +587,8 @@ export function ledgerPnl(since: number, until = Number.POSITIVE_INFINITY, pendi
   for (const v of relay.values()) if (v < BigInt(0) && -v <= BigInt(RELAY_LOSS_MAX_LAMPORTS)) transfer += -v;
   const total = network + priority + jito + pump + rent + launch + transfer;
   const gross = sells - buys;
-  const net = gross - total + claims + other;
+  // realized (average cost): the cost of tokens still held is not a loss yet
+  const net = gross - total + claims + other + held;
   let wins = 0, losses = 0;
   const revenue = creatorRevenueByMint();
   for (const m of mints.values()) {
@@ -571,7 +624,7 @@ export function ledgerPnl(since: number, until = Number.POSITIVE_INFINITY, pendi
     creatorFeesPendingSol: pendingClaims,
   };
   return {
-    window: { realisedSol: f9(gross), buysSol: f9(buys), sellsSol: f9(sells), trades, wins, losses, netSol: f9(net), fees, otherSol: f9(other), estimated: !st.complete },
+    window: { realisedSol: f9(gross), buysSol: f9(buys), sellsSol: f9(sells), trades, wins, losses, netSol: f9(net), fees, otherSol: f9(other), heldCostSol: f9(held), estimated: !st.complete },
     mints,
   };
 }
@@ -587,12 +640,13 @@ function symbolOf(mint: string): string | null {
 export function ledgerDays(): { date: string; sol: number; trades: number }[] {
   const out = new Map<string, { date: string; sol: number; trades: number }>();
   const day = (date: string) => out.get(date) ?? { date, sol: 0, trades: 0 };
+  const { realized } = costBasis();
   for (const e of ledgerEntries()) {
     if (!e.at) continue;
     const date = new Date(e.at).toISOString().slice(0, 10);
     const d = day(date);
     if (e.kind === "trade" || e.kind === "create" || e.kind === "claim" || e.kind === "other" || e.kind === "tip") {
-      d.sol += Number(e.delta - e.claim) / 1e9;
+      d.sol += Number(realizedOf(e, realized)) / 1e9;
       if (e.grossBuy > BigInt(0) || e.grossSell > BigInt(0)) d.trades++;
     } else {
       d.sol -= Number(e.base + e.priority + e.tip) / 1e9;
@@ -613,13 +667,17 @@ export function ledgerDay(date: string): DayBreakdown {
   const rows = new Map<string, { mint: string; trading: bigint; costs: bigint; fees: bigint; net: bigint; trades: number }>();
   const row = (mint: string) => rows.get(mint) ?? { mint, trading: BigInt(0), costs: BigInt(0), fees: BigInt(0), net: BigInt(0), trades: 0 };
   let other = BigInt(0);
+  const { realized } = costBasis();
   for (const e of ledgerEntries()) {
     if (!e.at || new Date(e.at).toISOString().slice(0, 10) !== date) continue;
     if ((e.kind === "trade" || e.kind === "create") && e.mint) {
       const r = row(e.mint);
-      r.trading += e.grossSell - e.grossBuy - e.pumpFee;
-      r.costs += e.launchRent + e.base + e.priority + e.tip + e.rent;
-      r.net += e.delta;
+      // realized (average cost): a buy whose tokens are still held is no loss that day; trading − costs = realized
+      const costs = e.launchRent + e.base + e.priority + e.tip + e.rent;
+      const got = realizedOf(e, realized);
+      r.trading += got + costs;
+      r.costs += costs;
+      r.net += got;
       r.trades += e.grossBuy > BigInt(0) || e.grossSell > BigInt(0) ? 1 : 0;
       rows.set(e.mint, r);
     } else if (e.kind === "trade" || e.kind === "create" || e.kind === "claim" || e.kind === "other" || e.kind === "tip") {
