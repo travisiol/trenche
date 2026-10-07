@@ -249,7 +249,7 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
   /** the order is funded by the From wallets: show progress, not a QR code to pay by hand */
   const viaWallets = !!current?.sources?.length;
   const payFailed = payJob?.status === "error" || payJob?.status === "stopped";
-  const paySig = payJob?.steps.find((x) => x.signature)?.signature ?? null;
+  const paySig = payJob?.steps.find((x) => x.signature)?.signature ?? current?.hashIn ?? null;
   const received = !!current && (!!current.hashIn || !["Awaiting Deposit", "Creating", "Creation needs review", "Rejected"].includes(current.status));
   const ended = !!current && ["Failed", "Refunded"].includes(current.status);
   const delivered = current?.recipients.filter((r) => !!r.hashOut || /complete/i.test(r.status)).length ?? 0;
