@@ -898,6 +898,7 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
     return t > JITO_TIP_CAP ? JITO_TIP_CAP : t;
   };
   let rateRetries = 0;
+  let sendRetries = 0;
   for (let attempt = 0; attempt <= maxAttempts; attempt++) {
     let prep: LaunchPrep;
     try {
@@ -945,6 +946,23 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
         await sleep(1500);
         attempt--;
         continue;
+      }
+      // the relay did not even take the bundle (HTTP 5xx, refusal, network): nothing was sent — never a lost auction, so
+      // the tip is not raised: same bundle again a few times, then stop (2026-10-07: Helius answered 500 three times in
+      // 1 s and the tip went 0.002 → 0.02 for a bundle that never left)
+      const notTaken = !created.confirmed && /HTTP d{3}|Internal server error|refused the bundle|fetch failed|ECONN|ETIMEDOUT|socket hang up/i.test(created.error ?? "");
+      if (notTaken) {
+        const fatal = /not available on your current plan|unauthori[sz]ed|forbidden|invalid api key|HTTP 40[13]/i.test(created.error ?? "");
+        if (!fatal && sendRetries < 3) {
+          sendRetries++;
+          step(run, "bundle", false, `The bundle was not taken (${created.error}) — nothing was sent. Same bundle again in 1.5 s (${sendRetries}/3).`);
+          await sleep(1500);
+          attempt--;
+          continue;
+        }
+        created = { confirmed: false, error: `${created.error} — the bundle was never taken, nothing was sent or spent.` };
+        buyOutcomes = buyOutcomes.map(() => ({ confirmed: false, error: created.error }));
+        break;
       }
       if (!created.confirmed && attempt < maxAttempts) {
         step(run, "bundle", false, `Bundle not landed with a ${solString(tipFor(attempt))} SOL tip — raising it.`);
