@@ -624,7 +624,10 @@ export async function executeLaunchRequest(req: LaunchExecuteRequest): Promise<L
   const slippageBps = intIn(req.slippageBps, 0, 9000, st.settings.slippageBps);
   const cuPrice = intIn(req.cuPrice, 0, 50_000_000, st.settings.cuPrice);
   const devnet = isDevnet(st.settings);
-  const taskTip = mode === "bundle" ? (bundleTasks[0].tipLamports > BigInt(0) ? bundleTasks[0].tipLamports : tipLamportsFor(st.settings.tipSol)) : tipLamportsFor(undefined);
+  // the bundle task always carries a tip (its default 0.0002 SOL), which used to hide Settings › Jito tip entirely:
+  // the bundle now tips the larger of the two (2026-10-07: Settings said 0.002, every attempt started at 0.001)
+  const settingsTip = tipLamportsFor(st.settings.tipSol);
+  const taskTip = mode === "bundle" ? (bundleTasks[0].tipLamports > settingsTip ? bundleTasks[0].tipLamports : settingsTip) : tipLamportsFor(undefined);
   // a Jito bundle tipping 0.0001–0.0002 SOL never landed (real tests 2026-10-06: 0.0001 dropped in every region,
   // 0.001 landed in 1.6–1.9 s in frankfurt / amsterdam / all regions) — whatever a saved task says
   // the Launch Token modal's "Send" choice wins over Settings for this launch
