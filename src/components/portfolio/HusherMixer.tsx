@@ -1,6 +1,7 @@
 "use client";
 /** Mixer · Developer Wallets — Block X's Mixer route as a right-side drawer (design/blockx/portfolio-mixer.html):
- *  1. Service (Husher | SplitNOW), Total to mix + Split equal, Destinations with one allocation each, Fetch Quote.
+ *  1. Service (Husher | SplitNOW), then two tabs: From = the wallets that send (amount each, Max) and To = the
+ *     wallets that receive (Total to mix = From total, Split equal, one allocation each), Fetch Quote.
  *  2. Quote total · Providers N available · Provider & delay per wallet (best provider preselected, Delay all).
  *  3. Deposit address (QR / Address only) · "Send X SOL to start the mixer" · Pay from wallet · Status · Done.
  *  Only Husher is wired. Funds move only when the user deposits by hand or confirms Pay from wallet. */
@@ -16,7 +17,7 @@ import { refreshVaultDependents, useSettings, useVault } from "@/lib/store";
 import { short, sol } from "@/lib/format";
 import { toast } from "@/components/ui";
 import type { WalletInfo } from "@/lib/types";
-import { HUSHER_MAX_DELAY_MIN, HUSHER_PROVIDERS, formatHusherSol, husherAllocation, parseHusherSol, providerLabel, splitHusherSol, type HusherOrder, type HusherPlan, type HusherQuote, type HusherState } from "@/lib/husher";
+import { HUSHER_KEEP_LAM, HUSHER_MAX_DELAY_MIN, HUSHER_MAX_SOURCES, HUSHER_PROVIDERS, formatHusherSol, husherAllocation, parseHusherSol, providerLabel, splitHusherSol, type HusherOrder, type HusherPlan, type HusherQuote, type HusherState } from "@/lib/husher";
 
 const fieldBase = "border border-line-100 bg-bg-50 px-3 py-2 text-sm text-text-100 outline-none placeholder:text-text-300 focus:border-accent disabled:opacity-50";
 const field = `w-full ${fieldBase}`;
@@ -96,7 +97,10 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
   const live = wallets.filter((w) => !w.archived);
   const [service, setService] = useState<"husher" | "splitnow">("husher");
   const [chosen, setChosen] = useState<string[]>(() => selected.length ? live.filter((w) => selected.includes(w.address)).map((w) => w.address) : live.map((w) => w.address));
-  const [total, setTotal] = useState("");
+  const [manualTotal, setTotal] = useState("");
+  const [tab, setTab] = useState<"from" | "to">("from");
+  const [fromSel, setFromSel] = useState<string[]>([]);
+  const [fromAmt, setFromAmt] = useState<Record<string, string>>({});
   const [allocations, setAllocations] = useState<Record<string, string>>({});
   const [quote, setQuote] = useState<HusherQuote | null>(null);
   const [providers, setProviders] = useState<Record<string, string>>({});
@@ -119,13 +123,26 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
   const qr = useQr(current?.depositAddress ?? null);
   const mainnet = settings.data?.cluster === "mainnet";
   const unlocked = !!vault.data?.unlocked;
+  const balOf = (w: WalletInfo) => balances?.[w.address] ?? w.sol;
+  const nameOfW = (w: WalletInfo) => w.label || short(w.address);
+  const balLam = (w: WalletInfo) => lamOf(String(balOf(w) ?? ""));
+  const sendLam = fromSel.reduce((a, addr) => a + lamOf(fromAmt[addr]), BigInt(0));
+  /** with From wallets the total is theirs; without, it is typed (deposit by hand or from one wallet later) */
+  const total = fromSel.length ? (sendLam > BigInt(0) ? formatHusherSol(sendLam) : "") : manualTotal;
+  const dests = live.filter((w) => !fromSel.includes(w.address));
+  let fromProblem: string | null = null;
+  for (const a of fromSel) {
+    const w = live.find((x) => x.address === a); if (!w) continue;
+    const lam = lamOf(fromAmt[a]);
+    if (lam <= BigInt(0)) { fromProblem = `${nameOfW(w)}: enter the SOL it sends.`; break; }
+    if (lam > balLam(w)) { fromProblem = `${nameOfW(w)} holds only ${sol(balOf(w))} SOL.`; break; }
+  }
   const plan: HusherPlan = { totalSol: total, recipients: chosen.map((address) => ({ address, label: live.find((w) => w.address === address)?.label || short(address), sol: allocations[address] || "" })) };
   const depositLam = chosen.reduce((a, addr) => a + lamOf(allocations[addr]), BigInt(0));
   let problem: string | null = null;
   if (total.trim()) { try { husherAllocation(plan); } catch (e) { problem = failureMessage(e); } }
   const change = () => { setQuote(null); setConsent(false); setError(null); };
   const nameOf = (addr: string) => live.find((w) => w.address === addr)?.label || short(addr);
-  const balOf = (w: WalletInfo) => balances?.[w.address] ?? w.sol;
   function split(addresses = chosen) {
     if (!addresses.length) return;
     try {
@@ -151,15 +168,25 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
     setBusy("create"); setError(null);
     try {
       const picks = quote.rates.map((r) => ({ address: r.address, provider: providers[r.address] ?? r.options[0].provider, delayMin: delayOf(r.address) }));
-      setOrder(await post<HusherOrder>("/api/husher", { quoteId: quote.id, consent, picks })); state.refresh();
+      const sources = fromSel.map((address) => ({ address, sol: fromAmt[address] }));
+      setOrder(await post<HusherOrder>("/api/husher", { quoteId: quote.id, consent, picks, sources })); state.refresh();
     }
     catch (e) { setError(failureMessage(e)); }
     finally { setBusy(null); }
   }
-  async function pay(from: string) {
+  function toggleFrom(addr: string, on: boolean) {
+    setFromSel((prev) => on ? [...prev, addr] : prev.filter((a) => a !== addr));
+    if (on) { setChosen((prev) => prev.filter((a) => a !== addr)); setAllocations((p) => { const n = { ...p }; delete n[addr]; return n; }); }
+    change();
+  }
+  function maxFrom(w: WalletInfo) {
+    const lam = balLam(w) - HUSHER_KEEP_LAM;
+    setFromAmt((p) => ({ ...p, [w.address]: lam > BigInt(0) ? formatHusherSol(lam) : "" })); change();
+  }
+  async function pay(from: string | null) {
     if (!current) return;
     setBusy("pay"); setError(null);
-    try { setOrder(await post<HusherOrder>(`/api/husher/orders/${encodeURIComponent(current.id)}/pay`, { from })); setConfirmPay(null); tracked.refresh(); refreshVaultDependents(); toast("Deposit sent", "ok"); }
+    try { setOrder(await post<HusherOrder>(`/api/husher/orders/${encodeURIComponent(current.id)}/pay`, from ? { from } : {})); setConfirmPay(null); tracked.refresh(); refreshVaultDependents(); toast("Deposit sent", "ok"); }
     catch (e) { setError(failureMessage(e)); }
     finally { setBusy(null); }
   }
@@ -205,9 +232,18 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
               <div className={card}>
                 <div className="border-b border-line-50 px-3 py-2 text-[13px] font-medium text-text-100">Pay from wallet</div>
                 {current.payment ? (
-                  <div className="space-y-2 px-3 py-3 text-xs text-text-300"><p>Paying from {nameOf(current.payment.from)} · {short(current.payment.from)}</p><BxJob jobId={current.payment.jobId} compact /></div>
+                  <div className="space-y-2 px-3 py-3 text-xs text-text-300"><p>Paying from {(current.payment.sources ?? [{ address: current.payment.from, sol: current.depositSol ?? "" }]).map((x) => nameOf(x.address)).join(", ")} · one transaction</p><BxJob jobId={current.payment.jobId} compact /></div>
                 ) : !unlocked ? (
-                  <p className="px-3 py-3 text-sm text-text-300">Unlock the vault to pay from one of your wallets.</p>
+                  <p className="px-3 py-3 text-sm text-text-300">Unlock the vault to pay from your wallets.</p>
+                ) : current.sources?.length ? (
+                  <div>
+                    {current.sources.map((x) => <div key={x.address} className="flex items-center justify-between gap-3 border-b border-line-50 px-3 py-2 text-sm"><span className="min-w-0"><span className="block truncate font-medium text-text-100">{nameOf(x.address)}</span><span className="block text-[11px] text-text-300">{short(x.address)}</span></span><span className="font-mono text-xs text-text-100">{x.sol} SOL</span></div>)}
+                    <div className="flex items-center justify-end gap-1.5 px-3 py-2.5">
+                      {confirmPay === "sources"
+                        ? <><button type="button" className={cx(smallBtn, "h-8")} disabled={!!busy} onClick={() => setConfirmPay(null)}>Cancel</button><button type="button" className="h-8 rounded bg-accent px-3 text-xs font-medium text-white disabled:opacity-50" disabled={!!busy} onClick={() => pay(null)}>{busy === "pay" ? "Sending…" : `Confirm · send ${current.depositSol} SOL`}</button></>
+                        : <button type="button" className={cx(smallBtn, "h-8")} disabled={!!busy} onClick={() => setConfirmPay("sources")}>Pay {current.depositSol} SOL from {current.sources.length} wallet{current.sources.length > 1 ? "s" : ""}</button>}
+                    </div>
+                  </div>
                 ) : payers.length ? (
                   <div className="max-h-56 overflow-y-auto">
                     {payers.map((w) => (
@@ -268,21 +304,62 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
             {service === "splitnow" ? <p className="text-xs leading-relaxed text-text-300">SplitNOW is not connected to DONCHAIN. Use Husher for SOL → SOL splits across your wallets.</p> : null}
             {service === "husher" && state.data && !state.data.configured ? <div className={cx(card, "space-y-2 p-3")}><label htmlFor="husher-api-key" className="block text-xs text-text-300">Husher API key</label><div className="flex gap-2"><input id="husher-api-key" type="password" className={field} value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" placeholder="Paste your key" disabled={!!busy} /><button type="button" className={smallBtn} onClick={saveKey} disabled={!apiKey || !!busy || !unlocked}>Save key</button></div><p className="text-[11px] text-text-300">Unlock your vault to save the key. It stays on the local server and is never returned to the browser.</p></div> : null}
             {!mainnet ? <p className="text-xs text-yellow-100">The mixer uses real SOL. Switch to mainnet in <Link href="/settings" className={external}>Settings</Link>.</p> : null}
+            <div className="grid grid-cols-2 gap-1 rounded border border-line-100 bg-bg-50 p-0.5">
+              {(["from", "to"] as const).map((t) => <button key={t} type="button" onClick={() => setTab(t)} className={cx("h-8 rounded text-xs font-medium transition-colors", tab === t ? "bg-accent/15 text-accent" : "text-text-300 hover:text-text-100")}>{t === "from" ? `1 · From (${fromSel.length})` : `2 · To (${chosen.length})`}</button>)}
+            </div>
+            {tab === "from" ? (
+              <>
+                <div className={card}>
+                  <div className="flex items-center justify-between border-b border-line-50 px-3 py-2">
+                    <span className="text-xs text-text-300">Sending wallets ({fromSel.length}/{Math.min(HUSHER_MAX_SOURCES, live.length)})</span>
+                    {fromSel.length ? <button type="button" className="text-xs text-accent hover:underline" onClick={() => { setFromSel([]); change(); }}>Clear</button> : null}
+                  </div>
+                  <div className="max-h-72 overflow-y-auto">
+                    {live.length ? live.map((w) => {
+                      const on = fromSel.includes(w.address);
+                      const full = !on && fromSel.length >= HUSHER_MAX_SOURCES;
+                      return (
+                        <div key={w.address} className="flex items-center gap-3 px-3 py-2">
+                          <label className={cx("flex min-w-0 flex-1 items-center gap-2.5", full ? "opacity-50" : "cursor-pointer")}>
+                            <input type="checkbox" checked={on} disabled={!!busy || full} onChange={(e) => toggleFrom(w.address, e.target.checked)} className="h-4 w-4 shrink-0 accent-accent" />
+                            <span className="min-w-0">
+                              <span className="block truncate text-sm font-medium text-text-100">{nameOfW(w)}</span>
+                              <span className="block truncate text-[11px] text-text-300">{short(w.address)} · {sol(balOf(w))} SOL</span>
+                            </span>
+                          </label>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            <input aria-label={`Amount sent by ${nameOfW(w)}`} inputMode="decimal" placeholder="0" className={cx(fieldBase, "w-[96px] text-right font-mono text-xs")} value={fromAmt[w.address] || ""} disabled={!on || !!busy} onChange={(e) => { setFromAmt((p) => ({ ...p, [w.address]: e.target.value })); change(); }} />
+                            <button type="button" className={cx(smallBtn, "h-[34px] px-2")} disabled={!on || !!busy} onClick={() => maxFrom(w)}>Max</button>
+                          </div>
+                        </div>
+                      );
+                    }) : <p className="px-3 py-4 text-sm text-text-300">No wallets in this section.</p>}
+                  </div>
+                  <div className="flex items-center justify-between border-t border-line-50 px-3 py-2 text-xs">
+                    <span className="text-text-300">Sending total</span>
+                    <span className="font-medium text-text-100">{sendLam > BigInt(0) ? formatHusherSol(sendLam) : "0"} SOL</span>
+                  </div>
+                </div>
+                {fromProblem ? <p className="text-[11px] leading-relaxed text-decrease">{fromProblem}</p> : null}
+                <p className="text-[11px] leading-relaxed text-text-300">The sending wallets pay the deposit together, in one transaction, once the order exists. Max keeps 0.001 SOL for the fee and rent. Pick none to deposit by hand.</p>
+                <button type="button" className={primary} onClick={() => setTab("to")}>Next · Destinations</button>
+              </>
+            ) : (<>
             <div>
               <label htmlFor="husher-total" className="mb-1 block text-xs text-text-300">Total to mix (SOL)</label>
               <div className="flex gap-2">
-                <input id="husher-total" className={field} placeholder="0.05" inputMode="decimal" value={total} disabled={!!busy} onChange={(e) => { setTotal(e.target.value); change(); }} />
+                <input id="husher-total" className={cx(field, fromSel.length > 0 && "text-text-200")} placeholder="0.05" inputMode="decimal" value={total} readOnly={fromSel.length > 0} title={fromSel.length ? "Total of the From wallets" : undefined} disabled={!!busy} onChange={(e) => { if (!fromSel.length) { setTotal(e.target.value); change(); } }} />
                 <button type="button" className={smallBtn} disabled={!!busy || !total.trim() || !chosen.length} onClick={() => split()}>Split equal</button>
               </div>
-              <p className="mt-1 text-[11px] text-text-300">{min ? `Min ${min} SOL per wallet` : "Min checked by the quote"} · sol · splits across selected wallets</p>
+              <p className="mt-1 text-[11px] text-text-300">{min ? `Min ${min} SOL per wallet` : "Min checked by the quote"} · sol · splits across selected wallets{fromSel.length ? ` · from ${fromSel.length} wallet${fromSel.length > 1 ? "s" : ""}` : ""}</p>
             </div>
             <div className={card}>
               <div className="flex items-center justify-between border-b border-line-50 px-3 py-2">
-                <span className="text-xs text-text-300">Destinations ({chosen.length}/{live.length})</span>
-                {chosen.length ? <button type="button" className="text-xs text-accent hover:underline" onClick={() => { setChosen([]); setAllocations({}); change(); }}>Clear</button> : <button type="button" className="text-xs text-accent hover:underline" onClick={() => { const all = live.map((w) => w.address); setChosen(all); if (total.trim()) split(all); else change(); }}>All</button>}
+                <span className="text-xs text-text-300">Destinations ({chosen.length}/{dests.length})</span>
+                {chosen.length ? <button type="button" className="text-xs text-accent hover:underline" onClick={() => { setChosen([]); setAllocations({}); change(); }}>Clear</button> : <button type="button" className="text-xs text-accent hover:underline" onClick={() => { const all = dests.map((w) => w.address); setChosen(all); if (total.trim()) split(all); else change(); }}>All</button>}
               </div>
               <div className="max-h-64 overflow-y-auto">
-                {live.length ? live.map((w) => {
+                {dests.length ? dests.map((w) => {
                   const on = chosen.includes(w.address);
                   return (
                     <div key={w.address} className="flex items-center gap-3 px-3 py-2">
@@ -304,7 +381,7 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
               </div>
             </div>
             {problem ? <p className="text-[11px] leading-relaxed text-text-300">{problem}</p> : null}
-            <button type="button" className={primary} disabled={service !== "husher" || !!busy || !total.trim() || !!problem || !mainnet || !state.data?.configured} onClick={fetchQuote}>{busy === "quote" ? "Fetching quote…" : quote ? "Refresh Quote" : "Fetch Quote"}</button>
+            <button type="button" className={primary} disabled={service !== "husher" || !!busy || !total.trim() || !!problem || !!fromProblem || !mainnet || !state.data?.configured} onClick={fetchQuote}>{busy === "quote" ? "Fetching quote…" : quote ? "Refresh Quote" : "Fetch Quote"}</button>
             {quote ? (
               <>
                 <div className={cx(card, "grid grid-cols-2 gap-y-2 px-3 py-3 text-sm")}>
@@ -336,9 +413,10 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
                 {badDelay ? <p className="text-[11px] text-decrease">Delay is at most {HUSHER_MAX_DELAY_MIN} min (7 days).</p> : null}
                 <label className="flex items-start gap-2 text-[11px] leading-relaxed text-text-300"><input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} disabled={!!busy} className="mt-0.5 accent-accent" /><span>I agree to Husher&apos;s <a className={external} href="https://www.husher.io/terms-of-service" target="_blank" rel="noopener noreferrer">Terms</a>, <a className={external} href="https://www.husher.io/privacy-policy" target="_blank" rel="noopener noreferrer">Privacy Policy</a> and <a className={external} href="https://www.husher.io/anti-money-policy" target="_blank" rel="noopener noreferrer">AML Policy</a>, and to share the selected destination addresses with Husher.</span></label>
                 <button type="button" className={solid} disabled={!consent || !!busy || !mainnet || badDelay} onClick={create}>{busy === "create" ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" /> Creating order…</span> : <span className="inline-flex items-center gap-2"><Check className="h-4 w-4" /> Create order</span>}</button>
-                <p className="text-[11px] leading-relaxed text-text-300">Estimates float until execution. Creating the order only gives a deposit address; nothing is sent until you deposit.</p>
+                <p className="text-[11px] leading-relaxed text-text-300">Estimates float until execution. Creating the order only gives a deposit address; nothing is sent until you deposit{fromSel.length ? " or confirm Pay" : ""}.</p>
               </>
             ) : null}
+            </>)}
           </>
         )}
       </div>

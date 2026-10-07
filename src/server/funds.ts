@@ -2,9 +2,10 @@
  * and the "relay hop" option: source → fresh in-memory relay wallet → destination (the relay key is generated
  * for the hop and dropped; on a hop-2 failure the relay sweeps back to the source).
  * Every operation is a job; nothing is sent without an explicit API call from the UI. */
-import { Keypair, PublicKey } from "@solana/web3.js";
+import { ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { getSolBalance } from "@/engine/solana/rpc.js";
 import { distributeSol, sweepSol, type FundStep } from "@/engine/solana/fund.js";
+import { latestBlockhash, sendAndConfirm } from "@/engine/solana/send.js";
 import { HttpError, sleep, solString } from "./api";
 import { readConn, requireUnlocked, sendConn, vaultWallets } from "./engine";
 import { jobNew, jobNote, jobPush, jobRun, jobWait } from "./jobs";
@@ -557,4 +558,62 @@ export function privateSend(o: { from: string; to: string; lamports: bigint | nu
     if (r.sent === 0) throw new Error(j.stop ? "Stopped before any part was sent." : (r.results.find((x) => x?.error)?.error ?? "Nothing was sent."));
   });
   return { job, plan, totalLam: o.lamports, needLam, etaMs };
+}
+
+/** Most source wallets one deposit transaction can carry (each adds a 64-byte signature + a key + a transfer;
+ *  9 still fit in 1232 bytes, 8 keeps room for the compute-budget instructions). */
+export const MAX_DEPOSIT_SOURCES = 8;
+
+/** Several vault wallets → ONE address in ONE transaction (all transfers land together or none does): a deposit
+ *  address that expects one exact amount receives exactly that, under one signature. The wallet left with the most
+ *  SOL pays the fee; every wallet must end at 0 or at least rent-exempt, checked before anything is signed. */
+export function sendSolFromMany(sources: { address: string; lamports: bigint }[], to: string, label: string): Job {
+  requireUnlocked();
+  const st = store();
+  if (!sources.length || sources.length > MAX_DEPOSIT_SOURCES) throw new HttpError(400, `Pick 1 to ${MAX_DEPOSIT_SOURCES} sending wallets.`);
+  if (new Set(sources.map((s) => s.address)).size !== sources.length) throw new HttpError(400, "A sending wallet appears twice.");
+  const named = vaultWallets(sources.map((s) => s.address));
+  if (sources.some((s) => s.address === to)) throw new HttpError(400, "A sending wallet cannot be the destination.");
+  if (sources.some((s) => s.lamports <= BigInt(0))) throw new HttpError(400, "Every sending wallet needs an amount above 0.");
+  const total = sources.reduce((a, s) => a + s.lamports, BigInt(0));
+  const job = jobNew("withdraw", 1, `${label}: ${solString(total)} SOL from ${sources.length} wallet${sources.length > 1 ? "s" : ""} → ${to.slice(0, 6)}… (one transaction)`);
+  jobRun(job, async (j) => {
+    const conn = readConn();
+    const cuPrice = st.sol.config.priorityMicroLamports;
+    const cuLimit = 600 + 300 * sources.length;
+    const fee = BigInt(5_000 * sources.length) + BigInt(Math.ceil((Math.max(0, cuPrice) * cuLimit) / 1e6));
+    const bals = await Promise.all(sources.map((s) => getSolBalance(conn, s.address).catch(() => null)));
+    if (bals.some((b) => b === null)) throw new Error("RPC unreachable: balances could not be read. Nothing was sent.");
+    const left = sources.map((s, i) => (bals[i] as bigint) - s.lamports);
+    const fine = (v: bigint) => v === BigInt(0) || v >= RENT_MIN;
+    const short = sources.findIndex((_, i) => left[i] < BigInt(0));
+    if (short >= 0) throw new Error(`${named[short].label} holds ${solString(bals[short] as bigint)} SOL but sends ${solString(sources[short].lamports)} SOL. Nothing was sent.`);
+    const order = sources.map((_, i) => i).sort((a, b) => (left[b] > left[a] ? 1 : left[b] < left[a] ? -1 : 0));
+    const payer = order.find((p) => left[p] - fee >= BigInt(0) && fine(left[p] - fee) && sources.every((_, i) => i === p || fine(left[i])));
+    if (payer === undefined) {
+      const bad = sources.findIndex((_, i) => !fine(left[i]));
+      throw new Error(bad >= 0
+        ? `${named[bad].label} would keep ${solString(left[bad])} SOL — below the rent minimum ${solString(RENT_MIN)} SOL. Send its full balance or leave at least ${solString(RENT_MIN)} SOL. Nothing was sent.`
+        : `No sending wallet can pay the ${solString(fee)} SOL network fee and stay rent-exempt. Lower one amount by 0.001 SOL. Nothing was sent.`);
+    }
+    const dest = new PublicKey(to);
+    const kps = sources.map((s) => st.sol.keypair(s.address));
+    const ixs = [ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit })];
+    if (cuPrice > 0) ixs.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: cuPrice }));
+    sources.forEach((s, i) => ixs.push(SystemProgram.transfer({ fromPubkey: kps[i].publicKey, toPubkey: dest, lamports: Number(s.lamports) })));
+    const { blockhash, lastValidBlockHeight } = await latestBlockhash(conn);
+    const tx = new VersionedTransaction(new TransactionMessage({ payerKey: kps[payer].publicKey, recentBlockhash: blockhash, instructions: ixs }).compileToV0Message());
+    tx.sign(kps);
+    const r = await sendAndConfirm(conn, sendConn(), tx, { lastValidBlockHeight });
+    const ok = !!r.confirmed;
+    jobPush(j, ok, { phase: "deposit", address: to, sol: solString(total), signature: r.signature ?? null, error: ok ? undefined : r.error });
+    j.extra = { to, sol: solString(total), signature: r.signature ?? null, sources: sources.map((s) => ({ address: s.address, sol: solString(s.lamports) })), payer: sources[payer].address };
+    logActivity(st, {
+      kind: "withdraw", ok,
+      message: `${label}: ${solString(total)} SOL from ${sources.length} wallet(s) → ${to.slice(0, 6)}… ${ok ? "confirmed" : "failed: " + (r.error ?? "not confirmed")}`,
+      wallets: [...sources.map((s) => s.address), to], signature: r.signature ?? undefined, jobId: j.id,
+    });
+    if (!ok) throw new Error(r.error ?? "not confirmed");
+  });
+  return job;
 }

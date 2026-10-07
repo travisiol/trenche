@@ -12,6 +12,11 @@ export type HusherQuote = HusherPlan & {
 /** provider + delay (minutes, 0 = instant) chosen per wallet before the order is created */
 export type HusherPick = { address: string; provider: string; delayMin: number };
 export const HUSHER_MAX_DELAY_MIN = 10_080;
+/** a sending wallet and the SOL it puts into the deposit */
+export type HusherSource = { address: string; sol: string };
+export const HUSHER_MAX_SOURCES = 8;
+/** "Max" on a sending wallet keeps this much behind: the fee if it pays it, and the rent-exempt minimum. */
+export const HUSHER_KEEP_LAM = BigInt(1_000_000);
 export const HUSHER_PROVIDERS: Record<string, { label: string; color: string }> = {
   binance: { label: "Binance", color: "#F0B90B" },
   husher: { label: "Husher", color: "#3B82F6" },
@@ -34,8 +39,10 @@ export type HusherOrder = {
   error: string | null; updatedAt: number;
   /** absent on orders created before providers could be picked (= husher, no delay) */
   picks?: HusherPick[];
-  /** "Pay from wallet": the vault send job that funds the deposit */
-  payment?: { from: string; jobId: string; at: number };
+  /** "From" wallets picked before the quote; their amounts add up to the deposit exactly */
+  sources?: HusherSource[];
+  /** "Pay from wallet": the vault send job that funds the deposit (one transaction, every source signs) */
+  payment?: { from: string; sources?: HusherSource[]; jobId: string; at: number };
 };
 export type HusherState = { configured: boolean; mainnet: boolean; orders: HusherOrder[] };
 

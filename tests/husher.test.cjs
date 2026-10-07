@@ -118,7 +118,7 @@ test('pay from wallet sends exactly the verified deposit once, never from a dest
   const t = setup([payer]); const q = await t.api.husherQuote(t.plan); const order = await t.api.husherCreate(q.id,true);
   const a = t.plan.recipients[0].address; const foreign = Keypair.generate().publicKey.toBase58();
   const sends = []; const failed = new Set();
-  const send = (from,to,lam) => { sends.push({from,to,lam}); return { id: 'job' + sends.length }; };
+  const send = (sources,to) => { sends.push({from:sources.map(s=>s.address).join(','),to,lam:sources.reduce((a,s)=>a+s.lamports,0n)}); return { id: 'job' + sends.length }; };
   const isFailed = (id) => failed.has(id);
   await assert.rejects(t.api.husherPay(order.id, a, send, isFailed), /destination wallet/);
   await assert.rejects(t.api.husherPay(order.id, foreign, send, isFailed), /DONCHAIN wallets/);
@@ -155,4 +155,23 @@ test('the exact picks are priced again right before creating; a Husher refusal i
   await assert.rejects(t2.api.husherCreate(q2.id, true), /dev 1: Minimum 0.05 SOL/);
   assert.equal(t2.saved().length, 0);
   assert.equal(t2.calls.filter(c=>c.url.endsWith('/multi-exchange')).length, 0);
+});
+
+test('From wallets: fixed at creation, add up to the total, never a destination; Pay sends them all in one go', async () => {
+  const s1 = Keypair.generate().publicKey.toBase58(), s2 = Keypair.generate().publicKey.toBase58();
+  const t = setup([s1, s2]); const [a] = t.plan.recipients.map(r=>r.address);
+  let q = await t.api.husherQuote(t.plan);
+  await assert.rejects(t.api.husherCreate(q.id,true,undefined,[{address:s1,sol:'0.05'}]),/add up exactly/);
+  await assert.rejects(t.api.husherCreate(q.id,true,undefined,[{address:a,sol:'0.06'}]),/both send and receive/);
+  await assert.rejects(t.api.husherCreate(q.id,true,undefined,[{address:Keypair.generate().publicKey.toBase58(),sol:'0.06'}]),/DONCHAIN wallets/);
+  await assert.rejects(t.api.husherCreate(q.id,true,undefined,Array.from({length:9},()=>({address:s1,sol:'0.001'}))),/1 to 8/);
+  assert.equal(t.calls.filter(c=>c.url.endsWith('/multi-exchange')).length, 0);
+  const order = await t.api.husherCreate(q.id,true,undefined,[{address:s1,sol:'0.035'},{address:s2,sol:'0.025'}]);
+  assert.deepEqual(order.sources.map(x=>x.address), [s1,s2]);
+  const sent = [];
+  const paid = await t.api.husherPay(order.id, null, (sources,to) => { sent.push({sources,to}); return {id:'j1'}; }, () => false);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].sources, [{address:s1,lamports:35000000n},{address:s2,lamports:25000000n}]);
+  assert.equal(sent[0].to, t.data.sendAddress);
+  assert.equal(paid.payment.sources.length, 2);
 });

@@ -6,7 +6,7 @@ import { PublicKey } from "@solana/web3.js";
 import { HttpError } from "./api";
 import { store, readJson, writeJson, logActivity } from "./store";
 import { ownedAddresses } from "./wallets";
-import { HUSHER_MAX_DELAY_MIN, HUSHER_PROVIDERS, husherAllocation, parseHusherSol, type HusherOption, type HusherPick, type HusherPlan, type HusherQuote, type HusherOrder } from "@/lib/husher";
+import { HUSHER_MAX_DELAY_MIN, HUSHER_MAX_SOURCES, HUSHER_PROVIDERS, husherAllocation, parseHusherSol, type HusherOption, type HusherPick, type HusherPlan, type HusherQuote, type HusherOrder, type HusherSource } from "@/lib/husher";
 
 const BASE = "https://api.husher.net";
 const QUOTE_MS = 60_000;
@@ -191,7 +191,27 @@ function checkPicks(quote: HusherQuote, raw: unknown): HusherPick[] {
     return { address: r.address, provider, delayMin };
   });
 }
-export async function husherCreate(quoteId: string, consent: boolean, rawPicks?: unknown): Promise<HusherOrder> {
+/** Optional "From" wallets: vault wallets, not destinations, at most HUSHER_MAX_SOURCES, adding up to the total. */
+function checkSources(plan: HusherPlan, raw: unknown): HusherSource[] | undefined {
+  if (raw === undefined || raw === null || (Array.isArray(raw) && !raw.length)) return undefined;
+  if (!Array.isArray(raw) || raw.length > HUSHER_MAX_SOURCES) throw new HttpError(400, `Pick 1 to ${HUSHER_MAX_SOURCES} sending wallets.`);
+  const ours = new Set(ownedAddresses()); const dest = new Set(plan.recipients.map((r) => r.address)); const seen = new Set<string>();
+  let sum = BigInt(0);
+  const out = (raw as Partial<HusherSource>[]).map((s) => {
+    const address = typeof s?.address === "string" ? s.address : "";
+    if (!ours.has(address)) throw new HttpError(400, "Sending wallets must be DONCHAIN wallets.");
+    if (dest.has(address)) throw new HttpError(400, "A wallet cannot both send and receive in the same mix.");
+    if (seen.has(address)) throw new HttpError(400, "A sending wallet appears twice.");
+    seen.add(address);
+    let lam: bigint;
+    try { lam = parseHusherSol(s.sol); } catch { throw new HttpError(400, "Every sending wallet needs an amount above 0."); }
+    sum += lam;
+    return { address, sol: String(s.sol).trim() };
+  });
+  if (sum !== parseHusherSol(plan.totalSol)) throw new HttpError(400, "Sending amounts must add up exactly to the total to mix.");
+  return out;
+}
+export async function husherCreate(quoteId: string, consent: boolean, rawPicks?: unknown, rawSources?: unknown): Promise<HusherOrder> {
   mainnet();
   if (consent !== true) throw new HttpError(400, "Confirm the Husher terms before creating an order.");
   const existing = husherHistory().find((r) => r.id === quoteId);
@@ -202,6 +222,7 @@ export async function husherCreate(quoteId: string, consent: boolean, rawPicks?:
   if (!quote || quote.expiresAt < Date.now()) throw new HttpError(409, "Quote expired. Fetch a fresh quote.");
   const plan = validate(quote);
   const picks = checkPicks(quote, rawPicks);
+  const sources = checkSources(plan, rawSources);
   st.creating.add(quoteId);
   try {
     // Husher keeps the last rate it gave this key; Fetch Quote priced every provider in parallel, so price the exact
@@ -214,7 +235,7 @@ export async function husherCreate(quoteId: string, consent: boolean, rawPicks?:
     const bad = Array.isArray(rows) && rows.length === picks.length ? rows.findIndex((r) => r.success !== true) : 0;
     if (bad >= 0) throw new HttpError(409, `${plan.recipients[bad]?.label ?? "A wallet"}: ${scrub(text(rows?.[bad]?.error) ?? "the picked provider no longer quotes this amount")}. Fetch a new quote.`);
   } catch (e) { st.creating.delete(quoteId); throw e; }
-  const rec: HusherOrder = { id: quoteId, at: Date.now(), plan, quote, remoteId: null, orderId: null, status: "Creating", depositAddress: null, depositSol: null, feeSol: null, feePercentage: null, networkFeeSol: null, hashIn: null, trackingUrl: null, recipients: [], error: null, updatedAt: Date.now(), picks };
+  const rec: HusherOrder = { id: quoteId, at: Date.now(), plan, quote, remoteId: null, orderId: null, status: "Creating", depositAddress: null, depositSol: null, feeSol: null, feePercentage: null, networkFeeSol: null, hashIn: null, trackingUrl: null, recipients: [], error: null, updatedAt: Date.now(), picks, ...(sources ? { sources } : {}) };
   try {
     save(rec); // durable before the non-idempotent remote POST
     st.quotes.delete(quoteId);
@@ -236,17 +257,23 @@ export async function husherCreate(quoteId: string, consent: boolean, rawPicks?:
   } finally { st.creating.delete(quoteId); }
 }
 /** "Pay from wallet": re-verifies the order with Husher, then hands the verified deposit (address + exact amount) to
- *  `send`. One payment per order unless the previous send job failed. */
-export async function husherPay(id: string, from: string, send: (from: string, to: string, lamports: bigint) => { id: string }, jobFailed: (jobId: string) => boolean): Promise<HusherOrder> {
+ *  `send` as one transaction. The order's own "From" wallets when it has them, otherwise the one wallet picked now.
+ *  One payment per order unless the previous send job failed. */
+export async function husherPay(id: string, from: string | null, send: (sources: { address: string; lamports: bigint }[], to: string) => { id: string }, jobFailed: (jobId: string) => boolean): Promise<HusherOrder> {
   mainnet();
   const rec = await husherRefresh(id);
   if (rec.error || !rec.depositAddress || !rec.depositSol) throw new HttpError(409, rec.error || "This order has no verified deposit instruction.");
   if (rec.hashIn || rec.status !== "Awaiting Deposit") throw new HttpError(409, `This order is ${rec.status}; it no longer needs a deposit.`);
   if (rec.payment && !jobFailed(rec.payment.jobId)) throw new HttpError(409, "A payment for this order was already sent. Wait for Husher to confirm it.");
-  if (!ownedAddresses().includes(from)) throw new HttpError(400, "Pay from one of your DONCHAIN wallets.");
-  if (rec.plan.recipients.some((r) => r.address === from)) throw new HttpError(400, "A destination wallet cannot pay its own mixer order.");
-  const job = send(from, rec.depositAddress, parseHusherSol(rec.depositSol));
-  rec.payment = { from, jobId: job.id, at: Date.now() }; rec.updatedAt = Date.now(); save(rec);
-  logActivity(store(), { kind: "fund", ok: true, message: `Husher order ${rec.orderId ?? rec.id.slice(0, 8)}: paying ${rec.depositSol} SOL from ${from.slice(0, 6)}…`, wallets: [from] });
+  const sources: HusherSource[] = rec.sources?.length ? rec.sources : from ? [{ address: from, sol: rec.depositSol }] : [];
+  if (!sources.length) throw new HttpError(400, "Pick the wallet that pays the deposit.");
+  const ours = new Set(ownedAddresses());
+  if (sources.some((s) => !ours.has(s.address))) throw new HttpError(400, "Pay from one of your DONCHAIN wallets.");
+  if (sources.some((s) => rec.plan.recipients.some((r) => r.address === s.address))) throw new HttpError(400, "A destination wallet cannot pay its own mixer order.");
+  const lams = sources.map((s) => ({ address: s.address, lamports: parseHusherSol(s.sol) }));
+  if (lams.reduce((a, s) => a + s.lamports, BigInt(0)) !== parseHusherSol(rec.depositSol)) throw new HttpError(409, "The sending amounts no longer match Husher's deposit amount. Nothing was sent.");
+  const job = send(lams, rec.depositAddress);
+  rec.payment = { from: sources[0].address, sources, jobId: job.id, at: Date.now() }; rec.updatedAt = Date.now(); save(rec);
+  logActivity(store(), { kind: "fund", ok: true, message: `Husher order ${rec.orderId ?? rec.id.slice(0, 8)}: paying ${rec.depositSol} SOL from ${sources.length} wallet(s) in one transaction`, wallets: sources.map((s) => s.address) });
   return rec;
 }
