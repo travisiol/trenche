@@ -446,6 +446,7 @@ export async function sendBundleAndConfirm(readConn, txs, opts = {}) {
         ? `Jito dropped the bundle (status Failed, id ${bundleId}) — a transaction of the bundle fails simulation; nothing was spent (atomic).`
         : opts.astralane
           ? `Bundle not landed within the window (Astralane) — nothing was spent (atomic).`
-          : `Bundle not landed within the window (Jito status ${jito ?? "unknown"}, id ${bundleId}) — nothing was spent (atomic).`,
+          // "Invalid" = Jito no longer tracks it — NOT a bad bundle: a plain test bundle landed while Jito said "Invalid" (2026-10-07)
+          : `Jito accepted the bundle but no block included it within the window (status ${jito ?? "unknown"} = no longer tracked, not an invalid bundle) — on pump.fun its tip competes with every other bundle touching the same accounts; nothing was spent (atomic). Id ${bundleId}.`,
   };
 }
