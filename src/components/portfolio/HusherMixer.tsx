@@ -178,7 +178,15 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
     try {
       const picks = quote.rates.map((r) => ({ address: r.address, provider: providers[r.address] ?? r.options[0].provider, delayMin: delayOf(r.address) }));
       const sources = fromSel.map((address) => ({ address, sol: fromAmt[address] }));
-      setOrder(await post<HusherOrder>("/api/husher", { quoteId: quote.id, consent, picks, sources, clientMeta: browserMeta() })); state.refresh();
+      const created = await post<HusherOrder>("/api/husher", { quoteId: quote.id, consent, picks, sources, clientMeta: browserMeta() });
+      setOrder(created); state.refresh();
+      // From wallets picked: the deposit leaves them right away (the button said so), no second "Pay" click
+      if (sources.length && created.depositAddress && created.depositSol && !created.error && created.status === "Awaiting Deposit") {
+        try {
+          setOrder(await post<HusherOrder>(`/api/husher/orders/${encodeURIComponent(created.id)}/pay`, {}));
+          refreshVaultDependents(); toast(`Deposit sent: ${created.depositSol} SOL from ${sources.length} wallet${sources.length > 1 ? "s" : ""}`, "ok");
+        } catch (e) { setError(`Order created, but the deposit was not sent: ${failureMessage(e)} Use Pay below to retry.`); }
+      }
     }
     catch (e) { setError(failureMessage(e)); }
     finally { setBusy(null); }
@@ -350,7 +358,7 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
                   </div>
                 </div>
                 {fromProblem ? <p className="text-[11px] leading-relaxed text-decrease">{fromProblem}</p> : null}
-                <p className="text-[11px] leading-relaxed text-text-300">The sending wallets pay the deposit together, in one transaction, once the order exists. Max keeps 0.001 SOL for the fee and rent. Pick none to deposit by hand.</p>
+                <p className="text-[11px] leading-relaxed text-text-300">The sending wallets pay the deposit together, in one transaction, as soon as you create the order. Max keeps 0.001 SOL for the fee and rent. Pick none to deposit by hand.</p>
                 <button type="button" className={primary} onClick={() => setTab("to")}>Next · Destinations</button>
               </>
             ) : (<>
@@ -421,8 +429,9 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
                 </div>
                 {badDelay ? <p className="text-[11px] text-decrease">Delay is at most {HUSHER_MAX_DELAY_MIN} min (7 days).</p> : null}
                 <label className="flex items-start gap-2 text-[11px] leading-relaxed text-text-300"><input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} disabled={!!busy} className="mt-0.5 accent-accent" /><span>I agree to Husher&apos;s <a className={external} href="https://www.husher.io/terms-of-service" target="_blank" rel="noopener noreferrer">Terms</a>, <a className={external} href="https://www.husher.io/privacy-policy" target="_blank" rel="noopener noreferrer">Privacy Policy</a> and <a className={external} href="https://www.husher.io/anti-money-policy" target="_blank" rel="noopener noreferrer">AML Policy</a>, and to share the selected destination addresses with Husher.</span></label>
-                <button type="button" className={solid} disabled={!consent || !!busy || !mainnet || badDelay} onClick={create}>{busy === "create" ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" /> Creating order…</span> : <span className="inline-flex items-center gap-2"><Check className="h-4 w-4" /> Create order</span>}</button>
-                <p className="text-[11px] leading-relaxed text-text-300">Estimates float until execution. Creating the order only gives a deposit address; nothing is sent until you deposit{fromSel.length ? " or confirm Pay" : ""}.</p>
+                {fromSel.length && !unlocked ? <p className="text-[11px] text-yellow-100">Unlock the vault so the From wallets can send the deposit.</p> : null}
+                <button type="button" className={solid} disabled={!consent || !!busy || !mainnet || badDelay || (fromSel.length > 0 && !unlocked)} onClick={create}>{busy === "create" ? <span className="inline-flex items-center gap-2"><RefreshCw className="h-4 w-4 animate-spin" /> {fromSel.length ? "Creating order and sending…" : "Creating order…"}</span> : <span className="inline-flex items-center gap-2"><Check className="h-4 w-4" /> {fromSel.length ? `Create order · send ${total} SOL from ${fromSel.length} wallet${fromSel.length > 1 ? "s" : ""}` : "Create order"}</span>}</button>
+                <p className="text-[11px] leading-relaxed text-text-300">Estimates float until execution. Creating the order only gives a deposit address; {fromSel.length ? "the From wallets send the deposit in one transaction as soon as the order exists." : "nothing is sent until you deposit."}</p>
               </>
             ) : null}
             </>)}
