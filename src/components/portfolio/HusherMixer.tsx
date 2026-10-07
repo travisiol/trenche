@@ -14,7 +14,8 @@ import { toast } from "@/components/ui";
 import type { WalletInfo } from "@/lib/types";
 import { formatHusherSol, husherAllocation, parseHusherSol, splitHusherSol, type HusherOrder, type HusherPlan, type HusherQuote, type HusherState } from "@/lib/husher";
 
-const field = "w-full border border-line-100 bg-bg-50 px-3 py-2 text-sm text-text-100 outline-none placeholder:text-text-300 focus:border-accent disabled:opacity-50";
+const fieldBase = "border border-line-100 bg-bg-50 px-3 py-2 text-sm text-text-100 outline-none placeholder:text-text-300 focus:border-accent disabled:opacity-50";
+const field = `w-full ${fieldBase}`;
 const smallBtn = "shrink-0 rounded border border-line-100 bg-bg-50 px-3 text-xs font-medium text-text-100 hover:border-accent/35 hover:text-accent disabled:opacity-45";
 const primary = "h-9 w-full rounded border border-accent/40 bg-accent/15 text-sm font-medium text-accent hover:bg-accent/25 disabled:opacity-50";
 const external = "inline underline text-accent";
@@ -143,7 +144,7 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
                           <span className="block truncate text-[11px] text-text-300">{short(w.address)} · {sol(balances?.[w.address] ?? w.sol)} SOL</span>
                         </span>
                       </label>
-                      <input aria-label={`Allocation for ${w.label || w.address}`} inputMode="decimal" placeholder="0" className={cx(field, "w-[120px] shrink-0 text-right font-mono text-xs")} value={allocations[w.address] || ""} disabled={!on || !!busy} onChange={(e) => { setAllocations((p) => ({ ...p, [w.address]: e.target.value })); change(); }} />
+                      <input aria-label={`Allocation for ${w.label || w.address}`} inputMode="decimal" placeholder="0" className={cx(fieldBase, "w-[120px] shrink-0 text-right font-mono text-xs")} value={allocations[w.address] || ""} disabled={!on || !!busy} onChange={(e) => { setAllocations((p) => ({ ...p, [w.address]: e.target.value })); change(); }} />
                     </div>
                   );
                 }) : <p className="px-3 py-4 text-sm text-text-300">No wallets in this section.</p>}
