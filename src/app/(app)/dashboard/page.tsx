@@ -193,8 +193,14 @@ export default function DashboardPage() {
                   <div className="shrink-0 border-b border-line-50 px-6 pb-4 pt-1">
                     <p className="text-[14px] text-text-300">Total PnL · net of fees</p>
                     <p className={cx("mt-0.5 text-[28px] font-medium tracking-[-0.03em] tabular-nums xl:text-[32px]", total > 0 ? "text-increase" : total < 0 ? "text-decrease" : "text-text-100")}>
-                      <span className="inline-flex items-center gap-1.5">{money(total, solUsd, unit, true)}</span> ({pct >= 0 ? "+" : ""}
-                      {pct.toFixed(1)}%)
+                      {heldKnown ? (
+                        <>
+                          <span className="inline-flex items-center gap-1.5">{money(total, solUsd, unit, true)}</span> ({pct >= 0 ? "+" : ""}
+                          {pct.toFixed(1)}%)
+                        </>
+                      ) : (
+                        <span className="text-text-300" title="Reading what your wallets still hold…">…</span>
+                      )}
                     </p>
                     <PnlFees pnl={pnl} solUsd={solUsd} unit={unit} className="mt-1" />
                     <div className="mt-3 grid grid-cols-2 gap-x-5 gap-y-2 xl:mt-4 xl:gap-y-3">
