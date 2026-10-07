@@ -10,6 +10,8 @@ export type HusherQuote = HusherPlan & {
   rates: { address: string; sendSol: string; receiveSol: string; percent: number; minimum: string | null; options: HusherOption[] }[];
 };
 /** provider + delay (minutes, 0 = instant) chosen per wallet before the order is created */
+/** what husher.io's own page sends with every order (with the public IP, added by the server) */
+export type HusherClientMeta = { timezone: string; language: string; userAgent: string };
 export type HusherPick = { address: string; provider: string; delayMin: number };
 export const HUSHER_MAX_DELAY_MIN = 10_080;
 /** a sending wallet and the SOL it puts into the deposit */

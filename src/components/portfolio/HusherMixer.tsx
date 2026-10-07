@@ -93,6 +93,12 @@ function MinutesInput({ value, onChange, disabled, className }: { value: string;
   );
 }
 
+function browserMeta() {
+  let timezone = "";
+  try { timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { /* unknown */ }
+  return { timezone, language: navigator.language || "", userAgent: navigator.userAgent || "" };
+}
+
 export function HusherMixer({ wallets, balances = null, selected = [], onClose }: { wallets: WalletInfo[]; balances?: Record<string, string | null> | null; selected?: string[]; onClose: () => void }) {
   const live = wallets.filter((w) => !w.archived);
   const [service, setService] = useState<"husher" | "splitnow">("husher");
@@ -172,7 +178,7 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
     try {
       const picks = quote.rates.map((r) => ({ address: r.address, provider: providers[r.address] ?? r.options[0].provider, delayMin: delayOf(r.address) }));
       const sources = fromSel.map((address) => ({ address, sol: fromAmt[address] }));
-      setOrder(await post<HusherOrder>("/api/husher", { quoteId: quote.id, consent, picks, sources })); state.refresh();
+      setOrder(await post<HusherOrder>("/api/husher", { quoteId: quote.id, consent, picks, sources, clientMeta: browserMeta() })); state.refresh();
     }
     catch (e) { setError(failureMessage(e)); }
     finally { setBusy(null); }

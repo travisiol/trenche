@@ -30,7 +30,7 @@ function setup(extraOwned = []) {
   const data = { send:'SOL',receive:'SOL',sendNetwork:'SOL',receiveNetwork:'SOL',totalAmount:0.06,status:'Awaiting Deposit',sendAddress:Keypair.generate().publicKey.toBase58(), recipients: [{recipientAddress:a,percent:'50',receiveAmount:'0.028925',status:'pending'},{recipientAddress:b,percent:'50',receiveAmount:'0.028925',status:'pending'}] };
   const quote = { totalReceiveAmount:'0.05785',recipients:[{success:true,sendAmount:'0.03',receiveAmount:'0.028925',rate:'0.96416666'},{success:true,sendAmount:'0.03',receiveAmount:'0.028925',rate:'0.96416666'}] };
   let behavior = async (url) => url.endsWith('/providers') ? {providers:['binance','kucoin']} : url.endsWith('/rate') ? quote : url.endsWith('/multi-exchange') ? {multiExchangeOrderId:'remote123',orderId:'short123'} : data;
-  global.fetch = async (url, opts) => { calls.push({url,opts}); return new Response(JSON.stringify({success:true,data:await behavior(url,opts)}), {status:200,headers:{'content-type':'application/json'}}); };
+  global.fetch = async (url, opts) => { if (url.includes('ipify')) return new Response(JSON.stringify({ip:'203.0.113.7'})); calls.push({url,opts}); return new Response(JSON.stringify({success:true,data:await behavior(url,opts)}), {status:200,headers:{'content-type':'application/json'}}); };
   return { api,st,plan,data,quote,calls,setBehavior:(fn)=>behavior=fn, saved:()=>saved };
 }
 
@@ -145,7 +145,7 @@ test('the exact picks are priced again right before creating; a Husher refusal i
     if (url.endsWith('/multi-exchange')) return null;
     return t.data;
   });
-  global.fetch = async (url, opts) => { t.calls.push({url,opts}); const refused = url.endsWith('/multi-exchange');
+  global.fetch = async (url, opts) => { if (url.includes('ipify')) return new Response(JSON.stringify({ip:'203.0.113.7'})); t.calls.push({url,opts}); const refused = url.endsWith('/multi-exchange');
     return new Response(JSON.stringify(refused ? {success:false,message:'Please reload and try again'} : {success:true,data:url.endsWith('/rate')?t.quote:t.data}), {status: refused ? 400 : 200}); };
   const r = await t.api.husherCreate(q.id, true);
   assert.deepEqual(t.calls.map(c=>c.url.split('/v1/')[1]), ['multi-exchange/rate','multi-exchange']);
@@ -174,4 +174,12 @@ test('From wallets: fixed at creation, add up to the total, never a destination;
   assert.deepEqual(sent[0].sources, [{address:s1,lamports:35000000n},{address:s2,lamports:25000000n}]);
   assert.equal(sent[0].to, t.data.sendAddress);
   assert.equal(paid.payment.sources.length, 2);
+});
+
+test('every order carries the public IP and client meta, like husher.io sends them', async () => {
+  const t = setup(); const q = await t.api.husherQuote(t.plan);
+  await t.api.husherCreate(q.id, true, undefined, undefined, { timezone: 'Europe/Paris', language: 'fr-FR', userAgent: 'UA' });
+  const body = JSON.parse(t.calls.find(c=>c.url.endsWith('/multi-exchange')).opts.body);
+  assert.equal(body.ipAddress, '203.0.113.7');
+  assert.deepEqual(body.clientMeta, { timezone: 'Europe/Paris', language: 'fr-FR', userAgent: 'UA', ip: '203.0.113.7' });
 });

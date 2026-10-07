@@ -6,7 +6,7 @@ import { PublicKey } from "@solana/web3.js";
 import { HttpError } from "./api";
 import { store, readJson, writeJson, logActivity } from "./store";
 import { ownedAddresses } from "./wallets";
-import { HUSHER_MAX_DELAY_MIN, HUSHER_MAX_SOURCES, HUSHER_PROVIDERS, husherAllocation, parseHusherSol, type HusherOption, type HusherPick, type HusherPlan, type HusherQuote, type HusherOrder, type HusherSource } from "@/lib/husher";
+import { HUSHER_MAX_DELAY_MIN, HUSHER_MAX_SOURCES, HUSHER_PROVIDERS, husherAllocation, parseHusherSol, type HusherOption, type HusherPick, type HusherPlan, type HusherQuote, type HusherOrder, type HusherSource, type HusherClientMeta } from "@/lib/husher";
 
 const BASE = "https://api.husher.net";
 const QUOTE_MS = 60_000;
@@ -191,6 +191,27 @@ function checkPicks(quote: HusherQuote, raw: unknown): HusherPick[] {
     return { address: r.address, provider, delayMin };
   });
 }
+/** The public IP, looked up like husher.io's page does (it sends ipAddress + clientMeta.ip with every order and
+ *  answers "Please reload and try again" without them). Same machine as the browser, so the same IP Husher sees. */
+const IP_SOURCES = ["https://api.ipify.org?format=json", "https://ipapi.co/json/", "https://api.ip.sb/geoip", "https://ipinfo.io/json"];
+async function publicIp(): Promise<string> {
+  const st = state() as State & { ip?: { at: number; value: string } };
+  if (st.ip && Date.now() - st.ip.at < 10 * 60_000) return st.ip.value;
+  for (const url of IP_SOURCES) {
+    try {
+      const r = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(6_000) });
+      const j = await r.json() as { ip?: unknown; query?: unknown; ipAddress?: unknown };
+      const ip = [j.ip, j.query, j.ipAddress].find((v): v is string => typeof v === "string" && /^[0-9a-fA-F.:]{3,45}$/.test(v));
+      if (ip) { st.ip = { at: Date.now(), value: ip }; return ip; }
+    } catch { /* next source */ }
+  }
+  throw new HttpError(503, "Could not read your public IP, which Husher requires to create an order. Check the connection and try again.");
+}
+function clientMeta(raw: unknown): HusherClientMeta {
+  const m = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const str = (v: unknown, max: number) => typeof v === "string" ? v.slice(0, max) : "";
+  return { timezone: str(m.timezone, 64), language: str(m.language, 35), userAgent: str(m.userAgent, 400) };
+}
 /** Optional "From" wallets: vault wallets, not destinations, at most HUSHER_MAX_SOURCES, adding up to the total. */
 function checkSources(plan: HusherPlan, raw: unknown): HusherSource[] | undefined {
   if (raw === undefined || raw === null || (Array.isArray(raw) && !raw.length)) return undefined;
@@ -211,7 +232,7 @@ function checkSources(plan: HusherPlan, raw: unknown): HusherSource[] | undefine
   if (sum !== parseHusherSol(plan.totalSol)) throw new HttpError(400, "Sending amounts must add up exactly to the total to mix.");
   return out;
 }
-export async function husherCreate(quoteId: string, consent: boolean, rawPicks?: unknown, rawSources?: unknown): Promise<HusherOrder> {
+export async function husherCreate(quoteId: string, consent: boolean, rawPicks?: unknown, rawSources?: unknown, rawMeta?: unknown): Promise<HusherOrder> {
   mainnet();
   if (consent !== true) throw new HttpError(400, "Confirm the Husher terms before creating an order.");
   const existing = husherHistory().find((r) => r.id === quoteId);
@@ -223,6 +244,8 @@ export async function husherCreate(quoteId: string, consent: boolean, rawPicks?:
   const plan = validate(quote);
   const picks = checkPicks(quote, rawPicks);
   const sources = checkSources(plan, rawSources);
+  const ip = await publicIp();
+  const meta = clientMeta(rawMeta);
   st.creating.add(quoteId);
   try {
     // Husher keeps the last rate it gave this key; Fetch Quote priced every provider in parallel, so price the exact
@@ -239,7 +262,7 @@ export async function husherCreate(quoteId: string, consent: boolean, rawPicks?:
   try {
     save(rec); // durable before the non-idempotent remote POST
     st.quotes.delete(quoteId);
-    const j = await call("/api/v1/multi-exchange", { send: "SOL", receive: "SOL", sendNetwork: "SOL", receiveNetwork: "SOL", totalAmount: Number(plan.totalSol), recipients: quote.rates.map((r, i) => ({ address: r.address, percent: r.percent, provider: picks[i].provider, timeDelay: picks[i].delayMin })) });
+    const j = await call("/api/v1/multi-exchange", { send: "SOL", receive: "SOL", sendNetwork: "SOL", receiveNetwork: "SOL", totalAmount: Number(plan.totalSol), recipients: quote.rates.map((r, i) => ({ address: r.address, percent: r.percent, provider: picks[i].provider, timeDelay: picks[i].delayMin })), ipAddress: ip, clientMeta: { ...meta, ip } });
     const d = j.data as Record<string, unknown>;
     const remoteId = text(d?.multiExchangeOrderId) ?? text(d?.orderId);
     if (!remoteId || !/^[A-Za-z0-9_-]{1,100}$/.test(remoteId)) throw new Error("Husher did not return an order ID. Check your Husher order history before retrying.");
