@@ -328,11 +328,16 @@ export function effectiveRpcUrl(s: StoredSettings): string {
 export function heliusBundleUrl(s: StoredSettings): string | null {
   return heliusBundleUrls(s)[0] ?? null;
 }
-/** every Helius endpoint a bundle may be sent to, tried in this order on an HTTP 5xx: the Settings RPC URL when it is a
- *  Helius one (a Business plan's dedicated "…-fast-mainnet.helius-rpc.com" endpoint carries its auth in the host), then
- *  mainnet and beta with the Helius key. sendBundle answered HTTP 500 on mainnet right after a Business upgrade. */
+/** every Helius endpoint a bundle may be sent to, tried in this order on an HTTP 5xx / rate limit:
+ *  1. Helius SENDER (docs "Sender": sendBundle on https://sender.helius-rpc.com/fast, ≤ 4 txs, atomic, tip ≥ 0.001 SOL
+ *     to the Helius tip accounts, no credits) — what Helius' own SDK uses (sendBundleWithSender);
+ *  2. the Settings RPC URL when it is a Helius one; 3. mainnet and beta with the key (their sendBundle answered
+ *     HTTP 500 on every call after a Business upgrade, 2026-10-07). */
 export function heliusBundleUrls(s: StoredSettings): string[] {
   const out: string[] = [];
+  const k0 = s.heliusKey.trim();
+  const key0 = k0 ? (/api-key=([A-Za-z0-9-]+)/.exec(k0)?.[1] ?? k0) : "";
+  out.push(key0 ? `https://sender.helius-rpc.com/fast?api-key=${key0}` : "https://sender.helius-rpc.com/fast");
   const explicit = normalizeSolanaRpc(s.rpcUrl);
   if (explicit && /^https:\/\/[a-z0-9.-]*helius-rpc\.com/i.test(explicit) && !/devnet/i.test(explicit)) out.push(explicit);
   if (s.heliusKey.trim()) {

@@ -923,7 +923,8 @@ async function runLaunch(run: LaunchRun, o: RunOpts): Promise<void> {
       const r = await launchBundle(conn, prep, {
         astralane,
         helius: viaHelius && o.heliusUrl ? { url: o.heliusUrl, urls: heliusBundleUrls(st.settings) } : undefined,
-        maxPerBundle: astralane ? 4 : 5,
+        // Astralane and Helius Sender take 4 transactions per bundle (create + dev buy, then 3 wallets), Jito 5
+        maxPerBundle: astralane || viaHelius ? 4 : 5,
         // a landing bundle lands in 1–2 s (real tests): 9 s then a higher tip — the curve check after the window still
         // catches a late landing
         timeoutMs: attempt < maxAttempts ? 9_000 : 30_000,
