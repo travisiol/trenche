@@ -8,9 +8,10 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import QRCode from "qrcode";
-import { Check, ChevronDown, Copy, RefreshCw } from "lucide-react";
+import { Check, ChevronDown, Copy, RefreshCw, X } from "lucide-react";
 import { Drawer } from "@/components/portfolio/Drawers";
 import { BxJob } from "@/components/bx/Job";
+import { useJob } from "@/components/JobProgress";
 import { cx } from "@/components/bx/ui";
 import { failureMessage, post, useGet } from "@/lib/api";
 import { refreshVaultDependents, useSettings, useVault } from "@/lib/store";
@@ -48,6 +49,26 @@ function useQr(text: string | null) {
     return () => { alive = false; };
   }, [text]);
   return qr && qr.text === text ? qr.url : null;
+}
+
+type StepState = "done" | "active" | "todo" | "failed";
+/** One line of the From-wallets progress: Order created → Deposit sent → Received by Husher → Sent to wallets. */
+function Step({ state, title, detail, last }: { state: StepState; title: string; detail?: React.ReactNode; last?: boolean }) {
+  return (
+    <div className="flex gap-3">
+      <div className="flex flex-col items-center">
+        <span className={cx("flex h-6 w-6 shrink-0 items-center justify-center rounded-full border",
+          state === "done" ? "border-green-100 bg-green-100/15 text-green-100" : state === "active" ? "border-accent bg-accent/15 text-accent" : state === "failed" ? "border-decrease bg-decrease/15 text-decrease" : "border-line-100 text-text-300")}>
+          {state === "done" ? <Check className="h-3.5 w-3.5" /> : state === "active" ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : state === "failed" ? <X className="h-3.5 w-3.5" /> : <span className="h-1.5 w-1.5 rounded-full bg-line-100" />}
+        </span>
+        {!last ? <span className={cx("my-1 w-px flex-1", state === "done" ? "bg-green-100/40" : "bg-line-100")} /> : null}
+      </div>
+      <div className={cx("min-w-0 pb-4", last && "pb-0")}>
+        <p className={cx("text-sm font-medium", state === "todo" ? "text-text-300" : "text-text-100")}>{title}</p>
+        {detail ? <div className="mt-0.5 text-[11px] leading-relaxed text-text-300">{detail}</div> : null}
+      </div>
+    </div>
+  );
 }
 
 function QrImage({ src }: { src: string }) {
@@ -224,6 +245,15 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
   const needLam = lamOf(current?.depositSol) + PAY_FEE_LAM;
   const payers = live.filter((w) => !destinations.has(w.address) && lamOf(balOf(w)) >= needLam);
   const pickOf = (addr: string) => current?.picks?.find((p) => p.address === addr);
+  const payJob = useJob(current?.payment?.jobId ?? null).job;
+  /** the order is funded by the From wallets: show progress, not a QR code to pay by hand */
+  const viaWallets = !!current?.sources?.length;
+  const payFailed = payJob?.status === "error" || payJob?.status === "stopped";
+  const paySig = payJob?.steps.find((x) => x.signature)?.signature ?? null;
+  const received = !!current && (!!current.hashIn || !["Awaiting Deposit", "Creating", "Creation needs review", "Rejected"].includes(current.status));
+  const ended = !!current && ["Failed", "Refunded"].includes(current.status);
+  const delivered = current?.recipients.filter((r) => !!r.hashOut || /complete/i.test(r.status)).length ?? 0;
+  const allDelivered = !!current && (current.status === "Complete" || (current.recipients.length > 0 && delivered === current.recipients.length));
   return (
     <Drawer title="Mixer · Developer Wallets" onClose={close} right={<button type="button" disabled={!!busy} className="text-xs text-accent hover:underline disabled:opacity-50" onClick={() => { setHistory(!history || !!current); setOrder(null); }}>{history || current ? "New order" : "History"}</button>}>
       <div className="flex flex-col gap-3 p-4">
@@ -231,7 +261,22 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
         {current ? (
           <>
             {current.error || tracked.error ? <p role="alert" className="rounded border border-decrease/30 bg-decrease/10 p-3 text-xs leading-relaxed text-decrease">{current.error || failureMessage(tracked.error)}</p> : null}
-            {awaiting ? (
+            {viaWallets && current.remoteId ? (
+              <div className={cx(card, "p-4")}>
+                <Step state="done" title="Order created" detail={<>Husher order #{current.orderId || current.id.slice(0, 8)} · {current.depositSol ?? current.plan.totalSol} SOL</>} />
+                <Step
+                  state={received || payJob?.status === "done" ? "done" : payFailed ? "failed" : current.payment || busy === "create" || busy === "pay" ? "active" : awaiting ? "todo" : "todo"}
+                  title={`Deposit sent from ${(current.sources ?? []).map((x) => nameOf(x.address)).join(", ")}`}
+                  detail={payFailed ? <span className="text-decrease">{payJob?.error ?? "The deposit transaction failed."} Use Pay below to retry.</span>
+                    : paySig ? <a className={external} href={`https://solscan.io/tx/${encodeURIComponent(paySig)}`} target="_blank" rel="noopener noreferrer">Deposit transaction</a>
+                    : current.payment || busy ? "Signing and sending one transaction…" : "Not sent yet."} />
+                <Step state={ended ? "failed" : received ? "done" : payJob?.status === "done" ? "active" : "todo"} title="Received by Husher"
+                  detail={ended ? current.status : received ? (current.hashIn ? "Deposit confirmed." : current.status) : payJob?.status === "done" ? "Waiting for Husher to see the deposit (usually under a minute)." : undefined} />
+                <Step last state={ended ? "failed" : allDelivered ? "done" : received ? "active" : "todo"} title={`Sent to ${current.plan.recipients.length} wallet${current.plan.recipients.length > 1 ? "s" : ""}`}
+                  detail={received || allDelivered ? `${delivered}/${current.recipients.length || current.plan.recipients.length} delivered${!allDelivered && current.picks?.some((p) => p.delayMin > 0) ? " · delayed wallets go out on their timer" : ""}` : undefined} />
+              </div>
+            ) : null}
+            {awaiting && !viaWallets ? (
               <div className={cx(card, "p-4")}>
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-text-300">Deposit address</span>
@@ -245,10 +290,10 @@ export function HusherMixer({ wallets, balances = null, selected = [], onClose }
                 <p className="mt-3 text-sm text-text-200">Send <button type="button" className="font-semibold text-text-100 hover:text-accent" onClick={() => copy(current.depositSol!)}>{current.depositSol} SOL</button> to start the mixer.</p>
               </div>
             ) : null}
-            {awaiting ? (
+            {awaiting && (!viaWallets || ((!current.payment || payFailed) && !busy)) ? (
               <div className={card}>
                 <div className="border-b border-line-50 px-3 py-2 text-[13px] font-medium text-text-100">Pay from wallet</div>
-                {current.payment ? (
+                {current.payment && !payFailed ? (
                   <div className="space-y-2 px-3 py-3 text-xs text-text-300"><p>Paying from {(current.payment.sources ?? [{ address: current.payment.from, sol: current.depositSol ?? "" }]).map((x) => nameOf(x.address)).join(", ")} · one transaction</p><BxJob jobId={current.payment.jobId} compact /></div>
                 ) : !unlocked ? (
                   <p className="px-3 py-3 text-sm text-text-300">Unlock the vault to pay from your wallets.</p>

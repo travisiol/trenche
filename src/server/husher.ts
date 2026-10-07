@@ -22,7 +22,8 @@ const path = () => join(store().dir, "husher-orders.json");
 export const husherHistory = (): HusherOrder[] => readJson<HusherOrder[]>(path(), []);
 const save = (order: HusherOrder) => {
   const list = husherHistory(); const i = list.findIndex((r) => r.id === order.id);
-  if (i < 0) list.unshift(order); else list[i] = order;
+  // merge: a refresh that read the record before "Pay" saved must not drop the payment it never saw
+  if (i < 0) list.unshift(order); else list[i] = { ...list[i], ...order, payment: order.payment ?? list[i].payment };
   writeJson(path(), list);
 };
 function key() { return process.env.HUSHER_API_KEY?.trim() || store().settings.husherKey?.trim() || ""; }
