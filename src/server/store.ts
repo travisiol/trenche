@@ -394,6 +394,7 @@ export function publicSettings(s: StoredSettings): Settings {
     jitoPublic: s.jitoPublic === true,
     heliusBundles: s.heliusBundles === true,
     hasHeliusBundleUrl: !!heliusBundleUrl(s),
+    heliusBundleHosts: heliusBundleUrls(s).map((u) => { try { return new URL(u).host; } catch { return "helius"; } }),
     autoClaimRewards: s.autoClaimRewards !== false,
     slippageBps: s.slippageBps,
     cuPrice: s.cuPrice,

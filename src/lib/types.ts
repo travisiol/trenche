@@ -309,6 +309,8 @@ export type Settings = {
   heliusBundles: boolean;
   /** a Helius key or Helius RPC URL is set: Helius bundles are possible */
   hasHeliusBundleUrl: boolean;
+  /** hosts a Helius bundle is tried on, in order (no key) */
+  heliusBundleHosts: string[];
   /** default of the Launch Token modal "Auto-claim rewards → dev wallet" switch (true): every launch arms an
    *  auto-claim watcher that sends the pump.fun creator fees to the dev wallet (see AutoClaimStatus) */
   autoClaimRewards: boolean;
@@ -333,7 +335,7 @@ export type Settings = {
 /** POST /api/settings — partial; `pumpportalKey: ""` clears the key, omit to keep.
  *  `tradingPresets`: 3 entries, each a PARTIAL TradingPreset merged over the saved one (omit a field to keep it). */
 export type SettingsUpdateRequest = Partial<
-  Omit<Settings, "hasPumpportalKey" | "hasHeliusKey" | "hasAstralaneKey" | "hasHusherKey" | "hasHeliusBundleUrl" | "theme" | "explorerSuffix" | "effectiveRpcUrl" | "effectiveSendRpcUrl" | "pump" | "tradingPresets">
+  Omit<Settings, "hasPumpportalKey" | "hasHeliusKey" | "hasAstralaneKey" | "hasHusherKey" | "hasHeliusBundleUrl" | "heliusBundleHosts" | "theme" | "explorerSuffix" | "effectiveRpcUrl" | "effectiveSendRpcUrl" | "pump" | "tradingPresets">
 > & {
   pumpportalKey?: string;
   /** "" clears, omit keeps */

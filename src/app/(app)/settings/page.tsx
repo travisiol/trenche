@@ -247,10 +247,10 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
       </div>
       <div className="space-y-3">
         <H3>Network</H3>
-        <Row title="Read RPC" desc="Blank = public Solana RPC, or Helius when a key is set.">
+        <Row title="RPC URL (read)" desc="Paste your Helius dedicated URL here (Helius dashboard › RPCs, e.g. https://xxxx-fast-mainnet.helius-rpc.com). Blank = Helius with the key below, or the public Solana RPC.">
           <BxInput value={f.rpcUrl ?? ""} onChange={(e) => set("rpcUrl", e.target.value)} placeholder="https://api.mainnet-beta.solana.com" className="h-9 w-[280px] font-mono text-xs" />
         </Row>
-        <Row title="Send RPC" desc="Where signed transactions go; may equal the read RPC.">
+        <Row title="Send RPC" desc="Where single transactions go (Fast lane, tasks). Helius Sender by default — leave it unless you know why.">
           <BxInput value={f.sendRpcUrl ?? ""} onChange={(e) => set("sendRpcUrl", e.target.value)} placeholder="Same as read RPC" className="h-9 w-[280px] font-mono text-xs" />
         </Row>
         <Row title="Helius API key" desc={initial.hasHeliusKey ? "A key is stored — type a new one to replace it." : "Optional: faster reads, holders list, sender endpoint."}>
@@ -308,7 +308,7 @@ function WorkspaceForm({ initial }: { initial: Settings }) {
           <BxSwitch checked={!!f.jitoEnabled} onChange={(v) => set("jitoEnabled", v)} />
         </Row>
         {initial.hasAstralaneKey || initial.hasHeliusBundleUrl ? (
-          <Row title="Bundle route (Jito on)" desc={f.heliusBundles ? `Helius bundles: your Helius key sends the bundle (1 credit per send), Helius forwards it to Jito — atomic, one transaction per wallet, dev + 4 wallets. Tips of the 3 attempts: ${jitoLadder(f.tipSol)} SOL.` : f.astralaneBundles ? "Astralane bundles: atomic, one transaction per wallet — needs an Astralane key with bundle access." : f.jitoPublic || !initial.hasAstralaneKey ? `Jito block engine: atomic, one transaction per wallet — create + buys land together or not at all. Tips of the 3 attempts with this setting: ${jitoLadder(f.tipSol)} SOL (×1, ×3, ×10 of the tip, at least 0.001, at most 0.02).` : "Astralane fast lane: fastest send but NOT atomic — a sniper can land between the create and your wallets."}>
+          <Row title="Bundle route (Jito on)" desc={f.heliusBundles ? `Helius bundles: your Helius key sends the bundle (1 credit per send), Helius forwards it to Jito — atomic, one transaction per wallet, dev + 4 wallets. Tips of the 3 attempts: ${jitoLadder(f.tipSol)} SOL. Tried on: ${(initial.heliusBundleHosts ?? []).join(" → ") || "no Helius endpoint"} (next one on an HTTP 500).` : f.astralaneBundles ? "Astralane bundles: atomic, one transaction per wallet — needs an Astralane key with bundle access." : f.jitoPublic || !initial.hasAstralaneKey ? `Jito block engine: atomic, one transaction per wallet — create + buys land together or not at all. Tips of the 3 attempts with this setting: ${jitoLadder(f.tipSol)} SOL (×1, ×3, ×10 of the tip, at least 0.001, at most 0.02).` : "Astralane fast lane: fastest send but NOT atomic — a sniper can land between the create and your wallets."}>
             <BxSeg
               value={f.heliusBundles && initial.hasHeliusBundleUrl ? "helius" : f.astralaneBundles ? "astralane" : f.jitoPublic || !initial.hasAstralaneKey ? "jito" : "fast"}
               onChange={(v) => setF((p) => ({ ...p, astralaneBundles: v === "astralane", jitoPublic: v === "jito", heliusBundles: v === "helius" }))}
