@@ -307,6 +307,13 @@ function LaunchModalBody({ onClose, form, onChange, wallets, balances }: Props) 
                     <input id="launch-telegram" value={form.telegram} onChange={(e) => set("telegram", e.target.value)} placeholder="https://t.me/" className={input} type="text" />
                   </div>
                 </div>
+                <div className="pb-2.5">
+                  <label htmlFor="launch-tweet" className="flex items-center justify-between gap-2 pb-0.5 text-sm text-text-100">
+                    <span>Launch tweet</span>
+                    <span className="text-[11px] text-text-300">{"{CA}"} = the token address · Post on X appears once the create confirms</span>
+                  </label>
+                  <textarea id="launch-tweet" value={form.tweet ?? ""} onChange={(e) => set("tweet", e.target.value)} placeholder={"$TICKER is live\n\n{CA}"} rows={2} maxLength={280} className={cx(input, "h-auto min-h-10 resize-none")} />
+                </div>
 
                 <div className="rounded-md pb-1.5 transition-colors">
                   <div className="pb-1 text-sm text-text-100">Select Image</div>

@@ -54,6 +54,8 @@ export type LaunchForm = {
   twitter: string;
   telegram: string;
   website: string;
+  /** the launch tweet: "Post on X" opens it prefilled once the create confirms ({CA} = the mint) — you post it */
+  tweet?: string;
   /** square PNG data URL, cropped client-side */
   imageDataUrl: string;
   /** "pump" = a …pump address is searched at launch (Fetch mint address) */

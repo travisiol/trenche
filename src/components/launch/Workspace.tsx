@@ -27,6 +27,12 @@ import { applyLive, spotOf } from "@/lib/livePositions";
 /** maximize / restore + "Reset layout" of one workspace panel (see layout.ts); absent on panels outside the workspace */
 export type PanelFrame = { maximized: boolean; onMaximize: () => void; onResetLayout: () => void };
 
+/** the launch tweet with the CA in it: {CA} replaced, or the CA added at the end; default "$SYM is live" */
+function tweetText(tweet: string | undefined, symbol: string, mint: string): string {
+  const t = (tweet ?? "").trim() || `${symbol} is live on pump.fun\n\n{CA}`;
+  return /\{CA\}/i.test(t) ? t.replace(/\{CA\}/gi, mint) : `${t}\n\n${mint}`;
+}
+
 export function Panel({ title, titleExtra, right, children, className, frame }: { title: string; /** shown right after the title (Tasks: live PnL) */ titleExtra?: React.ReactNode; right?: React.ReactNode; children: React.ReactNode; className?: string; frame?: PanelFrame }) {
   const [menu, setMenu] = useState(false);
   return (
@@ -370,7 +376,24 @@ export function TasksPanel({
   return (
     <Panel
       title="Tasks"
-      titleExtra={mint ? <PnlBadge pnl={pnlSettling ? null : pnl} solUsd={lp.solUsd ?? price.data?.usd ?? null} loading={pnlSettling || (positions.loading && !positions.data)} /> : null}
+      titleExtra={
+        mint ? (
+          <span className="flex min-w-0 items-center gap-2">
+            <PnlBadge pnl={pnlSettling ? null : pnl} solUsd={lp.solUsd ?? price.data?.usd ?? null} loading={pnlSettling || (positions.loading && !positions.data)} />
+            {live?.createConfirmed && live.mint ? (
+              <a
+                href={`https://x.com/intent/post?text=${encodeURIComponent(tweetText(form.tweet, live.symbol, live.mint))}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-6 shrink-0 items-center gap-1 rounded border border-line-100 bg-bg-50 px-2 text-[11px] font-medium text-text-100 hover:bg-white/[0.04]"
+                title="Opens X with your launch tweet and the CA filled in — you press Post"
+              >
+                Post on X
+              </a>
+            ) : null}
+          </span>
+        ) : null
+      }
       frame={frame}
       className={className}
       right={
