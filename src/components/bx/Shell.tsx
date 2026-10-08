@@ -7,7 +7,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { Bell, BookOpen, Check, ChevronDown, Copy, History, Menu, Search, Settings, SlidersHorizontal, Zap } from "lucide-react";
+import { Bell, BookOpen, Check, Copy, History, Menu, Search, Settings, SlidersHorizontal, Zap } from "lucide-react";
 import { VampDialog } from "@/components/launch/VampDialog";
 import { useRecent, clearRecent } from "./recent";
 import { VaultPill } from "./vault";
@@ -17,15 +17,24 @@ import { soundOnBalances } from "@/lib/sounds";
 import { failureMessage, useGet } from "@/lib/api";
 import { age, short, usd } from "@/lib/format";
 import type { PresetsResponse, RpcHealthResponse, SearchResponse, SearchSort } from "@/lib/types";
+import { ChainSwitch, RhBottomBar, RhRecentStrip, RhSearchModal } from "@/components/rh/RhChrome";
+import { chainHome, chainOfPath, rememberChain } from "@/components/rh/recent";
 
-const NAV = [
+/** each chain has its own pages: nothing Solana shows in Robinhood mode, nothing Robinhood in Solana mode */
+const SOL_NAV = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/launch", label: "Launch" },
   { href: "/portfolio", label: "Portfolio" },
-  { href: "/robinhood", label: "Robinhood" },
   { href: "/husher", label: "Husher" },
   { href: "/rewards", label: "Rewards" },
   { href: "/settings", label: "Settings" },
+];
+const RH_NAV = [
+  { href: "/rh/dashboard", label: "Dashboard" },
+  { href: "/rh/launch", label: "Launch" },
+  { href: "/rh/portfolio", label: "Portfolio" },
+  { href: "/rh/bridge", label: "Bridge" },
+  { href: "/rh/settings", label: "Settings" },
 ];
 
 export const DOCS_URL = "https://github.com/travisiol/trench#readme";
@@ -46,6 +55,10 @@ export function Shell({ children }: { children: ReactNode }) {
     soundOnBalances(balancesForSound.data as Record<string, string | null> | null);
   }, [balancesForSound.data]);
   const path = usePathname();
+  const chain = chainOfPath(path);
+  const rh = chain === "robinhood";
+  const NAV = rh ? RH_NAV : SOL_NAV;
+  useEffect(() => rememberChain(chain), [chain]);
   const [menu, setMenu] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   useEffect(() => {
@@ -70,13 +83,13 @@ export function Shell({ children }: { children: ReactNode }) {
         <header className="relative z-[110] flex h-[60px] shrink-0 items-center justify-between gap-3 bg-bg-50 px-3 sm:gap-4 sm:px-4">
           <div className="flex min-w-0 flex-1 items-center overflow-hidden">
             <div className="flex items-center gap-3 sm:gap-6">
-              <Link href="/dashboard" className="flex shrink-0 items-center gap-1.5" aria-label="DONCHAIN">
-                <span className="flex h-[26px] w-[26px] items-center justify-center rounded-md bg-accent text-[13px] font-extrabold text-white">D</span>
+              <Link href={chainHome(chain)} className="flex shrink-0 items-center gap-1.5" aria-label="DONCHAIN">
+                <span className={cx("flex h-[26px] w-[26px] items-center justify-center rounded-md text-[13px] font-extrabold", rh ? "bg-[#ccff00] text-black" : "bg-accent text-white")}>D</span>
                 <Wordmark />
               </Link>
               <nav className="hidden min-w-0 items-center gap-0.5 min-[1600px]:gap-1 xl:flex">
                 {NAV.map((n) => {
-                  const on = path === n.href || path.startsWith(n.href + "/") || (n.href === "/dashboard" && path.startsWith("/trade/"));
+                  const on = path === n.href || path.startsWith(n.href + "/") || (n.href === "/dashboard" && path.startsWith("/trade/")) || (n.href === "/rh/dashboard" && path.startsWith("/rh/token/"));
                   return (
                     <Link key={n.href} href={n.href} className={cx("rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-white/[0.04] min-[1600px]:px-2.5", on ? "text-accent" : "text-text-200 hover:text-text-100")}>
                       {n.label}
@@ -90,23 +103,14 @@ export function Shell({ children }: { children: ReactNode }) {
             <div>
               <button type="button" onClick={() => setSearchOpen(true)} className="hidden h-8 w-[280px] items-center gap-2 rounded-md border border-line-100 bg-bg-50 px-3 text-left text-sm text-text-300 lg:flex">
                 <Search className="h-3.5 w-3.5 shrink-0" />
-                <span className="min-w-0 flex-1 truncate">Search name, ticker, CA</span>
+                <span className="min-w-0 flex-1 truncate">{rh ? "Search a Pons token (0x…)" : "Search name, ticker, CA"}</span>
                 <span className="shrink-0 text-text-300">/</span>
               </button>
               <button type="button" onClick={() => setSearchOpen(true)} className="flex h-8 w-8 items-center justify-center rounded-md border border-line-100 bg-bg-50 text-text-300 transition-colors hover:bg-white/[0.04] hover:text-text-100 lg:hidden" aria-label="Search name, ticker, CA">
                 <Search className="h-3.5 w-3.5" />
               </button>
             </div>
-            <div className="relative">
-              <button type="button" className="flex h-7 items-center gap-1.5 rounded-md border border-line-100 bg-bg-50 px-2 text-xs text-text-200 transition-colors hover:bg-white/[0.04]" title="Solana — the only chain for now">
-                <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                  {/* eslint-disable-next-line @next/next/no-img-element -- static asset */}
-                  <img src="/solana.svg" alt="Solana" width={16} height={16} className="h-full w-full object-contain" />
-                </span>
-                <span>Solana</span>
-                <ChevronDown className="h-3 w-3 text-text-300 transition-transform" />
-              </button>
-            </div>
+            <ChainSwitch chain={chain} />
             <VaultPill />
             <div className="relative xl:hidden">
               <button type="button" onClick={() => setMenu((m) => !m)} className="inline-flex h-9 w-9 items-center justify-center rounded-md text-text-200 transition-colors hover:bg-white/[0.04] hover:text-text-100" aria-label="Open navigation">
@@ -127,7 +131,7 @@ export function Shell({ children }: { children: ReactNode }) {
             </div>
           </div>
         </header>
-        <RecentStrip />
+        {rh ? <RhRecentStrip /> : <RecentStrip />}
       </div>
       <div className="flex min-h-0 min-w-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -136,8 +140,8 @@ export function Shell({ children }: { children: ReactNode }) {
           </main>
         </div>
       </div>
-      <BottomBar />
-      <SearchModal open={searchOpen} onClose={() => setSearchOpen(false)} />
+      {rh ? <RhBottomBar /> : <BottomBar />}
+      {rh ? searchOpen ? <RhSearchModal onClose={() => setSearchOpen(false)} /> : null : <SearchModal open={searchOpen} onClose={() => setSearchOpen(false)} />}
     </div>
   );
 }

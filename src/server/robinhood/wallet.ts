@@ -17,7 +17,10 @@ import { verifyPassphrase } from "../wallets";
 
 type Entry = { label: string; privateKey: `0x${string}`; address: string; createdAt: number; deletedAt?: number };
 type Bag = { entries: Entry[] | null };
-export type EvmWallet = { address: string; label: string; createdAt: number; main: boolean };
+export type EvmWallet = { address: string; label: string; createdAt: number; main: boolean; group: string | null };
+export type EvmGroup = { id: string; name: string };
+/** meta.json: public data only (main wallet, groups, which wallet is in which group) */
+type Meta = { main?: string; groups?: EvmGroup[]; walletGroup?: Record<string, string> };
 
 export const MAX_EVM_WALLETS = 100;
 
@@ -105,16 +108,75 @@ function entries(): Entry[] {
 
 const live = () => entries().filter((e) => !e.deletedAt);
 
+const readMeta = (): Meta => readJson<Meta>(metaPath(), {});
+function writeMeta(fn: (m: Meta) => void): void {
+  const m = readMeta();
+  fn(m);
+  writeJson(metaPath(), m);
+}
+
 function mainAddress(): string {
   const list = live();
-  const saved = readJson<{ main?: string }>(metaPath(), {}).main;
+  const saved = readMeta().main;
   const hit = saved ? list.find((e) => lc(e.address) === lc(saved)) : undefined;
   return (hit ?? list[0])?.address ?? "";
 }
 
 export function evmWallets(): EvmWallet[] {
   const main = lc(mainAddress());
-  return live().map((e) => ({ address: e.address, label: e.label, createdAt: e.createdAt, main: lc(e.address) === main }));
+  const m = readMeta();
+  const ids = new Set((m.groups ?? []).map((g) => g.id));
+  return live().map((e) => {
+    const g = m.walletGroup?.[lc(e.address)];
+    return { address: e.address, label: e.label, createdAt: e.createdAt, main: lc(e.address) === main, group: g && ids.has(g) ? g : null };
+  });
+}
+
+/* ------------------------------------------------------------------ groups (folders) */
+
+export function evmGroups(): EvmGroup[] {
+  return readMeta().groups ?? [];
+}
+
+export function evmGroupCreate(name: string): EvmGroup {
+  const n = String(name ?? "").trim().slice(0, 32);
+  if (!n) throw new HttpError(400, "Group name required.");
+  const g = { id: "g" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name: n };
+  writeMeta((m) => {
+    m.groups = [...(m.groups ?? []), g];
+  });
+  return g;
+}
+
+export function evmGroupRename(id: string, name: string): void {
+  const n = String(name ?? "").trim().slice(0, 32);
+  if (!n) throw new HttpError(400, "Group name required.");
+  writeMeta((m) => {
+    const g = (m.groups ?? []).find((x) => x.id === id);
+    if (!g) throw new HttpError(404, "Group not found.");
+    g.name = n;
+  });
+}
+
+/** the group goes, its wallets stay (no group) */
+export function evmGroupDelete(id: string): void {
+  writeMeta((m) => {
+    m.groups = (m.groups ?? []).filter((x) => x.id !== id);
+    for (const [a, g] of Object.entries(m.walletGroup ?? {})) if (g === id) delete m.walletGroup![a];
+  });
+}
+
+/** move wallets into a group (null = out of any group) */
+export function evmMove(addresses: string[], group: string | null): void {
+  for (const a of addresses) entryOf(a);
+  writeMeta((m) => {
+    if (group && !(m.groups ?? []).some((g) => g.id === group)) throw new HttpError(404, "Group not found.");
+    m.walletGroup = m.walletGroup ?? {};
+    for (const a of addresses) {
+      if (group) m.walletGroup[lc(a)] = group;
+      else delete m.walletGroup[lc(a)];
+    }
+  });
 }
 
 function entryOf(address: string): Entry {
@@ -140,7 +202,7 @@ export function evmIsOwn(address: string): boolean {
   return live().some((e) => lc(e.address) === lc(address));
 }
 
-export function evmCreate(count: number, label?: string): EvmWallet[] {
+export function evmCreate(count: number, label?: string, group?: string | null): EvmWallet[] {
   const list = entries();
   const n = Math.max(1, Math.min(50, Math.round(count) || 1));
   if (list.filter((e) => !e.deletedAt).length + n > MAX_EVM_WALLETS) throw new HttpError(400, `${MAX_EVM_WALLETS} Robinhood wallets maximum.`);
@@ -152,13 +214,14 @@ export function evmCreate(count: number, label?: string): EvmWallet[] {
     made.push({ label: label?.trim() ? (n > 1 ? `${label.trim()} ${i + 1}` : label.trim()) : `Robinhood ${base + i + 1}`, privateKey, address: a.address, createdAt: Date.now() });
   }
   persist([...list, ...made], "create");
-  logActivity(store(), { kind: "wallets", ok: true, message: `Robinhood Chain: ${n} wallet(s) created.` });
+  if (group) evmMove(made.map((e) => e.address), group);
+  logActivity(store(), { kind: "wallets", ok: true, message: `Robinhood Chain: ${n} wallet(s) created.`, data: { chain: "robinhood" } });
   const main = lc(mainAddress());
-  return made.map((e) => ({ address: e.address, label: e.label, createdAt: e.createdAt, main: lc(e.address) === main }));
+  return made.map((e) => ({ address: e.address, label: e.label, createdAt: e.createdAt, main: lc(e.address) === main, group: group ?? null }));
 }
 
 /** private keys (0x + 64 hex, one per line, optional label before it) */
-export function evmImport(text: string): { imported: number; skipped: string[] } {
+export function evmImport(text: string, group?: string | null): { imported: number; skipped: string[] } {
   const list = entries();
   const skipped: string[] = [];
   const add: Entry[] = [];
@@ -190,7 +253,8 @@ export function evmImport(text: string): { imported: number; skipped: string[] }
   if (live().length + fresh.length > MAX_EVM_WALLETS) throw new HttpError(400, `${MAX_EVM_WALLETS} Robinhood wallets maximum.`);
   if (add.length) {
     persist([...list, ...fresh], "import");
-    logActivity(store(), { kind: "wallets", ok: true, message: `Robinhood Chain: ${add.length} wallet(s) imported.` });
+    if (group) evmMove(add.map((e) => e.address), group);
+    logActivity(store(), { kind: "wallets", ok: true, message: `Robinhood Chain: ${add.length} wallet(s) imported.`, data: { chain: "robinhood" } });
   }
   return { imported: add.length, skipped };
 }
@@ -203,7 +267,9 @@ export function evmRename(address: string, label: string): void {
 
 export function evmSetMain(address: string): void {
   const e = entryOf(address);
-  writeJson(metaPath(), { main: e.address });
+  writeMeta((m) => {
+    m.main = e.address;
+  });
 }
 
 /** hidden from DONCHAIN, kept in the encrypted file (re-importing the key brings it back) */
@@ -212,7 +278,10 @@ export function evmRemove(address: string): void {
   if (live().length <= 1) throw new HttpError(400, "Keep at least one Robinhood wallet.");
   e.deletedAt = Date.now();
   persist(entries(), "remove");
-  if (lc(readJson<{ main?: string }>(metaPath(), {}).main ?? "") === lc(e.address)) writeJson(metaPath(), { main: live()[0].address });
+  if (lc(readMeta().main ?? "") === lc(e.address))
+    writeMeta((m) => {
+      m.main = live()[0].address;
+    });
   logActivity(store(), { kind: "wallets", ok: true, message: `Robinhood Chain wallet removed (kept encrypted): ${e.address}.` });
 }
 

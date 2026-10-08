@@ -11,12 +11,28 @@ export const EXPLORER = "https://robinhoodchain.blockscout.com";
 export const PONS_PAGE = (token: string) => `https://www.ponsfamily.com/launchpad/${token}`;
 
 const RPCS = ["https://rpc.mainnet.chain.robinhood.com", "https://rpc.ordofi.network"];
+/** logs + the chain head: publicnode serves the real head (the default RPC lags 4–6 blocks and moves in bursts) */
+const LOG_RPCS = ["https://robinhood-rpc.publicnode.com", "https://rpc.mainnet.chain.robinhood.com"];
+/** where signed transactions go first: the sequencer itself (FCFS ordering, accepts eth_sendRawTransactionConditional),
+ *  then the public RPC that forwards to it */
+export const SEND_URLS = ["https://sequencer.mainnet.chain.robinhood.com", "https://rpc.mainnet.chain.robinhood.com"];
 
-type Bag = { pub: PublicClient | null };
+type Bag = { pub: PublicClient | null; logs?: PublicClient | null };
 function bag(): Bag {
   const rt = store().runtime;
   if (!rt.rhChain) rt.rhChain = { pub: null } satisfies Bag;
   return rt.rhChain as Bag;
+}
+
+export function rhLogs(): PublicClient {
+  const b = bag();
+  if (!b.logs) {
+    b.logs = createPublicClient({
+      chain: CHAIN,
+      transport: fallback(LOG_RPCS.map((u) => http(u, { timeout: 15_000, retryCount: 1, retryDelay: 300 }))),
+    }) as PublicClient;
+  }
+  return b.logs;
 }
 
 export function rhPublic(): PublicClient {
@@ -165,6 +181,8 @@ export const CURVE_ABI = [
   { type: "function", name: "graduationThreshold", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { type: "function", name: "graduated", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
   { type: "function", name: "feeBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "creatorTaxBps", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "token", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   {
     type: "event",
     name: "CurveBuy",
@@ -214,6 +232,43 @@ export const ERC20_ABI = [
     outputs: [{ type: "bool" }],
   },
 ] as const;
+
+/** a PonsV2LauncherToken carries its own metadata (logo ipfs://cid, description, socials) and its curve */
+export const PONS_TOKEN_ABI = [
+  { type: "function", name: "name", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
+  { type: "function", name: "symbol", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
+  { type: "function", name: "curve", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "logo", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
+  { type: "function", name: "description", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
+  { type: "function", name: "deployer", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  {
+    type: "function",
+    name: "socials",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "twitter", type: "string" },
+      { name: "telegram", type: "string" },
+      { name: "discord", type: "string" },
+      { name: "website", type: "string" },
+      { name: "farcaster", type: "string" },
+    ],
+  },
+] as const;
+
+/** a fresh Pons V2 curve (config 0, ETH pair): 1.68 ETH of phantom quote against 1e9 tokens — checked against a
+ *  launchAndBuy simulation on mainnet (0.01 ETH → 5 858 334.81 tokens, 2026-10-08) */
+export const FRESH_QUOTE = BigInt("1680000000000000000");
+export const FRESH_TOKENS = BigInt("1000000000000000000000000000");
+
+/** ipfs://cid (what Pons tokens carry) → an https gateway. gateway.pinata.cloud serves any pinned CID (2026-10-08);
+ *  pump.mypinata.cloud answers 403 for CIDs pump.fun did not pin, ponsfamily.com/api/ipfs/content is gone (404) */
+export function logoUrl(logo: string | null | undefined): string | null {
+  if (!logo) return null;
+  const cid = logo.match(/^ipfs:\/\/([A-Za-z0-9]+)/)?.[1] ?? logo.match(/\/ipfs\/([A-Za-z0-9]+)/)?.[1];
+  if (cid) return `https://gateway.pinata.cloud/ipfs/${cid}`;
+  return /^https?:\/\//.test(logo) ? logo : null;
+}
 
 export const ESCROW_ABI = [
   { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "recipient", type: "address" }], outputs: [{ type: "uint256" }] },
