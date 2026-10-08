@@ -569,6 +569,7 @@ export function normalizeTasks(req: Pick<LaunchExecuteRequest, "tasks" | "cuPric
           cuPrice: req.cuPrice ?? st.settings.cuPrice,
           tipLamports: taskTip(t.tip, d.tip, `${type} tip`),
           bundle: false,
+          balancePercents: type === "buy" && t.balancePercent !== undefined && t.balancePercent !== null ? balancePercents(wallets, t.balancePercent, t.walletBalancePercents) : null,
         },
       });
     }
@@ -585,6 +586,13 @@ export function normalizeTasks(req: Pick<LaunchExecuteRequest, "tasks" | "cuPric
     out.push({ id, type: "wash", wallets: sources, pairs, minDelayMs: Math.round(minD * 1000), maxDelayMs: Math.round(maxD * 1000), autoStart: t.autoStart ?? d.autoStart });
   }
   return out;
+}
+
+/** buy task "% of balance": every wallet's % (its own, else the task's), 1–100 */
+function balancePercents(wallets: string[], def: unknown, per: Record<string, unknown> | undefined): Record<string, number> {
+  const pct = (v: unknown, what: string) => numIn(v, 0.01, 100, 90, what);
+  const base = pct(def, "Buy task · % of balance");
+  return Object.fromEntries(wallets.map((w) => [w, per?.[w] !== undefined && per[w] !== "" ? pct(per[w], `Buy task · % of balance of ${w.slice(0, 6)}…`) : base]));
 }
 
 /* ------------------------------------------------------------------ execute */

@@ -44,6 +44,8 @@ export function TaskDialog({ type, initial, form, wallets, groups, balances, uni
   const picked = taskWallets(task, wallets);
   const cap = type === "bundle" ? TASK_LIMITS.maxWalletsPerBundleTask : TASK_LIMITS.maxWalletsPerTask;
   const isBuyLike = type === "bundle" || type === "sniper" || type === "buy";
+  /** the Buy task has its own unit (default % of balance, read at the moment of each buy); the others follow the page */
+  const u: "SOL" | "%" = type === "buy" ? (task.buyUnit ?? "SOL") : unit;
   const bundleSols = type === "bundle" ? picked.map((a) => taskBuyFor(task, a)) : form.tasks.filter((t) => t.type === "bundle" && t.id !== task.id).flatMap((t) => taskWallets(t, wallets).map((a) => taskBuyFor(t, a)));
   const calc = useLaunchCalc(Number(form.devBuySol) || 0, bundleSols);
 
@@ -93,7 +95,11 @@ export function TaskDialog({ type, initial, form, wallets, groups, balances, uni
   const submit = () => {
     if (problems.length) return toast(problems[0], "err");
     let out = { ...task };
-    if (unit === "%" && isBuyLike) {
+    if (type === "buy" && u === "%") {
+      // % of balance stays a %: the server reads each wallet's SOL when it buys (a wallet funded later buys its 90 % too)
+      return onSubmit(out);
+    }
+    if (u === "%" && isBuyLike) {
       // convert % of balance into SOL per wallet (fees kept aside by the server)
       const conv: Record<string, string> = {};
       for (const a of picked) {
@@ -167,12 +173,23 @@ export function TaskDialog({ type, initial, form, wallets, groups, balances, uni
                   Wallets <span className={cx("font-mono text-text-300", picked.length > cap ? "text-decrease" : "")}>{picked.length}/{cap}</span>
                 </h3>
                 {isBuyLike ? (
+                  <div className="flex items-center gap-1.5">
+                  {type === "buy" ? (
+                    <div className="flex h-6 items-center gap-0.5 rounded-md border border-line-100 bg-input-100 p-0.5" title="% of balance: each wallet buys that share of the SOL it holds when its buy fires">
+                      {(["%", "SOL"] as const).map((x) => (
+                        <button key={x} type="button" onClick={() => x !== u && setTask((t) => ({ ...t, buyUnit: x, buyAmount: x === "%" ? "90" : "0.1", walletBuyAmounts: {} }))} className={cx("h-full rounded px-2 text-[10px] font-medium transition-colors", u === x ? "bg-btn-secondary text-accent" : "text-text-300 hover:text-text-100")}>
+                          {x === "%" ? "% of balance" : "SOL"}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                   <div className="flex h-6 items-center gap-0.5 rounded-md border border-line-100 bg-input-100 p-0.5">
                     {(["amount", "slider"] as const).map((m) => (
-                      <button key={m} type="button" onClick={() => setMode(m)} className={cx("h-full rounded px-2 text-[10px] font-medium capitalize transition-colors", mode === m ? "bg-btn-secondary text-accent" : "text-text-300 hover:text-text-100")} title={m === "amount" ? `Type the ${unit === "%" ? "% of balance" : "SOL"} per wallet` : `Drag the ${unit === "%" ? "% of balance" : "SOL"} per wallet`}>
+                      <button key={m} type="button" onClick={() => setMode(m)} className={cx("h-full rounded px-2 text-[10px] font-medium capitalize transition-colors", mode === m ? "bg-btn-secondary text-accent" : "text-text-300 hover:text-text-100")} title={m === "amount" ? `Type the ${u === "%" ? "% of balance" : "SOL"} per wallet` : `Drag the ${u === "%" ? "% of balance" : "SOL"} per wallet`}>
                         {m}
                       </button>
                     ))}
+                  </div>
                   </div>
                 ) : null}
               </div>
@@ -181,9 +198,9 @@ export function TaskDialog({ type, initial, form, wallets, groups, balances, uni
                   Default per wallet
                   <span className="relative">
                     <input inputMode="decimal" value={task.buyAmount} onChange={(e) => set("buyAmount", e.target.value.replace(/[^0-9.]/g, ""))} className={cx(num, "h-7 w-24 pr-8")} />
-                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-text-300">{unit}</span>
+                    <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-text-300">{u}</span>
                   </span>
-                  <span>applies to every wallet without its own value</span>
+                  <span>{type === "buy" && u === "%" ? "of the SOL each wallet holds when it buys (fees kept aside)" : "applies to every wallet without its own value"}</span>
                 </label>
               ) : null}
               <div className="flex flex-wrap gap-1.5">
@@ -205,7 +222,7 @@ export function TaskDialog({ type, initial, form, wallets, groups, balances, uni
                   const on = picked.includes(w.address);
                   const viaGroup = !task.walletIds.includes(w.address) && on;
                   const bal = balOf(w.address);
-                  const max = unit === "%" ? 100 : Math.max(0, bal - 0.01);
+                  const max = u === "%" ? 100 : Math.max(0, bal - 0.01);
                   return (
                     <div key={w.address} className={cx("flex h-8 items-center gap-2 rounded px-2 text-xs", on ? "bg-accent-muted" : "hover:bg-hover-100")}>
                       <input type="checkbox" className="pi-checkbox" checked={on} disabled={viaGroup} onChange={() => toggleWallet(w.address)} aria-label={`Select ${w.label || short(w.address)}`} />
@@ -215,13 +232,13 @@ export function TaskDialog({ type, initial, form, wallets, groups, balances, uni
                       {isBuyLike && on ? (
                         mode === "amount" ? (
                           <span className="relative">
-                            <input inputMode="decimal" placeholder={task.buyAmount} value={amountOf(w.address)} onChange={(e) => setAmount(w.address, e.target.value.replace(/[^0-9.]/g, ""))} className={cx(num, "h-6 w-20 pr-7 text-[11px]")} title={`${unit} for this wallet (blank = default)`} />
-                            <span className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-[9px] text-text-300">{unit}</span>
+                            <input inputMode="decimal" placeholder={task.buyAmount} value={amountOf(w.address)} onChange={(e) => setAmount(w.address, e.target.value.replace(/[^0-9.]/g, ""))} className={cx(num, "h-6 w-20 pr-7 text-[11px]")} title={`${u} for this wallet (blank = default)`} />
+                            <span className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-[9px] text-text-300">{u}</span>
                           </span>
                         ) : (
                           <span className="flex w-36 items-center gap-1.5">
-                            <input type="range" min={0} max={max} step={unit === "%" ? 1 : 0.01} value={Number(amountOf(w.address) || task.buyAmount) || 0} onChange={(e) => setAmount(w.address, e.target.value)} className="consolidate-slider min-w-0 flex-1" aria-label={`Amount for ${w.label}`} />
-                            <span className="w-12 text-right font-mono text-[10px] text-text-200">{amountOf(w.address) || task.buyAmount}{unit === "%" ? "%" : ""}</span>
+                            <input type="range" min={0} max={max} step={u === "%" ? 1 : 0.01} value={Number(amountOf(w.address) || task.buyAmount) || 0} onChange={(e) => setAmount(w.address, e.target.value)} className="consolidate-slider min-w-0 flex-1" aria-label={`Amount for ${w.label}`} />
+                            <span className="w-12 text-right font-mono text-[10px] text-text-200">{amountOf(w.address) || task.buyAmount}{u === "%" ? "%" : ""}</span>
                           </span>
                         )
                       ) : null}

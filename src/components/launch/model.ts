@@ -31,6 +31,9 @@ export type FormTask = {
   /** "" = unlimited (Block X leaves these empty) */
   maxTradesPerWallet: string;
   maxDurationMinutes: string;
+  /** buy task: "%" = buyAmount / walletBuyAmounts are % of each wallet's SOL balance read when it buys (default 90 %),
+   *  "SOL" = fixed amounts (Min–Max). Missing on tasks saved before 2026-10-08 = "SOL". */
+  buyUnit?: "%" | "SOL";
   /** "Stop on activity" / bundle "Sell all on external": net external SOL threshold */
   stopOnActivity: boolean;
   stopOnActivitySol: string;
@@ -98,7 +101,8 @@ export function newTask(type: LaunchTaskType): FormTask {
     type,
     walletIds: [],
     walletGroupIds: [],
-    buyAmount: "0.1",
+    buyAmount: type === "buy" ? "90" : "0.1",
+    buyUnit: type === "buy" ? "%" : undefined,
     walletBuyAmounts: {},
     slippagePercent: (d.slippagePercent as number | undefined) ?? (type === "bundle" || type === "sniper" ? 30 : 20),
     tip: "0.0002",
@@ -205,6 +209,10 @@ export function validateTask(t: FormTask): string[] {
     if (t.retry && t.autoRetryCount > TASK_LIMITS.maxAutoRetryCount) out.push(`Max ${TASK_LIMITS.maxAutoRetryCount} retries.`);
     if (t.minDelaySec > t.maxDelaySec) out.push("Min delay is above max delay.");
   }
+  if (t.type === "buy" && t.buyUnit === "%") {
+    const pcts = [t.buyAmount, ...Object.values(t.walletBuyAmounts)].map(Number);
+    if (pcts.some((p) => !(p > 0 && p <= 100))) out.push("% of balance must be between 1 and 100.");
+  }
   if (t.type === "buy" || t.type === "volume") {
     if (t.minIntervalSec > t.maxIntervalSec) out.push("Min interval is above max interval.");
     if (t.maxIntervalSec > TASK_LIMITS.maxIntervalSec) out.push("Interval too long.");
@@ -299,6 +307,12 @@ export function toApiTask(t: FormTask): LaunchTask {
     autoStart: t.autoStart,
     stopOnActivityEnabled: t.stopOnActivity || undefined,
     stopOnActivityThreshold: t.stopOnActivity ? t.stopOnActivitySol : undefined,
+    ...(t.type === "buy" && t.buyUnit === "%"
+      ? {
+          balancePercent: Number(t.buyAmount) || 90,
+          walletBalancePercents: Object.keys(t.walletBuyAmounts).length ? Object.fromEntries(Object.entries(t.walletBuyAmounts).map(([a, v]) => [a, Number(v) || 0])) : undefined,
+        }
+      : {}),
   };
 }
 
@@ -340,6 +354,12 @@ export function fromApiTask(t: LaunchTask): FormTask {
     f.maxDurationMinutes = typeof o.maxDurationMinutes === "number" ? String(o.maxDurationMinutes) : "";
     f.stopOnActivity = !!o.stopOnActivityEnabled;
     f.stopOnActivitySol = str("stopOnActivityThreshold", "");
+    if (t.type === "buy") {
+      const pct = typeof o.balancePercent === "number" ? (o.balancePercent as number) : null;
+      f.buyUnit = pct !== null ? "%" : "SOL";
+      f.buyAmount = pct !== null ? String(pct) : f.minTradeAmount;
+      f.walletBuyAmounts = pct !== null ? Object.fromEntries(Object.entries((o.walletBalancePercents as Record<string, number> | undefined) ?? {}).map(([a, v]) => [a, String(v)])) : {};
+    }
   } else if (t.type === "wash") {
     const pairs = (o.pairs as { source: string; wash: string[] }[] | undefined) ?? [];
     f.washPairs = Object.fromEntries(pairs.map((p) => [p.source, p.wash]));
@@ -429,6 +449,10 @@ export function taskSentence(t: FormTask, wallets: { address: string; group: str
     const pairs = Object.values(t.washPairs).reduce((s, p) => s + p.length, 0);
     return `${n} source wallet${n !== 1 ? "s" : ""} sell to ${pairs} wash wallet${pairs !== 1 ? "s" : ""}${t.washMaxDelaySec ? `, ${t.washMinDelaySec}–${t.washMaxDelaySec} s between pairs` : ""}.`;
   }
+  if (t.type === "buy" && t.buyUnit === "%") {
+    const same = addrs.every((a) => taskBuyFor(t, a) === taskBuyFor(t, addrs[0]));
+    return `${w} each buy ${same ? `${taskBuyFor(t, addrs[0])} %` : "their set %"} of their SOL balance (read when it buys, fees kept aside), ${t.maxIntervalSec ? `${t.minIntervalSec}–${t.maxIntervalSec} s apart` : "all at once"}.`;
+  }
   const verb = t.tradeMode === "both" ? "buy and sell" : t.tradeMode === "sell" ? "sell" : "buy";
   return `${w} ${verb} ${t.minTradeAmount}–${t.maxTradeAmount} SOL every ${t.minIntervalSec}–${t.maxIntervalSec} s${t.maxTradesPerWallet ? `, up to ${t.maxTradesPerWallet} trades each` : ""}${t.maxDurationMinutes ? `, for ${t.maxDurationMinutes} min` : ""}.`;
 }
@@ -453,6 +477,7 @@ export function launchNeeds(f: LaunchForm, wallets: { address: string; label: st
   for (const t of f.tasks) {
     for (const a of taskWallets(t, wallets)) {
       if (t.type === "bundle" || t.type === "sniper") add(a, t.type, taskBuyFor(t, a) + COST.perBuy);
+      else if (t.type === "buy" && t.buyUnit === "%") add(a, t.type, COST.perBuy);
       else if (t.type === "buy" || t.type === "volume") add(a, t.type, (Number(t.maxTradeAmount) || 0) + COST.perBuy);
       else add(a, "wash", COST.perBuy);
     }

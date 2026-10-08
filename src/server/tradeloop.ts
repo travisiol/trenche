@@ -5,6 +5,7 @@ import type { JobStep, LaunchTaskState, TradeMode, VolumeConfig } from "@/lib/ty
 import { TASK_LIMITS } from "@/lib/types";
 import { lamportsOf, sleep, solString } from "./api";
 import { buyWithWallets, sellWithWallets, tipLamportsFor, type TradeOutcome } from "./engine";
+import { hotSnapshot } from "./hot";
 import { jobNew, jobPush, jobRun, jobWait } from "./jobs";
 import { registerRuntimeProducer, RESTORE_NOTE, restoreSection, saveRuntimeSoon } from "./persist";
 import { store, type Job } from "./store";
@@ -28,6 +29,8 @@ export type LoopConfig = {
   cuPrice: number;
   tipLamports: bigint;
   bundle: boolean;
+  /** buy task in "% of balance": wallet → % of its SOL read at the moment of its buy (fees + tip kept aside) */
+  balancePercents?: Record<string, number> | null;
   label: string;
   /** called on every status change (SSE) */
   onChange?: (state: LaunchTaskState) => void;
@@ -205,10 +208,19 @@ export class TradeLoop {
         i++;
         const side = this.pickSide();
         const span = Number(c.maxLamports - c.minLamports);
-        const lamports = c.minLamports + BigInt(Math.round(Math.random() * Math.max(0, span)));
+        let lamports = c.minLamports + BigInt(Math.round(Math.random() * Math.max(0, span)));
         let out: TradeOutcome[] = [];
         let err: string | null = null;
+        const pct = side === "buy" ? c.balancePercents?.[wallet] : undefined;
         try {
+          if (pct !== undefined) {
+            // % of what the wallet holds NOW, after ~0.003 SOL of fees (ATA rent + priority) and the tip
+            const snap = await hotSnapshot(c.mint, [wallet], 1500);
+            const bal = snap.bal.get(wallet)?.sol ?? BigInt(0);
+            const spendable = bal - BigInt(3_000_000) - c.tipLamports;
+            lamports = spendable > BigInt(0) ? (spendable * BigInt(Math.round(pct * 100))) / BigInt(10_000) : BigInt(0);
+            if (lamports <= BigInt(0)) throw new Error(`holds ${solString(bal)} SOL — nothing left to buy with after fees`);
+          }
           out =
             side === "buy"
               ? await buyWithWallets({ mint: c.mint, wallets: [wallet], lamportsEach: lamports, slippageBps: c.slippageBps, cuPrice: c.cuPrice, tipLamports: c.tipLamports, bundle: c.bundle, job: null, kind: c.type === "buy" ? "buy-loop" : "volume" })

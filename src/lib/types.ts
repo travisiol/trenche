@@ -865,6 +865,10 @@ export type TradeTask = LaunchTaskBase & {
   /** "Stop on activity" + SOL threshold */
   stopOnActivityEnabled?: boolean;
   stopOnActivityThreshold?: string;
+  /** buy only: each wallet buys this % of its SOL balance, read at the moment of its buy (minus ~0.003 SOL of fees and
+   *  the tip) — replaces Min / Max (SOL). Per-wallet overrides in walletBalancePercents. */
+  balancePercent?: number;
+  walletBalancePercents?: Record<string, number>;
 };
 /** one source wallet → its wash wallets */
 export type WashPair = { source: string; wash: string[] };
