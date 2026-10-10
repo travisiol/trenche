@@ -26,6 +26,7 @@ const SOL_NAV = [
   { href: "/launch", label: "Launch" },
   { href: "/portfolio", label: "Portfolio" },
   { href: "/husher", label: "Husher" },
+  { href: "/marketplace", label: "Marketplace" },
   { href: "/rewards", label: "Rewards" },
   { href: "/settings", label: "Settings" },
 ];

@@ -2,7 +2,8 @@
 /** Block X /sol/portfolio (BEHAVIOUR.md §5): Developer Wallets / Groups tabs, toolbar, search, filter tabs, draggable
  *  wallet table, Activity (Disperse / Reverse Disperse jobs), right summary with PnL, actions (drawers) and Privacy
  *  funding; Consolidate / Distribute / Transfer turn the summary into the drag-and-drop transfer view.
- *  Omitted: Marketplace, Mixer, Unwrap, Convert, Swap Stocks (no provider on this server). */
+ *  Marketplace uses AnySwap; Husher handles Mixer. Unwrap, Convert and Swap Stocks have no provider. */
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Archive, EyeOff, ListOrdered, ArrowDownToLine, ArrowLeftRight, ArrowUpDown, ArrowUpFromLine, Calendar, Check, Copy, Droplet, FolderKanban, FolderPlus, KeyRound, Pencil, Plus, Search, Share2, Shuffle, Trash2, Undo2, Upload, Wallet, X } from "lucide-react";
 import type { ActivityResponse, DashboardResponse, JobsListResponse, LaunchesResponse, PositionsResponse, WalletGroup, WalletInfo } from "@/lib/types";
@@ -185,6 +186,7 @@ export default function PortfolioPage() {
                       <FolderKanban className="h-3.5 w-3.5 shrink-0 lg:h-4 lg:w-4" />
                       Groups
                     </button>
+                    <Link href="/marketplace" className={tabBtn(false)}>Marketplace</Link>
                   </div>
                   <div className="relative z-10 shrink-0 bg-bg-100 pl-1 lg:hidden">
                     <button type="button" onClick={() => setModal("create")} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-white transition-colors hover:bg-accent-hover" aria-label="Wallet actions">
