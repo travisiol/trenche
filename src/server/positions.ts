@@ -27,7 +27,8 @@ function walletLabel(a: string): string {
   return l === a.slice(0, 6) ? (trashedLabel(a) ?? l) : l;
 }
 
-export async function positions(wallets: string[], mints: string[]): Promise<PositionRow[]> {
+/** `maxMints`: how many of `mints` are read (default the 40 first — callers that pass the held mints raise it) */
+export async function positions(wallets: string[], mints: string[], maxMints = 40): Promise<PositionRow[]> {
   if (wallets.length === 0 || mints.length === 0) return [];
   // read-only: our wallets, trashed ones and launch wallets included (a dev deleted after launch keeps its position);
   // an address that is not ours is skipped instead of failing every other wallet's row
@@ -36,7 +37,7 @@ export async function positions(wallets: string[], mints: string[]): Promise<Pos
   if (ws.length === 0) return [];
   const conn = readConn();
   const per = isPublicRpc() ? 5 : 50;
-  const rows = await mapLimit(mints.slice(0, 40), 2, async (mint): Promise<PositionRow[]> => {
+  const rows = await mapLimit(mints.slice(0, maxMints), 2, async (mint): Promise<PositionRow[]> => {
     let r: Awaited<ReturnType<typeof readPositions>>;
     // one of these wallets traded in the last 30 s (live feed): rescan the history even if the balances did not move
     // (a buy then a full sell between two reads) — 30 s, not "since the last read": the RPC's signature index of the

@@ -40,12 +40,17 @@ export const GET = route(async (req: Request) => {
 async function readDefault(mints: string[], mintList: string[]): Promise<PositionRow[]> {
   const st = store();
   const active = new Set(st.sol.wallets.map((w) => w.address));
-  const rows = await positions([...active], mintList);
-  // each launch's wallets that are no longer active (deleted dev / buyers), read for that launch's mint only
-  const asked = new Set(mintList.slice(0, 40));
   // without ?mints=, only the deleted wallets the ledger says still hold this launch's token (a handful, not every
   // old wallet of every launch — that re-read took 67 s and drew RPC 429s)
   const held = mints.length ? null : ledgerTokenBalances();
+  // the 40 newest mints + EVERY mint the ledger says one of our wallets still holds: past 40 launches an older coin
+  // still held fell out of the read, its value showed $0 while its cost stayed open (FRAME on dev 6 = −2.29 SOL,
+  // Dashboard −$273 instead of ~−$50, 2026-10-10)
+  const holding = held ? mintList.filter((m) => [...(held.get(m)?.values() ?? [])].some((v) => v > BigInt(0))) : [];
+  const readList = [...new Set([...mintList.slice(0, 40), ...holding])];
+  const rows = await positions([...active], readList, readList.length);
+  // each launch's wallets that are no longer active (deleted dev / buyers), read for that launch's mint only
+  const asked = new Set(readList);
   const extra = st.launches
     .filter((l) => asked.has(l.mint))
     .map((l) => ({ mint: l.mint, wallets: [...new Set([l.dev, ...(l.wallets ?? [])])].filter((a) => a && !active.has(a) && (!held || (held.get(l.mint)?.get(a) ?? BigInt(0)) > BigInt(0))) }))

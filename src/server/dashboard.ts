@@ -7,7 +7,7 @@ import { feedCard, feedSolUsd } from "./feed";
 import { readCreatorFees } from "./fees";
 import { launchGet } from "./launch";
 import { creatorFeesByDay, refreshCreatorRevenue } from "./creatorRevenue";
-import { ledgerDay, ledgerDays, ledgerEntries, ledgerMints, ledgerPnl, ledgerStatus, openCostSol, refreshLedger } from "./ledger";
+import { ledgerDay, ledgerDays, ledgerEntries, ledgerMints, ledgerPnl, ledgerStatus, ledgerTokenBalances, openCostSol, refreshLedger } from "./ledger";
 import { positions } from "./positions";
 import { reconcileLaunches } from "./reconcile";
 import { solPrice } from "./price";
@@ -132,7 +132,14 @@ export async function pnlShare(period: PnlSharePeriod, day?: string): Promise<Pn
       const wallets = st.sol.wallets.map((x) => x.address);
       const mintList = [...new Set([...st.launches.map((l) => l.mint), ...st.tracked])];
       // unrealized = what the held tokens are worth − what they cost (average cost; the realized figure no longer holds that cost)
-      unrealisedSol = wallets.length && mintList.length ? (await positions(wallets, mintList)).filter((r) => Number(r.amount) > 0).reduce((n, r) => n + Number(r.valueSol), 0) - openCostSol() : 0;
+      // + every mint (and deleted wallet) the ledger says still holds tokens: past the 40 newest launches an older coin
+      // still held was not read and its cost counted as a loss (FRAME on dev 6, 2026-10-10)
+      const held = ledgerTokenBalances();
+      const holding = mintList.filter((m) => [...(held.get(m)?.values() ?? [])].some((v) => v > BigInt(0)));
+      const readList = [...new Set([...mintList.slice(0, 40), ...holding])];
+      const holders = holding.flatMap((m) => [...(held.get(m) ?? new Map<string, bigint>())].filter(([, v]) => v > BigInt(0)).map(([a]) => a));
+      const readWallets = [...new Set([...wallets, ...holders])];
+      unrealisedSol = readWallets.length && readList.length ? (await positions(readWallets, readList, readList.length)).filter((r) => Number(r.amount) > 0).reduce((n, r) => n + Number(r.valueSol), 0) - openCostSol() : 0;
     } catch {
       unrealisedSol = null;
     }
